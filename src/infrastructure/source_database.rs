@@ -731,9 +731,19 @@ fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
 }
 
 fn absolute_source_path(path: &Path) -> PathBuf {
+    // A deleted file can't be canonicalized, but its folder usually can; without
+    // this, 8.3 short names (C:\Users\RUNNER~1) would give it a different key.
+    let canonical_in_parent = || {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())?;
+        Some(parent.canonicalize().ok()?.join(path.file_name()?))
+    };
     let absolute = path
         .canonicalize()
-        .unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
+        .ok()
+        .or_else(canonical_in_parent)
+        .unwrap_or_else(|| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -1203,10 +1213,13 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(updated.row_count(), 2);
         let guard = database.state.lock().unwrap();
         assert_eq!(
-            catalog_entry(&guard.as_ref().unwrap().connection, &path_key(&source))
-                .unwrap()
-                .unwrap()
-                .revision,
+            catalog_entry(
+                &guard.as_ref().unwrap().connection,
+                &path_key(&absolute_source_path(&source))
+            )
+            .unwrap()
+            .unwrap()
+            .revision,
             2
         );
     }
@@ -1252,9 +1265,12 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(contents(&old).len(), 1);
         let guard = database.state.lock().unwrap();
         assert!(
-            catalog_entry(&guard.as_ref().unwrap().connection, &path_key(&source))
-                .unwrap()
-                .is_some()
+            catalog_entry(
+                &guard.as_ref().unwrap().connection,
+                &path_key(&absolute_source_path(&source))
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -1368,10 +1384,13 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(contents(&old), vec![vec![Some("1".into())]]);
         let guard = database.state.lock().unwrap();
         assert_eq!(
-            catalog_entry(&guard.as_ref().unwrap().connection, &path_key(&source))
-                .unwrap()
-                .unwrap()
-                .revision,
+            catalog_entry(
+                &guard.as_ref().unwrap().connection,
+                &path_key(&absolute_source_path(&source))
+            )
+            .unwrap()
+            .unwrap()
+            .revision,
             1
         );
         drop(guard);
