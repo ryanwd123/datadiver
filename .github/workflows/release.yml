@@ -24,7 +24,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist
+          args: --profile dist --out dist
 
       # Reuse the exe inside the wheel instead of compiling a second time.
       - name: Zip the standalone exe

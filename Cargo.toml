@@ -36,3 +36,12 @@ serde_json = { version = "1", features = ["arbitrary_precision"] }
 tempfile = "3"
 # Already built for DuckDB; the platform verifier trusts the Windows store.
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+
+# Used by the release workflow; slower to build than `--release`, so local
+# builds keep the default profile.
+[profile.dist]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+strip = true
+debug = false
