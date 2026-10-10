@@ -1,10 +1,13 @@
-![Hooded merganser mascot](assets/duck3-small.png)
+![Hooded merganser mascot](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/duck3-small.png)
 
 # DataDiver
 
 A native desktop app for fast data exploration and quick lookups. Open a data file, search and filter rows, build a pivot, etc.
 
 DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, enjoyable workflow: responsive tables, keyboard commands, and reusable views.
+
+![A pivot of Olympic athletes by season and year, with a Sport slicer and totals](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot1.png)
+![The SQL editor with Ask AI generating a medal count query](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot2.png)
 
 - [Features](#features)
 - [Install](#install)
@@ -29,7 +32,7 @@ DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, 
 
 ## Features
 
-- **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, or drop files on the window.
+- **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, drop files on the window, or attach a DuckDB database.
 - **Browse the database:** a sidebar tree of saved views, imported files, database tables and views, attached databases, and source folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any DuckDB aggregate. Add grand totals and a heat map.
@@ -45,7 +48,9 @@ DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, 
 
 ## Install
 
-DataDiver currently ships for 64-bit Windows. Download the zip from the [Releases page](https://github.com/ryanwd123/datadiver/releases), extract it, and run `datadiver.exe`. No installer or other software is needed. The exe is unsigned, so Windows SmartScreen may warn the first time you run it.
+DataDiver currently ships for 64-bit Windows.
+
+Download the zip from the [Releases page](https://github.com/ryanwd123/datadiver/releases), extract it, and run `datadiver.exe`. No installer or other software is needed. The exe is unsigned, so Windows SmartScreen may warn the first time you run it.
 
 It can also be installed with [pipx](https://pipx.pypa.io/), which puts `datadiver` on your PATH:
 
