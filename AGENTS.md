@@ -64,9 +64,27 @@ cargo run --features snapshots -- --rows 60 --show info `
 - Stage only the files related to that change. Never use `git add -A` or `git add .` if there are unrelated modifications.
 - Write commit messages in imperative mood ("Add parser for X", not "Added..."), with a short summary line under 72 characters and a body explaining why if the change isn't obvious.
 - Make small, focused commits: one logical change per commit.
-- This repo is local only. Do not push, add remotes, or create branches unless I ask.
+- Work on `main`. The public repo is the `github` remote (github.com/ryanwd123/datadiver). `origin` is an old local copy and `master` is a private archive of the full history; never push either.
+- Push to `github` only when I ask. Do not add remotes or create branches unless I ask.
 - Never amend, rebase, reset, or force anything without asking.
 - Never commit secrets, .env files, or large data files.
+
+## Releasing
+
+Releases are tag-driven. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds the wheel with maturin using the `dist` profile, creates the GitHub release with the wheel and a zipped exe, and publishes to PyPI through trusted publishing. Only release when I ask.
+
+1. Make sure `main` is clean, pushed, and the latest CI run passed (`gh run list --limit 1`).
+2. Run the full test suite, both `cargo test` and `cargo test --features snapshots`.
+3. Run `.\scripts\release.ps1 X.Y.Z`. It bumps the version in `Cargo.toml`, runs the tests, commits "Release vX.Y.Z", tags, and pushes. Use semver: patch for fixes, minor for new features. Ask me if the version isn't clear.
+4. Follow the build with `gh run watch` (about 30 minutes, mostly compiling DuckDB).
+5. Check that the release has both assets (`gh release view vX.Y.Z`) and that the wheel is on PyPI. Use `https://pypi.org/simple/datadiver/`, since the JSON API can return a cached 404 for a while.
+
+Rules:
+
+- `Cargo.toml` is the only place the version lives. The exe's version info and the wheel version both come from it.
+- Don't tag by hand, and never delete, move, or re-push a tag that has been pushed without asking me.
+- PyPI never accepts the same version twice. If a release fails after its tag is pushed, fix the problem and release the next patch version.
+- `gh` is installed at `C:\Program Files\GitHub CLI\gh.exe` and may not be on the shell's PATH.
 
 ## Implementation
 
