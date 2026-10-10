@@ -1,4 +1,4 @@
-![Hooded merganser mascot](assets/duck1.png)
+![Hooded merganser mascot](assets/duck3-small.png)
 
 # DataDiver (Quick Pivot)
 
