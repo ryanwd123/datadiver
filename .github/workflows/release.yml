@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
+          }
+
+      # Wheel only: an sdist would make pip compile DuckDB from source.
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+
+      # Reuse the exe inside the wheel instead of compiling a second time.
+      - name: Zip the standalone exe
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem dist/*.whl | Select-Object -First 1
+          Expand-Archive $wheel.FullName -DestinationPath wheel
+          $exe = Get-ChildItem wheel -Recurse -Filter datadiver.exe | Select-Object -First 1
+          New-Item -ItemType Directory release | Out-Null
+          Compress-Archive -Path $exe.FullName, LICENSE, README.md `
+            -DestinationPath "release/datadiver-$env:GITHUB_REF_NAME-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip
+          path: release/*.zip
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" artifacts/*
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,11 @@
+pub mod ai_client;
+pub mod catalog;
+pub mod duckdb_store;
+pub mod json_store;
+pub mod launcher;
+pub mod pasted_table;
+pub mod path_completion;
+pub mod performance;
+pub mod readers;
+pub mod source_database;
+pub mod sql_execution;

@@ -1,0 +1,38 @@
+[package]
+name = "datadiver"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ryan DeWitt"]
+description = "Fast desktop data exploration with DuckDB"
+license = "MIT"
+repository = "https://github.com/ryanwd123/datadiver"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "datadiver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "datadiver"
+path = "src/main.rs"
+
+[build-dependencies]
+embed-resource = "3"
+
+[features]
+default = []
+snapshots = ["gpui-kit/test-support"]
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "appender-arrow"] }
+gpui-kit = { version = "=0.6.4", features = ["tree-sitter-sql"] }
+lsp-types = "=0.97.0"
+ropey = "=2.0.0-beta.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+tempfile = "3"
+# Already built for DuckDB; the platform verifier trusts the Windows store.
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }

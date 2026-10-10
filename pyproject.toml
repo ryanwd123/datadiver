@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "datadiver"
+description = "Fast desktop data exploration with DuckDB"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ryan DeWitt" }]
+requires-python = ">=3.8"
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: Win32 (MS Windows)",
+    "Programming Language :: Rust",
+]
+# Taken from Cargo.toml.
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/ryanwd123/datadiver"
+
+[tool.maturin]
+bindings = "bin"
