@@ -45,14 +45,16 @@ DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, 
 
 ## Install
 
-DataDiver currently ships for 64-bit Windows. Install it with [pipx](https://pipx.pypa.io/):
+DataDiver currently ships for 64-bit Windows. Download the zip from the [Releases page](https://github.com/ryanwd123/datadiver/releases), extract it, and run `datadiver.exe`. No installer or other software is needed. The exe is unsigned, so Windows SmartScreen may warn the first time you run it.
+
+It can also be installed with [pipx](https://pipx.pypa.io/), which puts `datadiver` on your PATH:
 
 ```powershell
 pipx install datadiver
 datadiver
 ```
 
-Upgrade later with `pipx upgrade datadiver`. Alternatively, download `datadiver.exe` from the zip on the [Releases page](https://github.com/ryanwd123/datadiver/releases). The exe is unsigned, so Windows SmartScreen may warn the first time you run it.
+Upgrade later with `pipx upgrade datadiver`.
 
 To try the app with generated data and a temporary profile that leaves nothing behind:
 
