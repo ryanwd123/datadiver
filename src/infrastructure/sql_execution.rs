@@ -79,7 +79,7 @@ impl SqlExecution {
     }
 
     pub fn catalog(&self) -> Result<Vec<Relation>, String> {
-        let sql = "SELECT database_name, schema_name, table_name, false FROM duckdb_tables() WHERE NOT internal UNION ALL SELECT database_name, schema_name, view_name, true FROM duckdb_views() WHERE NOT internal ORDER BY 1, 2, 3";
+        let sql = "SELECT database_name, schema_name, table_name, false, database_name = current_database() FROM duckdb_tables() WHERE NOT internal UNION ALL SELECT database_name, schema_name, view_name, true, database_name = current_database() FROM duckdb_views() WHERE NOT internal ORDER BY 1, 2, 3";
         let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
         let mut relations = stmt
             .query_map([], |row| {
@@ -88,6 +88,7 @@ impl SqlExecution {
                     schema: row.get(1)?,
                     name: row.get(2)?,
                     is_view: row.get(3)?,
+                    current_database: row.get(4)?,
                     columns: Vec::new(),
                 })
             })
@@ -981,6 +982,38 @@ mod tests {
         let catalog = service.catalog().unwrap();
         assert!(catalog.iter().any(|r| r.name == "fruit" && r.is_view));
         assert!(!catalog.iter().any(|r| r.name.starts_with("__qp_")));
+    }
+    #[test]
+    fn attached_database_completions_name_the_database() {
+        use crate::domain::sql_editor::completions;
+        let (_dir, service) = service();
+        let run = service.run(
+            "ATTACH ':memory:' AS shop; CREATE TABLE shop.orders(qty INTEGER); CREATE TABLE main.orders(n INTEGER)",
+            10,
+        );
+        assert!(run.error.is_none(), "{:?}", run.error);
+        let inserts = |service: &SqlExecution| {
+            let catalog = service.catalog().unwrap();
+            let mut inserts = completions("SELECT * FROM orders", 20, &catalog)
+                .into_iter()
+                .map(|c| c.insert)
+                .collect::<Vec<_>>();
+            inserts.sort();
+            inserts
+        };
+        assert_eq!(
+            inserts(&service),
+            ["\"main\".\"orders\"", "\"shop\".\"main\".\"orders\""]
+        );
+        let qty = service.run("SELECT * FROM \"shop\".\"main\".\"orders\"", 10);
+        assert!(qty.error.is_none(), "{:?}", qty.error);
+        assert_eq!(qty.result.unwrap().schema()[0].name, "qty");
+        // After USE, the profile's tables are the ones that need the database.
+        let profile = service.default_catalog().unwrap();
+        assert!(service.run("USE shop", 10).error.is_none());
+        let inserts = inserts(&service);
+        assert!(inserts.contains(&"\"main\".\"orders\"".to_owned()));
+        assert!(inserts.contains(&format!("\"{profile}\".\"main\".\"orders\"")));
     }
     #[test]
     fn database_catalog_completes_files_tables_and_view_alias_columns() {

@@ -885,6 +885,7 @@ fn sql_alias_completion_triggers_on_dot_and_inserts_only_column(cx: &mut TestApp
             name: "apples".into(),
             columns: vec!["color".into()],
             is_view: false,
+            current_database: true,
         }];
         let state = panel.read(cx).editor.read(cx).state().clone();
         state.update(cx, |s, cx| {

@@ -245,6 +245,24 @@ pub struct Relation {
     pub name: String,
     pub columns: Vec<String>,
     pub is_view: bool,
+    /// In `current_database()`, so a name without the database finds it.
+    pub current_database: bool,
+}
+
+impl Relation {
+    /// The ways SQL can name this relation, preferred first: without the
+    /// database only in the current one, and without `main` as DuckDB allows.
+    fn qualified_names(&self) -> Vec<Vec<&str>> {
+        let mut names = Vec::new();
+        if self.current_database {
+            names.push(vec![self.schema.as_str(), &self.name]);
+        }
+        names.push(vec![self.catalog.as_str(), &self.schema, &self.name]);
+        if self.schema.eq_ignore_ascii_case("main") {
+            names.push(vec![self.catalog.as_str(), &self.name]);
+        }
+        names
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -293,15 +311,13 @@ fn reserved(word: &str) -> bool {
 fn relation_matches(relation: &Relation, names: &[String]) -> bool {
     match names {
         [name] => relation.name.eq_ignore_ascii_case(name),
-        [schema, name] => {
-            relation.schema.eq_ignore_ascii_case(schema) && relation.name.eq_ignore_ascii_case(name)
-        }
-        [catalog, schema, name] => {
-            relation.catalog.eq_ignore_ascii_case(catalog)
-                && relation.schema.eq_ignore_ascii_case(schema)
-                && relation.name.eq_ignore_ascii_case(name)
-        }
-        _ => false,
+        _ => relation.qualified_names().iter().any(|qualified| {
+            qualified.len() == names.len()
+                && qualified
+                    .iter()
+                    .zip(names)
+                    .all(|(part, name)| part.eq_ignore_ascii_case(name))
+        }),
     }
 }
 
@@ -404,38 +420,40 @@ pub fn completions(text: &str, offset: usize, relations: &[Relation]) -> Vec<Sql
             .iter()
             .any(|w| before[at - 1].keyword(w))
     {
+        // The first way to name each relation that extends what is typed, with
+        // the part under the cursor matching the prefix.
         return relations
             .iter()
-            .filter(|r| {
-                r.name.to_lowercase().starts_with(&prefix)
-                    && match names.as_slice() {
-                        [] => true,
-                        [schema] => r.schema.eq_ignore_ascii_case(schema),
-                        [catalog, schema] => {
-                            r.catalog.eq_ignore_ascii_case(catalog)
-                                && r.schema.eq_ignore_ascii_case(schema)
-                        }
-                        _ => false,
-                    }
-            })
-            .map(|r| SqlCompletion {
-                label: format!(
-                    "{}.{}{}",
-                    r.schema,
-                    r.name,
-                    if r.is_view { " (view)" } else { "" }
-                ),
-                insert: if names.is_empty() {
-                    format!(
-                        "{}.{}",
-                        quote_identifier(&r.schema),
-                        quote_identifier(&r.name)
-                    )
+            .filter_map(|r| {
+                let qualified = r.qualified_names();
+                let rest = if names.is_empty() {
+                    r.name
+                        .to_lowercase()
+                        .starts_with(&prefix)
+                        .then(|| qualified[0].clone())?
                 } else {
-                    quote_identifier(&r.name)
-                },
-                range: range.clone(),
-                is_column: false,
+                    qualified.into_iter().find_map(|qualified| {
+                        let rest = qualified.get(names.len()..)?;
+                        (!rest.is_empty()
+                            && qualified
+                                .iter()
+                                .zip(&names)
+                                .all(|(part, name)| part.eq_ignore_ascii_case(name))
+                            && rest[0].to_lowercase().starts_with(&prefix))
+                        .then(|| rest.to_vec())
+                    })?
+                };
+                let full = r.qualified_names().swap_remove(0).join(".");
+                Some(SqlCompletion {
+                    label: format!("{full}{}", if r.is_view { " (view)" } else { "" }),
+                    insert: rest
+                        .iter()
+                        .map(|part| quote_identifier(part))
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    range: range.clone(),
+                    is_column: false,
+                })
             })
             .collect();
     }
@@ -693,6 +711,7 @@ mod tests {
                 name: "apples".into(),
                 columns: vec!["color".into(), "café".into()],
                 is_view: false,
+                current_database: true,
             },
             Relation {
                 catalog: "db".into(),
@@ -700,6 +719,15 @@ mod tests {
                 name: "sales".into(),
                 columns: vec!["total".into()],
                 is_view: true,
+                current_database: true,
+            },
+            Relation {
+                catalog: "shop".into(),
+                schema: "main".into(),
+                name: "orders".into(),
+                columns: vec!["qty".into()],
+                is_view: false,
+                current_database: false,
             },
         ]
     }
@@ -734,13 +762,44 @@ mod tests {
     #[test]
     fn relation_triggers_and_qualification() {
         for sql in ["select * FrOm ", "select * from apples a JOIN ", "PIVOT "] {
-            assert_eq!(completions(sql, sql.len(), &catalog()).len(), 2);
+            assert_eq!(completions(sql, sql.len(), &catalog()).len(), 3);
         }
         let sql = "from files.sa";
         assert_eq!(
             completions(sql, sql.len(), &catalog())[0].insert,
             "\"sales\""
         );
+        let insert = |sql: &str| {
+            completions(sql, sql.len(), &catalog())
+                .into_iter()
+                .map(|c| (c.label, c.insert))
+                .collect::<Vec<_>>()
+        };
+        // Another database's relations name it first.
+        assert_eq!(
+            insert("from ord"),
+            [("shop.main.orders".into(), "\"shop\".\"main\".\"orders\"".into())]
+        );
+        assert_eq!(
+            insert("from shop."),
+            [("shop.main.orders".into(), "\"main\".\"orders\"".into())]
+        );
+        assert_eq!(
+            insert("from shop.or"),
+            [("shop.main.orders".into(), "\"orders\"".into())]
+        );
+        assert_eq!(
+            insert("from shop.main."),
+            [("shop.main.orders".into(), "\"orders\"".into())]
+        );
+        assert_eq!(
+            insert("from db.files."),
+            [("files.sales (view)".into(), "\"sales\"".into())]
+        );
+        // A schema of the current database still works on its own.
+        assert_eq!(insert("from main.").len(), 1);
+        let sql = "select o. from shop.orders o";
+        assert_eq!(completions(sql, 9, &catalog())[0].label, "qty");
     }
     #[test]
     fn no_unqualified_or_unresolved_or_cross_statement_columns() {
