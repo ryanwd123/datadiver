@@ -160,7 +160,7 @@ impl InformationPanel {
             .into_iter()
             .map(|(name, dtype)| ColumnInfo {
                 name,
-                dtype,
+                dtype: crate::domain::formatting::type_label(&dtype).into_owned(),
                 summary: None,
                 top: None,
             })

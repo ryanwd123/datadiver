@@ -3077,7 +3077,8 @@ impl DataFrameView {
                             .items(result.columns.iter().zip(result.dtypes.iter()).map(
                                 |(column, dtype)| {
                                     let name = column.0.clone();
-                                    let dtype = dtype.clone();
+                                    let dtype = crate::domain::formatting::type_label(dtype)
+                                        .into_owned();
                                     CommandItem::new().label(name.clone()).child(move |_, _| {
                                         div()
                                             .w_full()
@@ -3728,7 +3729,10 @@ impl DataFrameView {
                                     .columns
                                     .iter()
                                     .position(|column| column.0 == name)
-                                    .map(|index| source.dtypes[index].clone())
+                                    .map(|index| {
+                                        crate::domain::formatting::type_label(&source.dtypes[index])
+                                            .into_owned()
+                                    })
                                     .unwrap_or_default();
                                 CommandItem::new().label(name.clone()).child(move |_, _| {
                                     div()

@@ -213,6 +213,60 @@ pub fn group_numeric_text(value: &str) -> String {
     ) + exponent
 }
 
+/// A type name for display. DuckDB spells out every member of an enum, even a
+/// named one, so `ENUM('a', 'b', ...)` shows as `ENUM`, also inside lists and
+/// structs.
+pub fn type_label(dtype: &str) -> std::borrow::Cow<'_, str> {
+    if !dtype.contains("ENUM(") {
+        return dtype.into();
+    }
+    let mut label = String::with_capacity(dtype.len());
+    let mut rest = dtype;
+    let mut quote = None;
+    while let Some(ch) = rest.chars().next() {
+        let at_word_start = !label
+            .chars()
+            .next_back()
+            .is_some_and(|previous| previous.is_alphanumeric() || previous == '_');
+        if quote.is_none() && at_word_start && rest.starts_with("ENUM(") {
+            label.push_str("ENUM");
+            rest = skip_parenthesized(&rest["ENUM".len()..]);
+            continue;
+        }
+        match (quote, ch) {
+            (None, '\'' | '"') => quote = Some(ch),
+            (Some(open), _) if open == ch => quote = None,
+            _ => {}
+        }
+        label.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    label.into()
+}
+
+/// The text after the parenthesized group `text` starts with; quoted members
+/// may contain parentheses.
+fn skip_parenthesized(text: &str) -> &str {
+    let mut depth = 0;
+    let mut quote = None;
+    for (offset, ch) in text.char_indices() {
+        match (quote, ch) {
+            (Some(open), _) if open == ch => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[offset + 1..];
+                }
+            }
+            _ => {}
+        }
+    }
+    ""
+}
+
 pub fn truncate(value: &str, limit: usize) -> String {
     let mut chars = value.chars();
     let prefix = chars.by_ref().take(limit).collect::<String>();
@@ -226,6 +280,18 @@ pub fn truncate(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enum_type_labels_hide_their_members() {
+        assert_eq!(type_label("VARCHAR"), "VARCHAR");
+        assert_eq!(type_label("ENUM('a', 'b')"), "ENUM");
+        assert_eq!(type_label("ENUM('x)', 'it''s (')[]"), "ENUM[]");
+        assert_eq!(
+            type_label("STRUCT(\"ENUM(\" VARCHAR, kind ENUM('a'), n INTEGER)"),
+            "STRUCT(\"ENUM(\" VARCHAR, kind ENUM, n INTEGER)"
+        );
+        assert_eq!(type_label("MAP(VARCHAR, ENUM('p', 'q'))"), "MAP(VARCHAR, ENUM)");
+    }
 
     #[test]
     fn precision_changes_round_exact_decimals_and_pad_integers() {

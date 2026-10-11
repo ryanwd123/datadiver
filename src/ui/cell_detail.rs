@@ -90,7 +90,11 @@ impl Render for CellDetailPane {
                 row,
                 value,
             } => {
-                let mut subtitle = format!("{dtype} · row {}", row + 1);
+                let mut subtitle = format!(
+                    "{} · row {}",
+                    crate::domain::formatting::type_label(dtype),
+                    row + 1
+                );
                 match (value, &self.detail) {
                     (None, _) => subtitle.push_str(" · NULL"),
                     (Some(_), Some(detail)) if detail.json => subtitle.push_str(" · JSON"),

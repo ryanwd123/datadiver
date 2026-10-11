@@ -85,7 +85,7 @@ use crate::application::keymap::{ActionId, KeyContext, KeymapFile, canonical_key
 use crate::application::theme::ThemeSettings;
 use crate::domain::documents::SortKey;
 use crate::domain::formatting::{
-    NumericFormat, default_numeric_format, display_cell, temporal_type_name,
+    NumericFormat, default_numeric_format, display_cell, temporal_type_name, type_label,
 };
 use crate::domain::frame::{FrameSnapshot, ResultSnapshot};
 use crate::domain::layout::GridGeometry;
@@ -1009,7 +1009,7 @@ impl Render for GridView {
             let mut dtype_style = text_style.clone();
             dtype_style.font_size = rems(0.75).into();
             let name_width = measure(&candidate.column, &text_style);
-            let dtype_width = measure(&self.result.dtypes[column], &dtype_style);
+            let dtype_width = measure(&type_label(&self.result.dtypes[column]), &dtype_style);
             let mut measured = if name_width.is_finite() && dtype_width.is_finite() {
                 name_width.max(dtype_width)
             } else {
@@ -1149,7 +1149,7 @@ impl Render for GridView {
                 .enumerate()
                 .map(|(column, _)| {
                     let width = (self.widths[column] - 17.0).max(1.0);
-                    let dtype = dtypes[column].clone();
+                    let dtype = type_label(&dtypes[column]);
                     9.0 + wrapped_line_count(window, &labels[column], width, &text_style) as f32
                         * line_height.as_f32()
                         + wrapped_line_count(window, &dtype, width, &dtype_style) as f32
@@ -1327,7 +1327,7 @@ impl Render for GridView {
                 geometry.column_x(column).map(|x| {
                     let name = columns[column].0.clone();
                     let right_click_name = name.clone();
-                    let dtype = dtypes[column].clone();
+                    let dtype = type_label(&dtypes[column]).into_owned();
                     let is_frozen = column < frozen_count;
                     let cell = div()
                         .id(format!("grid-header:{column}"))
