@@ -32,6 +32,14 @@ pub enum SourceLoad {
     Loaded(Box<DuckDbStore>),
 }
 
+/// What a source's freshness depends on, cheap enough to read every second:
+/// while it is unchanged, a checked source that was reused is still current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceProbe {
+    revision: u64,
+    stamp: FileStamp,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileStamp {
     modified_ns: i128,
@@ -120,6 +128,17 @@ impl SourceDatabase {
 
     pub fn revision(&self) -> u64 {
         self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Reads the revision before the file so a change racing the probe makes
+    /// the next probe differ. Imports and SQL writes bump the revision, so it
+    /// covers the catalog and the source's table.
+    pub fn probe(&self, path: &Path) -> Option<SourceProbe> {
+        let revision = self.revision();
+        Some(SourceProbe {
+            revision,
+            stamp: file_stamp(path).ok()?,
+        })
     }
 
     pub fn invalidate(&self) {

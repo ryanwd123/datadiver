@@ -51,7 +51,7 @@ use crate::infrastructure::json_store::{
 };
 use crate::infrastructure::launcher;
 use crate::infrastructure::readers::read_source;
-use crate::infrastructure::source_database::{LoadMode, SourceDatabase, SourceLoad};
+use crate::infrastructure::source_database::{LoadMode, SourceDatabase, SourceLoad, SourceProbe};
 use crate::ui::actions_editor::{ActionsEditor, ActionsEditorEvent};
 use crate::ui::ai_settings::{AiSettingsEditor, AiSettingsEvent};
 use crate::ui::aggregation_editor::{AggregationPanel, AggregationPanelEvent};
@@ -180,6 +180,9 @@ pub struct DataFrameView {
     geometry_save: Option<Task<()>>,
     source_monitor: Option<Task<()>>,
     source_check_pending: bool,
+    /// The probe from the last check that reused the source, keyed by path and
+    /// source revision; an unchanged probe skips the DuckDB catalog queries.
+    source_probe: Option<(String, u64, SourceProbe)>,
     source_refresh_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -1232,6 +1235,7 @@ impl DataFrameView {
             geometry_save: None,
             source_monitor: None,
             source_check_pending: false,
+            source_probe: None,
             source_refresh_error: None,
             _subscriptions: vec![
                 subscription,
@@ -1313,13 +1317,26 @@ impl DataFrameView {
         };
         let database = self.database.clone();
         let source_revision = self.session.source.source_revision;
+        let last_probe = self
+            .source_probe
+            .clone()
+            .filter(|(probe_path, revision, _)| probe_path == &path && *revision == source_revision)
+            .map(|(_, _, probe)| probe);
         self.source_check_pending = true;
         cx.spawn(async move |this, cx| {
             let read_path = PathBuf::from(&path);
-            let result = cx
+            let (probe, result) = cx
                 .background_executor()
                 .spawn(async move {
-                    database.load_reusing(&read_path, LoadMode::Check, Some(&identity))
+                    // This runs every second, so skip the catalog queries
+                    // while neither the file nor the database has changed.
+                    let probe = database.probe(&read_path);
+                    if probe.is_some() && probe == last_probe {
+                        return (probe, Ok(SourceLoad::Reused));
+                    }
+                    let result =
+                        database.load_reusing(&read_path, LoadMode::Check, Some(&identity));
+                    (probe, result)
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
@@ -1330,6 +1347,12 @@ impl DataFrameView {
                 {
                     return;
                 }
+                view.source_probe = match &result {
+                    Ok(SourceLoad::Reused) => {
+                        probe.map(|probe| (path.clone(), source_revision, probe))
+                    }
+                    _ => None,
+                };
                 match result {
                     Ok(source) => {
                         if let Some(error) = view.source_refresh_error.take()

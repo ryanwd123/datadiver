@@ -1024,3 +1024,59 @@ fn database_tree_refresh_button_lists_new_tables(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(labels(cx).contains(&"main.added_later".to_owned()));
 }
+
+#[gpui_kit::test]
+fn source_checks_skip_unchanged_files_but_still_see_edits(cx: &mut TestAppContext) {
+    let home = tempfile::tempdir().unwrap();
+    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let (handle, entity) = viewer(cx, repository);
+    let path = home.path().join("watched.csv");
+    std::fs::write(&path, "n\n1\n2\n").unwrap();
+    open(cx, handle, &entity, FileEntry::Source(path.clone()));
+    let check = |cx: &mut TestAppContext| {
+        cx.update(|cx| entity.update(cx, |view, cx| view.check_source(cx)));
+        cx.run_until_parked();
+    };
+    let rows = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let view = entity.read(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.session.result.row_count()
+        })
+    };
+    check(cx);
+    cx.update(|cx| assert!(entity.read(cx).source_probe.is_some()));
+    check(cx);
+    assert_eq!(rows(cx), 2);
+
+    std::fs::write(&path, "n\n1\n2\n3\n").unwrap();
+    check(cx);
+    assert_eq!(rows(cx), 3);
+    check(cx);
+    cx.update(|cx| assert!(entity.read(cx).source_probe.is_some()));
+
+    // A database change, such as SQL dropping the table, forces the full check.
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch("DROP TABLE files.watched_csv")
+            .unwrap();
+        view.database.invalidate();
+    });
+    check(cx);
+    assert_eq!(rows(cx), 3);
+    let restored: i64 = cx.update(|cx| {
+        entity
+            .read(cx)
+            .database
+            .connect()
+            .unwrap()
+            .query_row("SELECT count(*) FROM files.watched_csv", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    });
+    assert_eq!(restored, 3);
+}
