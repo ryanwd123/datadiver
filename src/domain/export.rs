@@ -226,10 +226,10 @@ pub fn export(
     Ok(output)
 }
 
+/// Nulls are blank, so pasting into a spreadsheet leaves the cell empty.
 fn tsv_value(value: Option<&str>, dtype: &str, formatted: bool) -> String {
     match value {
-        None if formatted => String::new(),
-        None => "None".into(),
+        None => String::new(),
         Some(value) if formatted => {
             display_cell(Some(value), dtype, default_numeric_format(dtype), 1_000)
         }
@@ -473,7 +473,7 @@ mod tests {
         );
         assert_eq!(
             export(&result, selection(2, 1), CopyFormat::RawTsv).unwrap(),
-            "A\nNone\n"
+            "A\n\n"
         );
         assert_eq!(
             export(&result, selection(2, 1), CopyFormat::FormattedTsv).unwrap(),
@@ -487,6 +487,10 @@ mod tests {
         assert_eq!(
             export(&result, selection(1, 1), CopyFormat::RawCsv).unwrap(),
             "A"
+        );
+        assert_eq!(
+            export(&result, selection(2, 2), CopyFormat::RawCsv).unwrap(),
+            "A,1\n,2"
         );
         assert_eq!(
             export(&result, selection(2, 2), CopyFormat::JsonRecords).unwrap(),
