@@ -22,6 +22,9 @@ pub struct FrameSnapshot {
     pub dtype_labels: Option<Arc<[String]>>,
     pub(crate) persistent_identity:
         Option<crate::infrastructure::source_database::PersistentSourceIdentity>,
+    /// Read once, so the UI never waits on the store lock that a long query on
+    /// a worker holds.
+    row_count: usize,
 }
 
 impl FrameSnapshot {
@@ -29,6 +32,7 @@ impl FrameSnapshot {
         let (columns, dtypes) = schema_snapshot(store.schema());
         let persistent_identity = store.persistent_identity();
         let database_view_revision = store.database_view_revision();
+        let row_count = store.row_count();
         Self {
             schema: store.schema().to_vec().into(),
             store: Arc::new(Mutex::new(store)),
@@ -38,14 +42,12 @@ impl FrameSnapshot {
             dtypes,
             dtype_labels: None,
             persistent_identity,
+            row_count,
         }
     }
 
     pub fn row_count(&self) -> usize {
-        self.store
-            .lock()
-            .map(|store| store.row_count())
-            .unwrap_or(0)
+        self.row_count
     }
 }
 
@@ -62,6 +64,8 @@ pub struct ResultSnapshot {
     pub column_indices: Arc<[usize]>,
     pub(crate) row_map: Option<Arc<ViewRowMap>>,
     page_cache: Arc<Mutex<PageCache>>,
+    /// Rows in `store`, before search and filters.
+    store_row_count: usize,
 }
 
 #[derive(Default)]
@@ -110,6 +114,7 @@ impl ResultSnapshot {
             column_indices: (0..source.columns.len()).collect::<Vec<_>>().into(),
             row_map: None,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
+            store_row_count: source.row_count(),
         }
     }
 
@@ -182,6 +187,7 @@ impl ResultSnapshot {
             column_indices: (0..source.columns.len()).collect::<Vec<_>>().into(),
             row_map,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
+            store_row_count: source.row_count(),
         }
     }
 
@@ -217,11 +223,16 @@ impl ResultSnapshot {
             column_indices: column_indices.into(),
             row_map: Some(rows.row_map),
             page_cache: Arc::new(Mutex::new(PageCache::default())),
+            store_row_count: source.row_count(),
         }
     }
 
     pub fn row_count(&self) -> usize {
         self.row_ids.len()
+    }
+
+    pub fn store_row_count(&self) -> usize {
+        self.store_row_count
     }
 
     pub fn column_count(&self) -> usize {
@@ -345,6 +356,17 @@ mod tests {
             )
             .unwrap();
         DuckDbStore::from_connection(connection).unwrap()
+    }
+
+    /// Rendering reads these counts while a worker may hold the store for a
+    /// long query.
+    #[test]
+    fn row_counts_do_not_wait_for_the_store() {
+        let frame = FrameSnapshot::new(source(), 1);
+        let result = ResultSnapshot::pending(&frame);
+        let _busy = frame.store.lock().unwrap();
+        assert_eq!(frame.row_count(), 3);
+        assert_eq!(result.store_row_count(), 3);
     }
 
     #[test]

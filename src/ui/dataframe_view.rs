@@ -1810,11 +1810,7 @@ impl DataFrameView {
             .collect::<Vec<_>>();
         self.information_busy = true;
         let sql = self.session.sql.text();
-        let stored_rows = result
-            .store
-            .lock()
-            .map(|store| store.row_count())
-            .unwrap_or_default();
+        let stored_rows = result.store_row_count();
         let scope = if self.is_table() {
             format!(
                 "Column profiles cover all {stored_rows} source rows, ignoring search, slicers, and filters."
