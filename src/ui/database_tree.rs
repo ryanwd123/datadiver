@@ -304,6 +304,8 @@ pub struct DatabaseTree {
     loading: bool,
     error: Option<String>,
     revision: u64,
+    /// A database to select once the next refresh lands.
+    reveal: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -338,6 +340,7 @@ impl DatabaseTree {
             loading: false,
             error: None,
             revision: 0,
+            reveal: None,
             _subscriptions: subscriptions,
         }
     }
@@ -368,6 +371,14 @@ impl DatabaseTree {
                         this.error = None;
                         this.data = data;
                         this.rebuild(cx);
+                        if let Some(catalog) = this.reveal.take() {
+                            let id = SharedString::from(format!("db:{catalog}"));
+                            this.tree.update(cx, |tree, cx| {
+                                if let Some(index) = tree.index_of(&id) {
+                                    tree.set_selected_index(Some(index), cx);
+                                }
+                            });
+                        }
                     }
                     Err(error) => this.error = Some(error),
                 }
@@ -375,6 +386,22 @@ impl DatabaseTree {
             });
         })
         .detach();
+    }
+
+    /// Opens the folder of an attached database and selects it after the
+    /// next refresh, which must follow.
+    pub fn reveal(&mut self, catalog: &str) {
+        self.expanded.insert("group:databases".into());
+        self.expanded.insert(format!("db:{catalog}"));
+        self.reveal = Some(catalog.to_owned());
+    }
+
+    #[cfg(all(test, feature = "snapshots"))]
+    pub(crate) fn selected_id(&self, cx: &App) -> Option<String> {
+        self.tree
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.to_string())
     }
 
     #[cfg(all(test, feature = "snapshots"))]

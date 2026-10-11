@@ -1,6 +1,26 @@
 use super::*;
 use crate::domain::documents::DocumentDefinition;
+use crate::infrastructure::source_database::database_file_kind;
 use crate::ui::database_tree::{DatabaseTree, DatabaseTreeEvent, TreeTarget};
+
+/// Says how to make an attached database writable, since a drop attaches it
+/// read-only.
+fn attach_message(attached: &[(String, PathBuf)], alias: &str, path: &std::path::Path) -> String {
+    if attached.len() > 1 {
+        let names = attached
+            .iter()
+            .map(|(alias, _)| alias.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "Attached {names} read-only. To write to one, DETACH it and ATTACH it again in SQL"
+        );
+    }
+    format!(
+        "Attached {alias} read-only. To write to it, run in SQL: DETACH {alias}; ATTACH '{}' AS {alias}",
+        path.display().to_string().replace('\'', "''")
+    )
+}
 
 impl DataFrameView {
     pub(super) fn new_database_tree(
@@ -55,6 +75,55 @@ impl DataFrameView {
         let database = self.database.clone();
         self.database_tree
             .update(cx, |tree, cx| tree.refresh(repository, database, cx));
+    }
+
+    /// Attaches dropped DuckDB and SQLite files read-only, then shows the
+    /// last one in the database tree. Writing is left to an explicit ATTACH
+    /// in SQL, so a drop can never change a database.
+    pub(super) fn attach_databases(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let database = self.database.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let results = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .into_iter()
+                        .filter_map(|path| {
+                            let kind = database_file_kind(&path)?;
+                            Some((database.attach(&path, kind), path))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update_in(cx, |view, window, cx| {
+                let mut attached = Vec::new();
+                let mut errors = Vec::new();
+                for (result, path) in results {
+                    match result {
+                        Ok(alias) => attached.push((alias, path)),
+                        Err(error) => errors.push(error),
+                    }
+                }
+                if !errors.is_empty() {
+                    view.error = Some(errors.join(
+                        "
+",
+                    ));
+                }
+                if let Some((alias, path)) = attached.last() {
+                    view.copy_status = Some(attach_message(&attached, alias, path));
+                    view.database_tree.update(cx, |tree, _| tree.reveal(alias));
+                    view.set_database_tree_open(true, window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn save_database_tree_width(&mut self, width: f32) {

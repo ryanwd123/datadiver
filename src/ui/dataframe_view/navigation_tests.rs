@@ -898,6 +898,62 @@ fn dropped_files_open_the_first_here_and_the_rest_in_new_windows(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+fn dropped_databases_attach_read_only_and_show_in_the_tree(cx: &mut TestAppContext) {
+    use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
+    let home = tempfile::tempdir().unwrap();
+    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let a = home.path().join("a.csv");
+    std::fs::write(&a, "word
+ur
+").unwrap();
+    // A DuckDB file with a `.db` extension is recognized by its header.
+    let shop = home.path().join("shop.db");
+    duckdb::Connection::open(&shop)
+        .unwrap()
+        .execute_batch("CREATE TABLE orders AS SELECT 1 AS id")
+        .unwrap();
+    let (handle, entity) = viewer(cx, repository);
+    open(cx, handle, &entity, FileEntry::Source(a.clone()));
+    let windows = cx.update(|cx| cx.windows().len());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let position = point(px(400.), px(300.));
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Entered {
+                position,
+                paths: ExternalPaths([shop.clone()].into_iter().collect()),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(cx.windows().len(), windows);
+        assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
+        let status = view.copy_status.as_deref().unwrap();
+        assert!(status.starts_with("Attached shop read-only."), "{status}");
+        assert!(status.contains("DETACH shop; ATTACH '"), "{status}");
+        assert!(view.database_tree_open);
+        let tree = view.database_tree.read(cx);
+        assert_eq!(tree.selected_id(cx).as_deref(), Some("db:shop"));
+        assert!(tree.relation_labels().contains(&"shop.main.orders".to_string()));
+        let written = view
+            .database
+            .connect()
+            .unwrap()
+            .execute_batch("INSERT INTO shop.orders VALUES (2)");
+        assert!(written.is_err());
+    });
+}
+
+#[gpui_kit::test]
 fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &mut TestAppContext) {
     use crate::domain::documents::RelationKind;
     let home = tempfile::tempdir().unwrap();

@@ -4774,6 +4774,12 @@ impl DataFrameView {
     /// Opens dropped or pasted files: the first in this window, and each
     /// other one in a window of its own.
     fn open_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let (databases, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| {
+            crate::infrastructure::source_database::database_file_kind(path).is_some()
+        });
+        if !databases.is_empty() {
+            self.attach_databases(databases, window, cx);
+        }
         let mut paths = paths.into_iter();
         let Some(first) = paths.next() else {
             return;

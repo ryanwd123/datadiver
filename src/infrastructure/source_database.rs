@@ -533,6 +533,122 @@ impl SourceDatabase {
         }
         Ok(())
     }
+
+    /// Attaches a DuckDB or SQLite file read-only and returns its catalog
+    /// name. A file that is already attached keeps the name it has.
+    pub fn attach(&self, path: &Path, kind: DatabaseFileKind) -> Result<String, String> {
+        let path = absolute_source_path(path);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "database writer lock poisoned")?;
+        self.ensure_initialized(&mut state)?;
+        let connection = &state.as_ref().unwrap().connection;
+        let attached = attached_databases(connection)?;
+        let key = path_key(&path);
+        if let Some((name, _)) = attached.iter().find(|(_, attached_path)| {
+            attached_path
+                .as_deref()
+                .is_some_and(|other| path_key(&absolute_source_path(Path::new(other))) == key)
+        }) {
+            return Ok(name.clone());
+        }
+        let alias = attach_alias(&path, attached.iter().map(|(name, _)| name.as_str()));
+        let options = match kind {
+            DatabaseFileKind::DuckDb => "READ_ONLY",
+            DatabaseFileKind::Sqlite => "TYPE sqlite, READ_ONLY",
+        };
+        connection
+            .execute_batch(&format!(
+                "ATTACH {} AS {} ({options})",
+                sql_string(&path.to_string_lossy()),
+                quote_identifier(&alias)
+            ))
+            .map_err(|error| format!("Cannot attach {}: {error}", path.display()))?;
+        drop(state);
+        self.invalidate();
+        Ok(alias)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatabaseFileKind {
+    DuckDb,
+    Sqlite,
+}
+
+/// Recognizes a database file by its header, so a `.db` file works whichever
+/// engine wrote it. The extension decides only when the header can't, such as
+/// for an empty file.
+pub fn database_file_kind(path: &Path) -> Option<DatabaseFileKind> {
+    use std::io::Read;
+    let mut header = Vec::with_capacity(16);
+    if let Ok(file) = fs::File::open(path) {
+        let _ = file.take(16).read_to_end(&mut header);
+    }
+    if header.starts_with(b"SQLite format 3\0") {
+        return Some(DatabaseFileKind::Sqlite);
+    }
+    if header.get(8..12) == Some(b"DUCK".as_slice()) {
+        return Some(DatabaseFileKind::DuckDb);
+    }
+    if !path.is_file() {
+        return None;
+    }
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "duckdb" | "ddb" => Some(DatabaseFileKind::DuckDb),
+        "sqlite" | "sqlite3" | "db3" => Some(DatabaseFileKind::Sqlite),
+        _ => None,
+    }
+}
+
+/// Names and paths of the attached databases; in-memory ones have no path.
+fn attached_databases(connection: &Connection) -> Result<Vec<(String, Option<String>)>, String> {
+    let mut statement = connection
+        .prepare("SELECT database_name, path FROM duckdb_databases()")
+        .map_err(|error| error.to_string())?;
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+/// The file's stem as a plain identifier, so it can be typed in SQL without
+/// quotes, made unique among the attached names (which ignore case).
+fn attach_alias<'a>(path: &Path, taken: impl Iterator<Item = &'a str>) -> String {
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy())
+        .unwrap_or_default();
+    let mut base: String = stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !base.starts_with(|character: char| character.is_ascii_lowercase()) {
+        base.insert_str(0, "db_");
+    }
+    let taken = taken.map(str::to_lowercase).collect::<Vec<_>>();
+    std::iter::once(base.clone())
+        .chain((2..).map(|number| format!("{base}_{number}")))
+        .find(|name| !taken.contains(name))
+        .unwrap()
+}
+
+fn sql_string(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
 }
 
 fn run_startup_script(connection: &Connection, path: &Path) -> Result<(), String> {
@@ -1639,5 +1755,104 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         )
         .unwrap();
         assert_eq!(result.row_count(), 2);
+    }
+
+    #[test]
+    fn dropped_databases_are_recognized_by_header_then_extension() {
+        let home = tempfile::tempdir().unwrap();
+        let duck = home.path().join("data.db");
+        drop(Connection::open(&duck).unwrap());
+        let lite = home.path().join("other.db");
+        let mut header = b"SQLite format 3\0".to_vec();
+        header.resize(100, 0);
+        fs::write(&lite, header).unwrap();
+        let empty = home.path().join("empty.sqlite");
+        fs::write(&empty, "").unwrap();
+        let csv = home.path().join("plain.db");
+        fs::write(&csv, "a,b\n1,2\n").unwrap();
+        assert_eq!(database_file_kind(&duck), Some(DatabaseFileKind::DuckDb));
+        assert_eq!(database_file_kind(&lite), Some(DatabaseFileKind::Sqlite));
+        assert_eq!(database_file_kind(&empty), Some(DatabaseFileKind::Sqlite));
+        assert_eq!(database_file_kind(&csv), None);
+        assert_eq!(database_file_kind(home.path()), None);
+    }
+
+    #[test]
+    fn attach_aliases_are_plain_unique_identifiers() {
+        let taken = ["memory", "Sales"];
+        let alias = |name: &str| attach_alias(Path::new(name), taken.iter().copied());
+        assert_eq!(alias("C:/x/My Shop.duckdb"), "my_shop");
+        assert_eq!(alias("sales.duckdb"), "sales_2");
+        assert_eq!(alias("2024.db"), "db_2024");
+        assert_eq!(alias("memory.db"), "memory_2");
+    }
+
+    #[test]
+    fn attach_opens_a_dropped_duckdb_file_read_only_once() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("it's shop.duckdb");
+        let shop = Connection::open(&path).unwrap();
+        shop.execute_batch("CREATE TABLE orders AS SELECT * FROM range(3) t(id)")
+            .unwrap();
+        drop(shop);
+        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        let revision = database.revision();
+        let alias = database.attach(&path, DatabaseFileKind::DuckDb).unwrap();
+        assert_eq!(alias, "it_s_shop");
+        assert!(database.revision() > revision);
+        let connection = database.connect().unwrap();
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM it_s_shop.orders", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 3);
+        let write = connection.execute_batch("INSERT INTO it_s_shop.orders VALUES (9)");
+        assert!(write.unwrap_err().to_string().contains("read-only"));
+        assert!(database.relations().unwrap().iter().any(|relation| {
+            relation.catalog.as_deref() == Some("it_s_shop") && relation.name == "orders"
+        }));
+        // The same file under another spelling is the same database.
+        let spelling = if cfg!(windows) {
+            "IT'S SHOP.duckdb"
+        } else {
+            "it's shop.duckdb"
+        };
+        let again = home.path().join(".").join(spelling);
+        assert_eq!(
+            database.attach(&again, DatabaseFileKind::DuckDb).unwrap(),
+            "it_s_shop"
+        );
+    }
+
+    /// Needs the network the first time, when DuckDB installs `sqlite`.
+    #[test]
+    #[ignore]
+    fn attach_opens_a_dropped_sqlite_file_read_only() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("notes.sqlite");
+        let writer = Connection::open_in_memory().unwrap();
+        writer
+            .execute_batch(&format!(
+                "ATTACH {} AS notes (TYPE sqlite); CREATE TABLE notes.items AS SELECT 'a' AS note; DETACH notes",
+                sql_string(&path.to_string_lossy())
+            ))
+            .unwrap();
+        drop(writer);
+        assert_eq!(database_file_kind(&path), Some(DatabaseFileKind::Sqlite));
+        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        let alias = database.attach(&path, DatabaseFileKind::Sqlite).unwrap();
+        let connection = database.connect().unwrap();
+        let note: String = connection
+            .query_row(&format!("SELECT note FROM {alias}.items"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(note, "a");
+        assert!(
+            connection
+                .execute_batch(&format!("INSERT INTO {alias}.items VALUES ('b')"))
+                .is_err()
+        );
     }
 }

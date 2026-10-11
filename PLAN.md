@@ -50,26 +50,6 @@ has their write-ups.
   - **Language hooks (unused so far):** completion (popup and inline ghost text), hover, go to
     definition, code actions, diagnostics.
 
-## Tier 3: sources
-
-- [ ] **19. Drop a DuckDB or SQLite database to attach it read-only.** Today a dropped `.duckdb` or
-  `.sqlite` file fails in `source_reader` with "unsupported source type".
-  - **Detect:** by the file header, so `.db` files work either way. SQLite files start with
-    `SQLite format 3\0`, and DuckDB files have `DUCK` at offset 8. The extension (`.duckdb`, `.ddb`,
-    `.sqlite`, `.sqlite3`, `.db`) is the fallback.
-  - **Attach:** `ATTACH '<path>' AS <alias> (READ_ONLY)`, adding `TYPE sqlite` for SQLite.
-    - The alias is the file stem made into a valid identifier, with a number added if the name is
-      already taken.
-    - If the file is already attached, reuse it instead of attaching it again.
-    - Check whether our DuckDB build bundles the `sqlite` extension or needs `INSTALL sqlite` first.
-  - **After attaching:** open the database tree on the new database so a table can be picked. Its
-    tables show up in SQL completion right away (qualified with the database name).
-  - **Mixed drops:** databases attach and other files open as they do now.
-  - **Read-write:** not offered in the UI. Users run `DETACH x; ATTACH '<path>' AS x;` in the SQL
-    editor. Mention this in the attach message or the help.
-  - **Open question:** whether a dropped database is attached again on the next start (through the
-    startup SQL) or only lasts for the session.
-
 ## Tier 4: bigger features
 
 - [ ] **13. Conditional formatting (beyond the heat map).** Today `QueryConfig.heatmap: bool` gives

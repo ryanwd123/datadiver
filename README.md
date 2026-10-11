@@ -32,7 +32,7 @@ DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, 
 
 ## Features
 
-- **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, drop files on the window, or attach a DuckDB database.
+- **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, drop files on the window, or attach a DuckDB or SQLite database.
 - **Browse the database:** a sidebar tree of saved views, imported files, database tables and views, attached databases, and source folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any DuckDB aggregate. Add grand totals and a heat map.
@@ -152,7 +152,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 - **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too.
 - **Folders:** **Add folder** in the command palette watches a folder, and its supported files appear under **Ctrl+P** and in the database tree.
 - **Clipboard:** **Ctrl+V** in the grid saves pasted text, such as cells copied from Excel or a web page, as a TSV or CSV file and opens it like any other source. Files copied in Explorer open directly.
-- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows.
+- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
 - **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, imported files, tables and views in the profile database and any attached databases, watched source folders, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
 - **Favorites:** **Ctrl+Shift+1–9** assigns the current file or view to a slot, and **Ctrl+1–9** opens it.
 
