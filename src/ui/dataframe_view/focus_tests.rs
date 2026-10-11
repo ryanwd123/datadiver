@@ -1230,6 +1230,47 @@ fn slicer_availability_ignores_search_and_picker_excludes_existing_cards(cx: &mu
 }
 
 #[gpui_kit::test]
+fn slicer_picker_offers_cards_without_values_before_discovery_finishes(cx: &mut TestAppContext) {
+    use crate::ui::slicer_sidebar::SlicerKind;
+    let (handle, view) = viewer(cx);
+    let kinds = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let picker = view.read(cx).slicer_picker.clone().unwrap();
+            let picker = picker.read(cx);
+            let kinds = picker
+                .choices()
+                .iter()
+                .map(|choice| choice.kind)
+                .collect::<Vec<_>>();
+            (picker.loading, kinds)
+        })
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| view.open_slicer_picker(window, cx));
+    })
+    .unwrap();
+    // Discovery has not run yet, but SQL and condition cards are listed.
+    let (loading, before) = kinds(cx);
+    assert!(loading);
+    assert_eq!(before[0], SlicerKind::Sql);
+    assert!(before.len() > 1);
+    assert!(before[1..].iter().all(|kind| *kind == SlicerKind::Condition));
+    finish_slicer_work(cx);
+    let (loading, after) = kinds(cx);
+    assert!(!loading);
+    assert!(after.contains(&SlicerKind::Values));
+    // Closing the picker stops discovering every column.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+        assert!(!window.has_active_dialog(cx));
+        let view = view.read(cx);
+        assert!(view.slicer_picker.is_none());
+        assert!(view.slicer_discovery.is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn slicer_reload_errors_keep_last_result_and_missing_selected_values_remain_removable(
     cx: &mut TestAppContext,
 ) {

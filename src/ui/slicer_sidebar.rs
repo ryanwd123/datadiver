@@ -780,20 +780,28 @@ impl SlicerPicker {
         }
     }
 
+    #[cfg(test)]
+    pub fn choices(&self) -> &[SlicerChoice] {
+        &self.columns
+    }
+
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.command
             .update(cx, |command, cx| command.focus(window, cx));
     }
 
+    /// `loading` while value discovery runs; `columns` may already list the
+    /// choices that need no values.
     pub fn set_columns(
         &mut self,
         columns: Vec<SlicerChoice>,
+        loading: bool,
         error: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.columns = columns;
         self.error = error;
-        self.loading = false;
+        self.loading = loading;
         cx.notify();
     }
 }
@@ -821,7 +829,7 @@ impl Render for SlicerPicker {
             )
             .children(
                 self.loading
-                    .then(|| div().p_2().child("Discovering slicer columns…")),
+                    .then(|| div().p_2().child("Finding columns with few enough values…")),
             )
             .children(
                 self.error

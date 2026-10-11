@@ -418,6 +418,11 @@ impl DuckDbStore {
         &self.table_sql
     }
 
+    /// Stops the query running on this store's connection, if any.
+    pub(crate) fn interrupt_handle(&self) -> Arc<duckdb::InterruptHandle> {
+        self.connection.interrupt_handle()
+    }
+
     pub(crate) fn from_database_view(
         connection: Connection,
         database: Arc<super::source_database::SourceDatabase>,

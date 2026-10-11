@@ -2,11 +2,60 @@ use crate::domain::documents::{SlicerDefinition, ValueFilter};
 use crate::domain::frame::FrameSnapshot;
 use crate::domain::slicers::{self, SlicerCard, SlicerValue};
 use crate::infrastructure::duckdb_store::{ColumnFilter, DuckDbStore};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 pub struct SlicerCatalog {
     pub columns: Vec<(String, String, Vec<SlicerValue>)>,
+    /// The columns discovery examined, or `None` for every column. Value cards
+    /// need only their own columns; listing new value cards needs them all.
+    pub examined: Option<Vec<String>>,
+}
+
+/// A request to discover every column's values for the Add Slicer picker.
+/// Discovery scans the whole source, so closing the picker or choosing a card
+/// that needs no values cancels it, interrupting the query that is running.
+#[derive(Default)]
+pub struct SlicerDiscovery {
+    cancelled: AtomicBool,
+    running: Mutex<Option<Arc<duckdb::InterruptHandle>>>,
+}
+
+impl SlicerDiscovery {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        // Holding the lock keeps discovery from finishing between the check and
+        // the interrupt, which would stop an unrelated query.
+        if let Ok(running) = self.running.lock()
+            && let Some(handle) = running.as_ref()
+        {
+            handle.interrupt();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn run<T>(
+        &self,
+        store: &DuckDbStore,
+        discover: impl FnOnce() -> Result<T, String>,
+    ) -> Option<Result<T, String>> {
+        {
+            let mut running = self.running.lock().ok()?;
+            if self.is_cancelled() {
+                return None;
+            }
+            *running = Some(store.interrupt_handle());
+        }
+        let result = discover();
+        if let Ok(mut running) = self.running.lock() {
+            *running = None;
+        }
+        (!self.is_cancelled()).then_some(result)
+    }
 }
 
 #[derive(Clone)]
@@ -25,14 +74,33 @@ impl SlicerStage {
             && Arc::ptr_eq(&self.source.store, &source.store)
     }
 
+    /// Discovers every column while `discovery` asks for it and is not
+    /// cancelled; otherwise only the value cards' columns, which condition and
+    /// SQL cards do not need.
     pub fn prepare(
         source: &FrameSnapshot,
         definitions: &[SlicerDefinition],
         value_filters: &[ValueFilter],
         cached: Option<&Self>,
+        discovery: Option<&SlicerDiscovery>,
     ) -> Result<Self, String> {
+        let discover_all = discovery.is_some_and(|discovery| !discovery.is_cancelled());
+        let value_columns = definitions
+            .iter()
+            .filter(|definition| !definition.sql && definition.condition.is_none())
+            .map(|definition| definition.column.clone())
+            .collect::<Vec<_>>();
         let cached = cached.filter(|cached| cached.matches_source(source));
+        let cached_catalog = cached
+            .map(|cached| &cached.catalog)
+            .filter(|catalog| match &catalog.examined {
+                None => true,
+                Some(examined) => {
+                    !discover_all && value_columns.iter().all(|column| examined.contains(column))
+                }
+            });
         if let Some(cached) = cached
+            && cached_catalog.is_some()
             && cached.definitions == definitions
             && cached.value_filters == value_filters
         {
@@ -42,9 +110,18 @@ impl SlicerStage {
             .store
             .lock()
             .map_err(|_| "DuckDB store lock poisoned")?;
-        let catalog = match cached {
-            Some(cached) => cached.catalog.clone(),
-            None => Arc::new(SlicerCatalog::discover(&store)?),
+        let all = match discovery.filter(|_| discover_all && cached_catalog.is_none()) {
+            Some(discovery) => discovery
+                .run(&store, || {
+                    SlicerCatalog::discover(&store, None, &|| discovery.is_cancelled())
+                })
+                .transpose()?,
+            None => None,
+        };
+        let catalog = match (all, cached_catalog) {
+            (Some(all), _) => Arc::new(all),
+            (None, Some(cached)) => cached.clone(),
+            (None, None) => Arc::new(SlicerCatalog::discover(&store, Some(&value_columns), &|| false)?),
         };
         let cards = catalog.cards(&store, definitions, value_filters);
         Ok(Self {
@@ -97,12 +174,25 @@ fn usable(definitions: &[SlicerDefinition], cards: &[SlicerCard]) -> Vec<SlicerD
 }
 
 impl SlicerCatalog {
-    pub fn discover(store: &DuckDbStore) -> Result<Self, String> {
+    /// Values for the columns with few enough of them, among `only` or every
+    /// column. `stopped` is checked between queries.
+    pub fn discover(
+        store: &DuckDbStore,
+        only: Option<&[String]>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Self, String> {
         let candidates = store
             .schema()
             .iter()
             .filter(|column| slicers::supported(&column.duckdb_type))
+            .filter(|column| only.is_none_or(|only| only.contains(&column.name)))
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(Self {
+                columns: Vec::new(),
+                examined: only.map(<[String]>::to_vec),
+            });
+        }
         let names = candidates
             .iter()
             .map(|column| column.name.clone())
@@ -116,12 +206,18 @@ impl SlicerCatalog {
             if estimate > slicers::MAX_UNIQUE_VALUES * 4 {
                 continue;
             }
+            if stopped() {
+                return Err("slicer discovery was cancelled".into());
+            }
             let values = store.slicer_values(&column.name, &[], &[])?;
             if values.len() <= slicers::MAX_UNIQUE_VALUES {
                 columns.push((column.name.clone(), column.duckdb_type.clone(), values));
             }
         }
-        Ok(Self { columns })
+        Ok(Self {
+            columns,
+            examined: only.map(<[String]>::to_vec),
+        })
     }
 
     /// Cards for `definitions`. A value is available when some source row has it
@@ -267,6 +363,17 @@ mod tests {
     use crate::infrastructure::duckdb_store::ViewQuery;
     use duckdb::types::Value;
 
+    /// Prepares as the open Add Slicer picker does, discovering every column.
+    fn prepare(
+        source: &FrameSnapshot,
+        definitions: &[SlicerDefinition],
+        value_filters: &[ValueFilter],
+        cached: Option<&SlicerStage>,
+    ) -> Result<SlicerStage, String> {
+        let discovery = SlicerDiscovery::default();
+        SlicerStage::prepare(source, definitions, value_filters, cached, Some(&discovery))
+    }
+
     fn sql_frame(sql: &str) -> FrameSnapshot {
         let connection = duckdb::Connection::open_in_memory().unwrap();
         connection
@@ -326,7 +433,7 @@ mod tests {
                  ELSE range % {count} END AS scalar, [range] AS nested FROM range({})",
                 count * 2
             ));
-            let catalog = SlicerCatalog::discover(&source.store.lock().unwrap()).unwrap();
+            let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, &|| false).unwrap();
             if count <= 1_000 {
                 assert_eq!(catalog.columns.len(), 1);
                 assert_eq!(catalog.columns[0].2.len(), count);
@@ -336,7 +443,7 @@ mod tests {
             }
         }
         let source = sql_frame("SELECT range AS id, range % 3 AS small FROM range(100000)");
-        let catalog = SlicerCatalog::discover(&source.store.lock().unwrap()).unwrap();
+        let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, &|| false).unwrap();
         assert_eq!(
             catalog
                 .columns
@@ -367,7 +474,7 @@ mod tests {
             column: "n".into(),
             selected: vec![ScalarKey::Signed("999".into())],
         }];
-        let stage = SlicerStage::prepare(&source, &definitions, &[], None).unwrap();
+        let stage = prepare(&source, &definitions, &[], None).unwrap();
         stage.validate().unwrap();
         assert_eq!(stage.cards[0].values.len(), 1_000);
         assert_eq!(
@@ -394,7 +501,7 @@ mod tests {
     fn slicer_null_empty_and_literal_labels_have_separate_identity_and_filters() {
         let source =
             sql_frame("SELECT * FROM (VALUES (NULL), (''), ('(Blank)'), ('(Empty)')) t(name)");
-        let stage = SlicerStage::prepare(&source, &[], &[], None).unwrap();
+        let stage = prepare(&source, &[], &[], None).unwrap();
         let values = &stage.catalog.columns[0].2;
         assert_eq!(values.len(), 4);
         assert_eq!(
@@ -437,7 +544,7 @@ mod tests {
     fn slicer_or_and_availability_excludes_own_selection_and_search_reuses_stage() {
         let source = source();
         let definitions = [card("region", &["East", "West"]), card("color", &["Blue"])];
-        let stage = SlicerStage::prepare(&source, &definitions, &[], None).unwrap();
+        let stage = prepare(&source, &definitions, &[], None).unwrap();
         stage.validate().unwrap();
         let rows = source
             .store
@@ -471,10 +578,10 @@ mod tests {
         );
         assert!(regions.selectable(1)); // Selected unavailable values remain removable.
         assert!(stage.cards[1].values.iter().all(|value| value.available));
-        let cached = SlicerStage::prepare(&source, &definitions, &[], Some(&stage)).unwrap();
+        let cached = prepare(&source, &definitions, &[], Some(&stage)).unwrap();
         assert!(Arc::ptr_eq(&cached.catalog, &stage.catalog));
         assert_eq!(cached.cards, stage.cards);
-        let changed = SlicerStage::prepare(
+        let changed = prepare(
             &source,
             &[card("region", &["West"]), card("color", &[])],
             &[],
@@ -504,7 +611,7 @@ mod tests {
         // Sales 20..30 keeps East/Blue and West/Red, so Red stays available
         // through West and Blue through East.
         let definitions = [card("region", &["East"]), condition("20..30")];
-        let stage = SlicerStage::prepare(&source, &definitions, &[], None).unwrap();
+        let stage = prepare(&source, &definitions, &[], None).unwrap();
         stage.validate().unwrap();
         let sales = &stage.cards[1];
         assert_eq!(sales.condition.as_deref(), Some("20..30"));
@@ -525,7 +632,7 @@ mod tests {
         assert_eq!(rows, [1]);
         // >25 leaves only West, so East greys out.
         let narrowed =
-            SlicerStage::prepare(&source, &[card("region", &[]), condition(">25")], &[], None)
+            prepare(&source, &[card("region", &[]), condition(">25")], &[], None)
                 .unwrap();
         let east = narrowed.cards[0]
             .values
@@ -536,7 +643,7 @@ mod tests {
 
         // A broken condition reports on its card and stops filtering, so the
         // value card beside it stays fully available.
-        let broken = SlicerStage::prepare(
+        let broken = prepare(
             &source,
             &[card("region", &[]), condition(">=abc")],
             &[],
@@ -557,7 +664,7 @@ mod tests {
             ..SlicerDefinition::sql_filter()
         };
         // Sales over 25 leaves only the West row, so East greys out.
-        let stage = SlicerStage::prepare(
+        let stage = prepare(
             &source,
             &[card("region", &[]), sql("sales > 25")],
             &[],
@@ -590,7 +697,7 @@ mod tests {
         assert_eq!(rows, [2]);
 
         let broken =
-            SlicerStage::prepare(&source, &[card("region", &[]), sql("nope > 1")], &[], None)
+            prepare(&source, &[card("region", &[]), sql("nope > 1")], &[], None)
                 .unwrap();
         assert!(broken.cards[1].error.as_deref().unwrap().contains("nope"));
         assert!(available(&broken, "East"));
@@ -602,7 +709,7 @@ mod tests {
     fn value_filters_narrow_availability_and_refresh_the_cached_stage() {
         let source = source();
         let definitions = [card("color", &[])];
-        let stage = SlicerStage::prepare(&source, &definitions, &[], None).unwrap();
+        let stage = prepare(&source, &definitions, &[], None).unwrap();
         assert!(stage.cards[0].values.iter().all(|value| value.available));
         // Excluding East leaves only the West row, which is Red.
         let exclude_east = [ValueFilter {
@@ -611,7 +718,7 @@ mod tests {
             exclude: true,
         }];
         let filtered =
-            SlicerStage::prepare(&source, &definitions, &exclude_east, Some(&stage)).unwrap();
+            prepare(&source, &definitions, &exclude_east, Some(&stage)).unwrap();
         assert!(Arc::ptr_eq(&filtered.catalog, &stage.catalog));
         let available = |stage: &SlicerStage, label: &str| {
             stage.cards[0]
@@ -623,7 +730,7 @@ mod tests {
         };
         assert!(available(&filtered, "Red"));
         assert!(!available(&filtered, "Blue"));
-        let cleared = SlicerStage::prepare(&source, &definitions, &[], Some(&filtered)).unwrap();
+        let cleared = prepare(&source, &definitions, &[], Some(&filtered)).unwrap();
         assert!(available(&cleared, "Blue"));
     }
 
@@ -631,9 +738,9 @@ mod tests {
     fn slicer_reload_retains_disappeared_values_and_rejects_invalid_columns_even_unfiltered() {
         let original = source();
         let definitions = [card("region", &["East"])];
-        let stage = SlicerStage::prepare(&original, &definitions, &[], None).unwrap();
+        let stage = prepare(&original, &definitions, &[], None).unwrap();
         let refreshed = sql_frame("SELECT 'West' AS region");
-        let refreshed = SlicerStage::prepare(&refreshed, &definitions, &[], Some(&stage)).unwrap();
+        let refreshed = prepare(&refreshed, &definitions, &[], Some(&stage)).unwrap();
         refreshed.validate().unwrap();
         assert!(!Arc::ptr_eq(&refreshed.catalog, &stage.catalog));
         let missing = refreshed.cards[0]
@@ -651,12 +758,12 @@ mod tests {
             sql_frame("SELECT range AS region FROM range(1001)"),
             sql_frame("SELECT [1] AS region"),
         ] {
-            let stage = SlicerStage::prepare(&source, &[card("region", &[])], &[], None).unwrap();
+            let stage = prepare(&source, &[card("region", &[])], &[], None).unwrap();
             assert!(stage.validate().is_err());
         }
         let incompatible = sql_frame("SELECT 1 AS region");
         assert!(
-            SlicerStage::prepare(&incompatible, &definitions, &[], None)
+            prepare(&incompatible, &definitions, &[], None)
                 .unwrap()
                 .validate()
                 .is_err()
@@ -716,7 +823,7 @@ mod tests {
             "SELECT * FROM (VALUES ('NaN'::DOUBLE), ('Infinity'::DOUBLE), (1.25::DOUBLE)) t(v)",
         ] {
             let source = sql_frame(sql);
-            let stage = SlicerStage::prepare(&source, &[], &[], None).unwrap();
+            let stage = prepare(&source, &[], &[], None).unwrap();
             assert_eq!(stage.catalog.columns.len(), 1, "{sql}");
             for value in &stage.catalog.columns[0].2 {
                 assert_eq!(
@@ -730,7 +837,7 @@ mod tests {
                     column: "v".into(),
                     selected: vec![value.key.clone()],
                 };
-                SlicerStage::prepare(
+                prepare(
                     &source,
                     std::slice::from_ref(&definition),
                     &[],
@@ -759,7 +866,7 @@ mod tests {
     #[test]
     fn slicer_decimal_reload_does_not_round_a_saved_selection_into_another_value() {
         let source = sql_frame("SELECT '0.123456789012345678901234567890'::DECIMAL(38,30) AS v");
-        let original = SlicerStage::prepare(&source, &[], &[], None).unwrap();
+        let original = prepare(&source, &[], &[], None).unwrap();
         let definitions = [SlicerDefinition {
             sql: false,
             condition: None,
@@ -767,7 +874,7 @@ mod tests {
             selected: vec![original.catalog.columns[0].2[0].key.clone()],
         }];
         let refreshed = sql_frame("SELECT '0.123456789012345679'::DECIMAL(38,18) AS v");
-        let stage = SlicerStage::prepare(&refreshed, &definitions, &[], Some(&original)).unwrap();
+        let stage = prepare(&refreshed, &definitions, &[], Some(&original)).unwrap();
         assert!(!stage.cards[0].values.last().unwrap().available);
         let rows = refreshed
             .store
@@ -782,5 +889,71 @@ mod tests {
             })
             .unwrap();
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn discovery_covers_only_value_cards_unless_the_picker_asks() {
+        let source = source();
+        let condition = SlicerDefinition {
+            sql: false,
+            column: "sales".into(),
+            selected: Vec::new(),
+            condition: Some(">15".into()),
+        };
+        let lazy = |definitions: &[SlicerDefinition], cached: Option<&SlicerStage>| {
+            SlicerStage::prepare(&source, definitions, &[], cached, None).unwrap()
+        };
+        // Condition and SQL cards discover nothing.
+        let stage = lazy(&[condition.clone(), SlicerDefinition::sql_filter()], None);
+        assert_eq!(stage.catalog.examined.as_deref(), Some(&[][..]));
+        assert!(stage.catalog.columns.is_empty());
+        assert!(stage.validate().is_ok());
+        // A value card discovers its own column alone.
+        let definitions = [condition, card("region", &[])];
+        let stage = lazy(&definitions, None);
+        assert_eq!(stage.catalog.examined.as_deref(), Some(&["region".to_owned()][..]));
+        assert_eq!(stage.cards[1].values.len(), 2);
+        assert!(Arc::ptr_eq(&lazy(&definitions, Some(&stage)).catalog, &stage.catalog));
+        // The picker replaces a partial catalog with every column.
+        let full = prepare(&source, &definitions, &[], Some(&stage)).unwrap();
+        assert!(full.catalog.examined.is_none());
+        assert_eq!(full.catalog.columns.len(), 3);
+        assert!(Arc::ptr_eq(&lazy(&definitions, Some(&full)).catalog, &full.catalog));
+        // A cancelled request falls back to the value cards' columns.
+        let cancelled = SlicerDiscovery::default();
+        cancelled.cancel();
+        let stage =
+            SlicerStage::prepare(&source, &definitions, &[], None, Some(&cancelled)).unwrap();
+        assert_eq!(stage.catalog.examined.as_deref(), Some(&["region".to_owned()][..]));
+    }
+
+    #[test]
+    fn cancelling_discovery_interrupts_the_running_query() {
+        let source = sql_frame("SELECT 1 AS n");
+        let store = source.store.lock().unwrap();
+        let discovery = Arc::new(SlicerDiscovery::default());
+        let canceller = {
+            let discovery = discovery.clone();
+            std::thread::spawn(move || {
+                while discovery.running.lock().unwrap().is_none() {
+                    std::thread::yield_now();
+                }
+                // An interrupt before the query starts is dropped, so let it start.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                discovery.cancel();
+            })
+        };
+        // A filter whose subquery would scan for hours.
+        let slow = ColumnFilter {
+            sql: true,
+            condition: Some("(SELECT count(*) FROM range(1000000000000)) > 0".into()),
+            column: String::new(),
+            values: Vec::new(),
+        };
+        let result = discovery.run(&store, || store.slicer_values("n", &[slow], &[]));
+        canceller.join().unwrap();
+        assert!(result.is_none());
+        // The connection works afterwards.
+        assert_eq!(store.slicer_values("n", &[], &[]).unwrap().len(), 1);
     }
 }

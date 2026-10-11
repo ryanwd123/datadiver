@@ -26,7 +26,7 @@ use crate::application::keymap::{
 use crate::application::navigation_history::{NavigationEntry, NavigationHistory};
 use crate::application::pivot_editor::{self, AggregationEdit, PivotFieldKind};
 use crate::application::session::{JobToken, SessionIdentity, WindowSession};
-use crate::application::slicers::SlicerStage;
+use crate::application::slicers::{SlicerDiscovery, SlicerStage};
 use crate::application::state::ApplicationState;
 use crate::application::table_preferences::TablePreferencesWriter;
 use crate::application::theme::ThemeSettings;
@@ -162,7 +162,8 @@ pub struct DataFrameView {
     /// The cell detail pane while it is open, with its subscription.
     cell_detail: Option<(Entity<CellDetailPane>, Subscription)>,
     slicer_picker: Option<Entity<SlicerPicker>>,
-    discover_slicers: bool,
+    /// Every column's values, wanted while the Add Slicer picker is open.
+    slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
     file_groups: [Vec<FileEntry>; 5],
     file_loading: bool,
     file_revision: u64,
@@ -517,7 +518,7 @@ struct PipelineRequest {
     sort: Vec<SortKey>,
     definition: Option<DocumentDefinition>,
     query_cache: Option<(FrameSnapshot, SqlTrace)>,
-    discover_slicers: bool,
+    slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
     queued_at: Instant,
     reuse_table: Option<(ViewQuery, ResultSnapshot)>,
     table_trace: SqlTrace,
@@ -1217,7 +1218,7 @@ impl DataFrameView {
             slicer_stage: None,
             slicer_sidebar,
             slicer_picker: None,
-            discover_slicers: false,
+            slicer_discovery: None,
             file_groups: std::array::from_fn(|_| Vec::new()),
             file_loading: false,
             file_revision: 0,
@@ -2292,7 +2293,7 @@ impl DataFrameView {
             sort: self.session.sort.clone(),
             definition: candidate_session.computation_definition(),
             query_cache: None,
-            discover_slicers: self.discover_slicers,
+            slicer_discovery: self.slicer_discovery.clone(),
             queued_at: Instant::now(),
             reuse_table: None,
             table_trace: SqlTrace::default(),
@@ -5235,17 +5236,18 @@ impl DataFrameView {
         self.schedule_search(self.session.search_text.clone(), cx);
     }
 
-    fn update_slicer_picker(&self, cx: &mut Context<Self>) {
+    /// Lists the SQL card and condition cards at once, since they need only the
+    /// schema; value cards follow once discovery finds few enough values.
+    fn update_slicer_picker(&self, error: Option<String>, cx: &mut Context<Self>) {
         let Some(picker) = &self.slicer_picker else {
             return;
         };
-        let Some(stage) = self
+        let stage = self
             .slicer_stage
             .as_ref()
-            .filter(|stage| stage.matches_source(&self.session.source))
-        else {
-            return;
-        };
+            .filter(|stage| stage.matches_source(&self.session.source));
+        // Only a catalog of every column lists all the value cards.
+        let discovered = stage.filter(|stage| stage.catalog.examined.is_none());
         let definitions = self
             .session
             .working
@@ -5266,10 +5268,9 @@ impl DataFrameView {
         let columns = sql
             .into_iter()
             .chain(
-                stage
-                    .catalog
-                    .columns
+                discovered
                     .iter()
+                    .flat_map(|stage| stage.catalog.columns.iter())
                     .map(|(column, _, _)| column)
                     .filter(|column| free(column))
                     .map(|column| SlicerChoice {
@@ -5279,7 +5280,7 @@ impl DataFrameView {
             )
             .chain(
                 stage
-                    .source
+                    .map_or(&self.session.source, |stage| &stage.source)
                     .schema
                     .iter()
                     .filter(|column| free(&column.name))
@@ -5289,7 +5290,17 @@ impl DataFrameView {
                     }),
             )
             .collect();
-        picker.update(cx, |picker, cx| picker.set_columns(columns, None, cx));
+        let loading = discovered.is_none() && error.is_none();
+        picker.update(cx, |picker, cx| picker.set_columns(columns, loading, error, cx));
+    }
+
+    /// Stops discovering every column's values; value cards still discover
+    /// their own columns.
+    fn close_slicer_picker(&mut self) {
+        self.slicer_picker = None;
+        if let Some(discovery) = self.slicer_discovery.take() {
+            discovery.cancel();
+        }
     }
 
     fn open_slicer_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5301,19 +5312,25 @@ impl DataFrameView {
                     SlicerKind::Condition => view.add_condition_slicer(choice.column.clone(), cx),
                     SlicerKind::Sql => view.add_slicer_card(SlicerDefinition::sql_filter(), cx),
                 }
-                view.slicer_picker = None;
+                view.close_slicer_picker();
             }));
+        self.close_slicer_picker();
         self.slicer_picker = Some(picker.clone());
-        self.discover_slicers = true;
-        self.update_slicer_picker(cx);
+        self.slicer_discovery = Some(std::sync::Arc::default());
+        self.update_slicer_picker(None, cx);
         if picker.read(cx).loading {
             self.schedule_search(self.session.search_text.clone(), cx);
         }
+        let view = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
             let picker = picker.clone();
+            let view = view.clone();
             dialog
                 .title("Add slicer")
                 .content(move |content, _, _| content.child(picker.clone()))
+                .on_close(move |_, _, cx| {
+                    let _ = view.update(cx, |view, _| view.close_slicer_picker());
+                })
         });
         if let Some(picker) = &self.slicer_picker {
             picker.update(cx, |picker, cx| picker.focus(window, cx));
@@ -5419,7 +5436,7 @@ impl DataFrameView {
                 .unwrap_or_default();
             self.slicer_sidebar
                 .update(cx, |sidebar, cx| sidebar.set_cards(cards, cx));
-            self.update_slicer_picker(cx);
+            self.update_slicer_picker(None, cx);
             let sort = self.session.sort.clone();
             self.grid.update(cx, |grid, cx| {
                 grid.set_sort(sort, cx);
@@ -5517,7 +5534,7 @@ impl DataFrameView {
             sort: self.session.sort.clone(),
             definition,
             query_cache,
-            discover_slicers: self.discover_slicers,
+            slicer_discovery: self.slicer_discovery.clone(),
             queued_at: Instant::now(),
             reuse_table: self
                 .table_query
@@ -5600,7 +5617,7 @@ impl DataFrameView {
                         })();
                         return (result, slicer_cache, trace, query_trace);
                     }
-                    let slicer_stage = if request.discover_slicers
+                    let slicer_stage = if request.slicer_discovery.is_some()
                         || !definitions.is_empty()
                         || slicer_cache
                             .as_ref()
@@ -5616,6 +5633,7 @@ impl DataFrameView {
                             definitions,
                             value_filters,
                             slicer_cache.as_ref(),
+                            request.slicer_discovery.as_deref(),
                         ) {
                             Ok(stage) => Some(stage),
                             Err(error) => return (Err(error), None, trace, query_trace),
@@ -5865,14 +5883,7 @@ impl DataFrameView {
                         view.slicer_stage = slicer_stage;
                         view.slicer_sidebar
                             .update(cx, |sidebar, cx| sidebar.set_cards(cards, cx));
-                        view.update_slicer_picker(cx);
-                        if let Err(error) = &result
-                            && let Some(picker) = &view.slicer_picker
-                        {
-                            picker.update(cx, |picker, cx| {
-                                picker.set_columns(Vec::new(), Some(error.clone()), cx)
-                            });
-                        }
+                        view.update_slicer_picker(result.as_ref().err().cloned(), cx);
                         match result {
                             Ok((mut snapshot, pivot_frame, effective_sort, table_query)) => {
                                 if pending_setup {
