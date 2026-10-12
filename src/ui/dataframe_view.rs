@@ -7112,58 +7112,63 @@ impl Render for DataFrameView {
                                 status.child(warning)
                             }),
                     )
+                    // One line at the grid's size: statistics that do not fit are
+                    // cut off on the right rather than wrapping into the grid's space.
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_wrap()
-                            .justify_end()
-                            .gap_x_2()
-                            .when_some(self.copy_status.as_ref(), |status, copy| {
-                                status.child(div().child(copy.clone()))
-                            })
-                            .when_some(self.selection_counts, |status, (rows, columns, cells)| {
-                                status.child(div().child(format!(
-                                    "Selected: {} · {} cells",
-                                    status::dimensions(rows, columns),
-                                    crate::domain::formatting::group_numeric_text(
-                                        &cells.to_string()
-                                    )
-                                )))
-                            })
-                            .when(self.statistics_pending, |status| {
-                                status.child(div().child("Calculating statistics…"))
-                            })
-                            .when_some(self.statistics.as_ref(), |status, stats| {
-                                let unique = div()
-                                    .id("selection-unique")
-                                    .child(status::unique_label(stats));
-                                // A distinct selection is a quick check that the selected
-                                // columns form a unique key.
-                                let unique = if status::selection_is_distinct(stats) {
-                                    unique
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(distinct_color)
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new("Every selected row is distinct")
-                                                .build(window, cx)
-                                        })
-                                } else {
-                                    unique
-                                };
-                                status
-                                    .child(div().child(status::nulls_label(stats)))
-                                    .child(unique)
-                                    .children(
-                                        status::statistics(stats)
-                                            .into_iter()
-                                            .map(|label| div().child(label)),
-                                    )
-                            })
-                            .when_some(self.statistics_error.as_ref(), |status, error| {
-                                status.child(div().child(format!("Statistics failed: {error}")))
-                            }),
+                        div().flex_1().min_w_0().overflow_hidden().flex().child(
+                            div()
+                                .ml_auto()
+                                .flex_shrink_0()
+                                .flex()
+                                .gap_x_2()
+                                .when_some(self.copy_status.as_ref(), |status, copy| {
+                                    status.child(div().child(copy.clone()))
+                                })
+                                .when_some(
+                                    self.selection_counts,
+                                    |status, (rows, columns, cells)| {
+                                        status.child(div().child(format!(
+                                            "Selected: {} · {} cells",
+                                            status::dimensions(rows, columns),
+                                            crate::domain::formatting::group_numeric_text(
+                                                &cells.to_string()
+                                            )
+                                        )))
+                                    },
+                                )
+                                .when(self.statistics_pending, |status| {
+                                    status.child(div().child("Calculating statistics…"))
+                                })
+                                .when_some(self.statistics.as_ref(), |status, stats| {
+                                    let unique = div()
+                                        .id("selection-unique")
+                                        .child(status::unique_label(stats));
+                                    // A distinct selection is a quick check that the selected
+                                    // columns form a unique key.
+                                    let unique = if status::selection_is_distinct(stats) {
+                                        unique
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(distinct_color)
+                                            .tooltip(|window, cx| {
+                                                Tooltip::new("Every selected row is distinct")
+                                                    .build(window, cx)
+                                            })
+                                    } else {
+                                        unique
+                                    };
+                                    status
+                                        .child(div().child(status::nulls_label(stats)))
+                                        .child(unique)
+                                        .children(
+                                            status::statistics(stats)
+                                                .into_iter()
+                                                .map(|label| div().child(label)),
+                                        )
+                                })
+                                .when_some(self.statistics_error.as_ref(), |status, error| {
+                                    status.child(div().child(format!("Statistics failed: {error}")))
+                                }),
+                        ),
                     ),
             )
             .when(self.space_menu_open, |view| {
