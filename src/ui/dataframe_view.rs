@@ -6993,7 +6993,7 @@ impl Render for DataFrameView {
                                 )
                             })
                             .when_some(modified.filter(|_| show_modified), |header, modified| {
-                                header.child(div().flex_shrink_0().text_sm().child(modified))
+                                header.child(div().flex_shrink_0().child(modified))
                             }),
                     ),
             )
@@ -7098,18 +7098,12 @@ impl Render for DataFrameView {
                             .gap_2()
                             .child(status::dimensions(row_count, column_count))
                             .when_some(unfiltered_rows, |status, total| {
-                                status.child(
-                                    div()
-                                        .text_sm()
-                                        .opacity(0.75)
-                                        .child(status::filtered_rows(row_count, total)),
-                                )
+                                status.child(status::filtered_rows(row_count, total))
                             })
                             .when(limit_reached, |status| {
                                 let message = status::limited_rows(self.query_limit);
                                 let warning = div()
                                     .id("query-limit-reached")
-                                    .text_sm()
                                     .text_color(limit_warning_color)
                                     .aria_label(message.clone())
                                     .child(message);
@@ -7126,7 +7120,6 @@ impl Render for DataFrameView {
                             .flex_wrap()
                             .justify_end()
                             .gap_x_2()
-                            .text_sm()
                             .when_some(self.copy_status.as_ref(), |status, copy| {
                                 status.child(div().child(copy.clone()))
                             })

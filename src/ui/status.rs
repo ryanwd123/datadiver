@@ -9,9 +9,10 @@ pub(super) fn dimensions(rows: usize, columns: usize) -> String {
     )
 }
 
+/// Follows the dimensions in the status bar, so it starts with a separator.
 pub(super) fn filtered_rows(shown: usize, total: usize) -> String {
     format!(
-        "{} of {} rows",
+        "- {} of {} rows",
         group_numeric_text(&shown.to_string()),
         group_numeric_text(&total.to_string())
     )
@@ -109,7 +110,7 @@ mod tests {
     fn dimensions_use_grouped_counts() {
         assert_eq!(dimensions(1_234_567, 2_000), "1,234,567R×2,000C");
         assert_eq!(dimensions(0, 0), "0R×0C");
-        assert_eq!(filtered_rows(1_234, 50_000), "1,234 of 50,000 rows");
+        assert_eq!(filtered_rows(1_234, 50_000), "- 1,234 of 50,000 rows");
         assert_eq!(limited_rows(1_000_000), "Limited to 1,000,000 rows");
     }
 
