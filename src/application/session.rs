@@ -1,6 +1,7 @@
 use crate::application::navigation_history::NavigationEntry;
 use crate::domain::documents::{
-    DocumentDefinition, QueryConfig, SortKey, SqlConfig, TableConfig, ValueFilter, ViewKind,
+    DocumentDefinition, QueryConfig, RelationKind, SortKey, SqlConfig, TableConfig, ValueFilter,
+    ViewKind,
 };
 use crate::domain::frame::{FrameSnapshot, ResultSnapshot};
 use crate::domain::sql::{SqlDiagnostics, SqlTrace};
@@ -484,7 +485,12 @@ impl WindowSession {
         let Some(definition) = &mut self.working else {
             return false;
         };
-        if definition.database_view.is_some() {
+        // Relations without DuckDB's rowid can only be read through a query.
+        if definition
+            .database_view
+            .as_ref()
+            .is_some_and(|view| view.kind != RelationKind::Table)
+        {
             return false;
         }
         if !matches!(&definition.view, ViewKind::Query(config) if config.group_by.is_empty() && config.pivot_by.is_empty() && config.aggregations.is_empty())
@@ -762,12 +768,16 @@ impl WindowSession {
             ViewKind::Sql(sql) => sql.result_sort.clone(),
         };
         self.saved(definition);
-        if self
+        if let Some(definition) = self
             .working
             .as_ref()
-            .is_some_and(|d| d.id.is_empty() && d.database_view.is_some())
+            .filter(|d| d.id.is_empty() && d.database_view.is_some())
         {
-            self.identity = SessionIdentity::DraftQuery;
+            self.identity = if matches!(definition.view, ViewKind::Table(_)) {
+                SessionIdentity::DraftTable
+            } else {
+                SessionIdentity::DraftQuery
+            };
         }
         Ok(())
     }

@@ -196,18 +196,24 @@ impl SourceDatabase {
     /// Tables and views in the profile database and every attached database,
     /// grouped by database then schema, including `temp` and the imported
     /// sources in `files`. DataDiver's own catalog tables are left out.
+    /// Tables are [`RelationKind::Table`] when DuckDB stores them and no
+    /// column of theirs is named rowid, so DuckDB's rowid can be read.
     pub fn relations(&self) -> Result<Vec<DatabaseView>, String> {
         let connection = self.connect()?;
         let mut statement = connection
             .prepare(
                 "FROM ( \
-                     SELECT database_name, schema_name, table_name, false FROM duckdb_tables() \
-                     WHERE NOT internal \
+                     SELECT t.database_name, t.schema_name, t.table_name, false, \
+                         d.type = 'duckdb' AND NOT EXISTS ( \
+                             SELECT 1 FROM duckdb_columns() c \
+                             WHERE c.table_oid = t.table_oid AND lower(c.column_name) = 'rowid') \
+                     FROM duckdb_tables() t JOIN duckdb_databases() d USING (database_oid) \
+                     WHERE NOT t.internal \
                      UNION ALL \
-                     SELECT database_name, schema_name, view_name, true FROM duckdb_views() \
+                     SELECT database_name, schema_name, view_name, true, false FROM duckdb_views() \
                      WHERE NOT internal \
-                 ) t(catalog, schema, name, is_view) \
-                 SELECT catalog, catalog = current_database(), schema, name, is_view \
+                 ) t(catalog, schema, name, is_view, rowid) \
+                 SELECT catalog, catalog = current_database(), schema, name, is_view, rowid \
                  ORDER BY 2 DESC, lower(catalog), lower(schema), lower(name)",
             )
             .map_err(|error| error.to_string())?;
@@ -219,6 +225,7 @@ impl SourceDatabase {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, bool>(4)?,
+                    row.get::<_, bool>(5)?,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -226,17 +233,21 @@ impl SourceDatabase {
             .map_err(|error| error.to_string())?;
         Ok(rows
             .into_iter()
-            .filter(|(_, _, _, name, _)| !name.starts_with("__qp_") && !name.starts_with("__dd_"))
-            .map(|(catalog, current, schema, name, is_view)| DatabaseView {
-                catalog: (!current).then_some(catalog),
-                schema,
-                name,
-                kind: if is_view {
-                    RelationKind::View
-                } else {
-                    RelationKind::Table
-                },
+            .filter(|(_, _, _, name, _, _)| {
+                !name.starts_with("__qp_") && !name.starts_with("__dd_")
             })
+            .map(
+                |(catalog, current, schema, name, is_view, rowid)| DatabaseView {
+                    catalog: (!current).then_some(catalog),
+                    schema,
+                    name,
+                    kind: match (is_view, rowid) {
+                        (true, _) => RelationKind::View,
+                        (false, true) => RelationKind::Table,
+                        (false, false) => RelationKind::TableWithoutRowid,
+                    },
+                },
+            )
             .collect())
     }
 
@@ -973,6 +984,7 @@ mod tests {
             format!(
                 "ATTACH '{}' AS shop (READ_ONLY);\nCREATE TABLE IF NOT EXISTS main.notes AS SELECT 'a' AS note;\nCREATE OR REPLACE VIEW main.note_view AS SELECT * FROM main.notes;
 CREATE TABLE IF NOT EXISTS files.imported AS SELECT 1 AS n;
+CREATE TABLE IF NOT EXISTS main.shadow AS SELECT 7 AS RowId;
 CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 attached_path.to_string_lossy().replace('\'', "''")
             ),
@@ -991,6 +1003,11 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             kind: RelationKind::Table,
             ..DatabaseView::view("main", "notes")
         };
+        // Its own rowid column hides DuckDB's, so it is read through queries.
+        let shadow = DatabaseView {
+            kind: RelationKind::TableWithoutRowid,
+            ..DatabaseView::view("main", "shadow")
+        };
         // The profile database comes first, with imported sources in `files`;
         // DataDiver's own tables stay hidden. Temp objects belong to the
         // connection that made them, so startup's temp table is not listed.
@@ -1003,12 +1020,20 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 },
                 DatabaseView::view("main", "note_view"),
                 notes.clone(),
+                shadow.clone(),
                 orders.clone()
             ]
         );
         assert_eq!(orders.label(), "shop.main.orders");
         let rows = |view: &DatabaseView| {
             let source = database.load_view(view).unwrap();
+            // DuckDB tables open whole, like imported files.
+            if view.kind == RelationKind::Table {
+                assert!(!source.is_database_view());
+                assert_eq!(source.table_sql(), view.relation_sql());
+                return source.row_count();
+            }
+            assert!(source.is_database_view());
             crate::domain::pivot::execute_traced_limited(
                 &source,
                 &crate::domain::documents::QueryConfig::default(),
@@ -1022,6 +1047,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         };
         assert_eq!(rows(&orders), 3);
         assert_eq!(rows(&notes), 1);
+        assert_eq!(rows(&shadow), 1);
         let functions = database.metadata_functions().unwrap();
         let tables = DatabaseView::function("duckdb_tables");
         assert!(functions.contains(&tables));
@@ -1320,6 +1346,90 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(rows.len(), 3);
         assert!(numbered);
     }
+    #[test]
+    fn duckdb_tables_scroll_by_their_own_rowid() {
+        use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig, SortKey};
+        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::sql::SqlTrace;
+        use crate::infrastructure::duckdb_store::ViewQuery;
+        let home = tempfile::tempdir().unwrap();
+        let shop = home.path().join("shop.duckdb");
+        Connection::open(&shop)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE orders AS \
+                 SELECT range AS id, range % 3 AS store FROM range(20)",
+            )
+            .unwrap();
+        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        let alias = database.attach(&shop, DatabaseFileKind::DuckDb).unwrap();
+        database
+            .connect()
+            .unwrap()
+            .execute_batch("CREATE TABLE main.local AS SELECT * FROM range(5) t(id)")
+            .unwrap();
+        let orders = DatabaseView {
+            catalog: Some(alias),
+            kind: RelationKind::Table,
+            ..DatabaseView::view("main", "orders")
+        };
+        let local = DatabaseView {
+            kind: RelationKind::Table,
+            ..DatabaseView::view("main", "local")
+        };
+        let relations = database.relations().unwrap();
+        assert!(relations.contains(&orders) && relations.contains(&local));
+        assert_eq!(database.load_view(&local).unwrap().row_count(), 5);
+
+        let source = database.load_view(&orders).unwrap();
+        assert!(!source.is_database_view());
+        assert_eq!(source.row_count(), 20);
+        assert_eq!(source.database_view_revision(), Some(database.revision()));
+        let sorted = source
+            .query_view_rows(&ViewQuery {
+                tokens: Vec::new(),
+                filters: Vec::new(),
+                value_filters: Vec::new(),
+                sort: vec![SortKey {
+                    column: "id".into(),
+                    descending: true,
+                }],
+                hidden: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(sorted.row_ids.len(), 20);
+        assert_eq!(
+            source.fetch_row_ids(&sorted.row_ids[..1]).unwrap()[0].values,
+            [Some("19".into()), Some("1".into())]
+        );
+
+        let config = QueryConfig {
+            group_by: vec!["store".into()],
+            aggregations: vec![Aggregation {
+                sql: None,
+                source_column: "id".into(),
+                operation: AggregationOp::Last,
+                ..Aggregation::sql_expression(String::new(), Some("last".into()))
+            }],
+            ..Default::default()
+        };
+        let mut trace = SqlTrace::default();
+        let result = execute_traced_limited(
+            &source,
+            &config,
+            &[],
+            &EvaluationClock::system(),
+            100,
+            &mut trace,
+        )
+        .unwrap();
+        assert_eq!(
+            result.fetch_row_ids(&[0]).unwrap()[0].values,
+            [Some("0".into()), Some("18".into())]
+        );
+        assert!(!trace.text().contains("row_number"), "{}", trace.text());
+    }
+
     use std::time::SystemTime;
 
     #[test]
@@ -1944,5 +2054,13 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 .execute_batch(&format!("INSERT INTO {alias}.items VALUES ('b')"))
                 .is_err()
         );
+        // SQLite tables have no DuckDB rowid, so they open as queries.
+        let items = DatabaseView {
+            catalog: Some(alias),
+            kind: RelationKind::TableWithoutRowid,
+            ..DatabaseView::view("main", "items")
+        };
+        assert!(database.relations().unwrap().contains(&items));
+        assert!(database.load_view(&items).unwrap().is_database_view());
     }
 }

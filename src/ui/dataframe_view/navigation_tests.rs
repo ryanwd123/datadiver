@@ -62,6 +62,125 @@ fn travel(
 }
 
 #[gpui_kit::test]
+fn database_tables_open_in_table_mode_sort_and_refresh(cx: &mut TestAppContext) {
+    use crate::domain::documents::{DatabaseView, RelationKind};
+    let home = tempfile::tempdir().unwrap();
+    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let mut settings = repository.load_settings().unwrap();
+    settings.query_limit = 3;
+    repository.save_settings(&settings).unwrap();
+    let (handle, entity) = viewer(cx, repository);
+    cx.update(|cx| {
+        entity
+            .read(cx)
+            .database
+            .connect()
+            .unwrap()
+            .execute_batch("CREATE TABLE main.sales AS SELECT range AS n FROM range(100)")
+            .unwrap()
+    });
+    let table = DatabaseView {
+        kind: RelationKind::Table,
+        ..DatabaseView::view("main", "sales")
+    };
+    assert!(
+        cx.update(|cx| entity.read(cx).database.relations().unwrap())
+            .contains(&table)
+    );
+    open(
+        cx,
+        handle,
+        &entity,
+        FileEntry::View(DocumentDefinition::draft_database_view(table)),
+    );
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.is_table());
+        assert_eq!(view.session.identity, SessionIdentity::DraftTable);
+        // Table mode reads every row; the query limit does not apply.
+        assert_eq!(view.session.result.row_count(), 100);
+    });
+    cx.update_window(handle.into(), |_, _, cx| {
+        entity.update(cx, |view, cx| {
+            view.session.set_sort_direction("n".into(), true);
+            view.schedule_search(String::new(), cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert_eq!(
+            view.session.result.fetch_rows(0, 1).unwrap()[0].values[0],
+            Some("99".into())
+        );
+    });
+    cx.update_window(handle.into(), |_, _, cx| {
+        entity.update(cx, |view, cx| {
+            view.database
+                .connect()
+                .unwrap()
+                .execute_batch("INSERT INTO main.sales VALUES (500)")
+                .unwrap();
+            view.database.invalidate();
+            view.check_source(cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.result.row_count(), 101);
+        assert_eq!(
+            view.session.result.fetch_rows(0, 1).unwrap()[0].values[0],
+            Some("500".into())
+        );
+    });
+    // A query on the table uses the limit, and clearing it returns to table mode.
+    cx.update_window(handle.into(), |_, _, cx| {
+        entity.update(cx, |view, cx| {
+            view.session.start_query_draft("sales".into()).unwrap();
+            view.session
+                .set_query_config(
+                    QueryConfig {
+                        group_by: vec!["n".into()],
+                        ..Default::default()
+                    },
+                    "sales".into(),
+                )
+                .unwrap();
+            view.schedule_search(String::new(), cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(!view.is_table());
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    cx.update_window(handle.into(), |_, _, cx| {
+        entity.update(cx, |view, cx| {
+            view.session
+                .set_query_config(QueryConfig::default(), "sales".into())
+                .unwrap();
+            view.schedule_search(String::new(), cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.is_table());
+        assert_eq!(view.session.result.row_count(), 101);
+    });
+}
+
+#[gpui_kit::test]
 fn database_views_use_query_mode_limits_full_aggregations_and_persist(cx: &mut TestAppContext) {
     use crate::domain::documents::DatabaseView;
     let home = tempfile::tempdir().unwrap();

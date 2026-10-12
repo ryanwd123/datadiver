@@ -124,6 +124,15 @@ pub struct CachedRow {
     pub values: Vec<Option<String>>,
 }
 
+/// How a store opened from a database relation reads its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelationRows {
+    /// A DuckDB table, scrolled and sorted through its own rowid.
+    Table,
+    /// A relation without DuckDB's rowid, read only through limited queries.
+    Lazy,
+}
+
 /// Owns the authoritative DuckDB table and builds lightweight row-id views.
 /// The connection is deliberately kept on its owner thread; callers should
 /// schedule its methods on the existing background executor.
@@ -131,7 +140,8 @@ pub struct DuckDbStore {
     connection: Connection,
     table_sql: String,
     persistent: Option<PersistentBacking>,
-    database_view: bool,
+    /// Set for stores opened from a database relation.
+    relation: Option<RelationRows>,
     columns: Vec<ColumnSchema>,
     renamed_source_rowid: Option<String>,
     row_count: usize,
@@ -231,7 +241,7 @@ impl DuckDbStore {
         trace: &mut SqlTrace,
     ) -> Result<Self, String> {
         if let Some(backing) = &self.persistent
-            && (backing.source_version.is_some() || self.database_view)
+            && (backing.source_version.is_some() || self.relation.is_some())
         {
             let connection = self
                 .connection
@@ -384,7 +394,7 @@ impl DuckDbStore {
             connection,
             table_sql,
             persistent: None,
-            database_view: false,
+            relation: None,
             columns: Vec::new(),
             renamed_source_rowid: None,
             row_count: 0,
@@ -416,7 +426,7 @@ impl DuckDbStore {
             connection,
             table_sql,
             persistent: Some(backing),
-            database_view: false,
+            relation: None,
             columns: Vec::new(),
             renamed_source_rowid,
             row_count,
@@ -443,6 +453,25 @@ impl DuckDbStore {
         view: &crate::domain::documents::DatabaseView,
     ) -> Result<Self, String> {
         let relation = view.relation_sql();
+        if view.kind == crate::domain::documents::RelationKind::Table {
+            let row_count = connection
+                .query_row(&format!("SELECT count(*) FROM {relation}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())? as usize;
+            let mut store = Self::from_persistent(
+                connection,
+                relation,
+                None,
+                row_count,
+                PersistentBacking {
+                    database,
+                    source_version: None,
+                },
+            )?;
+            store.relation = Some(RelationRows::Table);
+            return Ok(store);
+        }
         let mut columns = {
             let mut statement = connection
                 .prepare(&format!("DESCRIBE SELECT * FROM {relation}"))
@@ -497,7 +526,7 @@ impl DuckDbStore {
                 database,
                 source_version: None,
             }),
-            database_view: true,
+            relation: Some(RelationRows::Lazy),
             columns,
             renamed_source_rowid: None,
             // The relation is lazy: opening it binds its schema without scanning rows.
@@ -508,8 +537,9 @@ impl DuckDbStore {
         })
     }
 
+    /// Whether this store is a relation read only through limited queries.
     pub fn is_database_view(&self) -> bool {
-        self.database_view
+        self.relation == Some(RelationRows::Lazy)
     }
 
     /// The FROM for a query over this store, adding `extra` projections. With
@@ -517,7 +547,7 @@ impl DuckDbStore {
     /// number for relations without one, which costs a window over every row,
     /// so callers ask for it only when the query reads rowid.
     pub fn query_relation(&self, rowid: bool, extra: &[String]) -> String {
-        let numbered = rowid && self.database_view;
+        let numbered = rowid && self.is_database_view();
         let relation = if numbered {
             format!(
                 "(SELECT *, row_number() OVER () - 1 AS rowid FROM {})",
@@ -541,8 +571,8 @@ impl DuckDbStore {
     }
 
     pub fn database_view_revision(&self) -> Option<u64> {
-        self.database_view
-            .then(|| self.persistent.as_ref().unwrap().database.revision())
+        self.relation
+            .map(|_| self.persistent.as_ref().unwrap().database.revision())
     }
 
     pub fn persistent_identity(&self) -> Option<super::source_database::PersistentSourceIdentity> {

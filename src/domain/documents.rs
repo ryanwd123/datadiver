@@ -386,7 +386,12 @@ pub enum ViewKind {
 pub enum RelationKind {
     #[default]
     View,
+    /// A DuckDB table, read through DuckDB's own rowid like an imported file.
     Table,
+    /// A table read only through queries: one in another kind of attached
+    /// database, such as SQLite, or a DuckDB table whose own `rowid` column
+    /// hides DuckDB's rowid.
+    TableWithoutRowid,
     /// A table function called without arguments, such as `duckdb_tables()`.
     Function,
 }
@@ -484,10 +489,14 @@ impl DocumentDefinition {
         }
     }
 
+    /// Tables with DuckDB's rowid open in table mode; other relations open as
+    /// a query.
     pub fn draft_database_view(view: DatabaseView) -> Self {
         let mut definition = Self::draft_table(view.label(), String::new());
+        if view.kind != RelationKind::Table {
+            definition.view = ViewKind::Query(QueryConfig::default());
+        }
         definition.database_view = Some(view);
-        definition.view = ViewKind::Query(QueryConfig::default());
         definition
     }
 
@@ -498,8 +507,15 @@ impl DocumentDefinition {
             {
                 return Err("database view schema and name are required".into());
             }
-            if !self.source_path.is_empty() || !matches!(self.view, ViewKind::Query(_)) {
-                return Err("database views require query mode without a source file".into());
+            let mode = match self.view {
+                ViewKind::Query(_) => true,
+                ViewKind::Table(_) => view.kind == RelationKind::Table,
+                ViewKind::Sql(_) => false,
+            };
+            if !self.source_path.is_empty() || !mode {
+                return Err(
+                    "database views require query or table mode without a source file".into(),
+                );
             }
         }
         if self.schema_version != SCHEMA_VERSION {
@@ -568,6 +584,33 @@ impl DocumentDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_duckdb_tables_open_database_relations_in_table_mode() {
+        for kind in [
+            RelationKind::View,
+            RelationKind::Table,
+            RelationKind::TableWithoutRowid,
+            RelationKind::Function,
+        ] {
+            let relation = DatabaseView {
+                kind,
+                ..DatabaseView::view("main", "sales")
+            };
+            let mut draft = DocumentDefinition::draft_database_view(relation);
+            assert_eq!(
+                matches!(draft.view, ViewKind::Table(_)),
+                kind == RelationKind::Table
+            );
+            draft.validate().unwrap();
+            draft.view = ViewKind::Query(QueryConfig::default());
+            draft.validate().unwrap();
+            draft.view = ViewKind::Table(TableConfig::default());
+            assert_eq!(draft.validate().is_ok(), kind == RelationKind::Table);
+            draft.view = ViewKind::Sql(SqlConfig::default());
+            assert!(draft.validate().is_err());
+        }
+    }
 
     #[test]
     fn query_fields_round_trip_as_group_by_and_pivot_by() {
