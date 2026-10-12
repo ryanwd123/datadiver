@@ -1230,6 +1230,96 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             .is_err()
         );
     }
+
+    #[test]
+    fn database_views_number_rows_only_for_queries_that_read_rowid() {
+        use crate::domain::documents::{
+            Aggregation, AggregationOp, Dimension, QueryConfig, SlicerDefinition,
+        };
+        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::sql::SqlTrace;
+        let home = tempfile::tempdir().unwrap();
+        let database = SourceDatabase::for_profile(home.path());
+        database
+            .connect()
+            .unwrap()
+            .execute_batch(
+                "CREATE VIEW main.numbers AS \
+                 SELECT range AS n, range % 2 AS category FROM range(10)",
+            )
+            .unwrap();
+        let source = database
+            .load_view(&DatabaseView::view("main", "numbers"))
+            .unwrap();
+        assert_eq!(source.table_sql(), "\"main\".\"numbers\"");
+        let run = |config: &QueryConfig, slicers: &[SlicerDefinition]| {
+            let mut trace = SqlTrace::default();
+            let result = execute_traced_limited(
+                &source,
+                config,
+                slicers,
+                &EvaluationClock::system(),
+                100,
+                &mut trace,
+            )
+            .unwrap_or_else(|error| panic!("{error}\n{}", trace.text()));
+            let ids = (0..result.row_count() as i64).collect::<Vec<_>>();
+            let rows = result
+                .fetch_row_ids(&ids)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.values)
+                .collect::<Vec<_>>();
+            (rows, trace.text().contains("row_number"))
+        };
+        let aggregation = |operation| Aggregation {
+            sql: None,
+            source_column: "n".into(),
+            operation,
+            ..Aggregation::sql_expression(String::new(), Some("value".into()))
+        };
+        let by_category = |aggregations| QueryConfig {
+            group_by: vec!["category".into()],
+            aggregations,
+            ..Default::default()
+        };
+
+        let (rows, numbered) = run(&by_category(vec![aggregation(AggregationOp::Sum)]), &[]);
+        assert_eq!(rows[1], [Some("1".into()), Some("25".into())]);
+        assert!(!numbered);
+        let (rows, numbered) = run(&QueryConfig::default(), &[]);
+        assert_eq!(rows.len(), 10);
+        assert!(!numbered);
+
+        let (rows, numbered) = run(&by_category(vec![aggregation(AggregationOp::Last)]), &[]);
+        assert_eq!(rows[1], [Some("1".into()), Some("9".into())]);
+        assert!(numbered);
+        let derived = QueryConfig {
+            group_by: vec![Dimension::expression("n % 3 AS bucket")],
+            ..by_category(vec![aggregation(AggregationOp::ValuesList)])
+        };
+        let (rows, numbered) = run(&derived, &[]);
+        assert_eq!(rows[0], [Some("0".into()), Some("[0, 3, 6, 9]".into())]);
+        assert!(numbered);
+        let sql = by_category(vec![Aggregation::sql_expression(
+            "first(n ORDER BY rowid DESC)".into(),
+            Some("value".into()),
+        )]);
+        let (rows, numbered) = run(&sql, &[]);
+        assert_eq!(rows[0], [Some("0".into()), Some("8".into())]);
+        assert!(numbered);
+        let (rows, numbered) = run(
+            &QueryConfig::default(),
+            &[SlicerDefinition {
+                sql: true,
+                condition: Some("rowid < 3".into()),
+                column: String::new(),
+                selected: Vec::new(),
+            }],
+        );
+        assert_eq!(rows.len(), 3);
+        assert!(numbered);
+    }
     use std::time::SystemTime;
 
     #[test]

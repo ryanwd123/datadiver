@@ -79,6 +79,16 @@ pub fn dimension_alias(sql: &str) -> Option<String> {
     )
 }
 
+/// Whether `sql` names `rowid`, outside strings and comments. Unreadable SQL
+/// counts as naming it, so a source that must number its rows still does.
+pub fn mentions_rowid(sql: &str) -> bool {
+    tokens_spanned(sql).map_or(true, |tokens| {
+        tokens.iter().any(|(token, start, end)| {
+            token == "rowid" || sql[*start..*end].eq_ignore_ascii_case("\"rowid\"")
+        })
+    })
+}
+
 fn tokens(sql: &str) -> Result<Vec<String>, String> {
     Ok(tokens_spanned(sql)?
         .into_iter()
@@ -195,6 +205,27 @@ mod tests {
         );
         assert_eq!(dimension_alias("cast(x AS VARCHAR)"), None);
         assert_eq!(dimension_alias("upper(region)"), None);
+    }
+
+    #[test]
+    fn rowid_mentions_skip_strings_and_comments() {
+        for sql in [
+            "first(x ORDER BY rowid)",
+            "RowId < 5",
+            "\"ROWID\" % 2",
+            "first('unfinished",
+        ] {
+            assert!(mentions_rowid(sql), "{sql}");
+        }
+        for sql in [
+            "sum(x)",
+            "'rowid'",
+            "count(*) -- rowid",
+            "\"rowid (source column)\"",
+            "my_rowid + rowid_2",
+        ] {
+            assert!(!mentions_rowid(sql), "{sql}");
+        }
     }
 
     #[test]

@@ -10,7 +10,8 @@ use crate::domain::documents::{
 use crate::domain::schema::ColumnType;
 use crate::domain::sql::SqlTrace;
 use crate::infrastructure::duckdb_store::{
-    ColumnFilter, ColumnSchema, DuckDbStore, QueryEnum, QueryInput, ViewQuery, quote_identifier,
+    ColumnFilter, ColumnSchema, DuckDbStore, QueryEnum, QueryInput, ViewQuery,
+    filters_mention_rowid, quote_identifier,
 };
 
 static NEXT_QUERY_ENUM: AtomicU64 = AtomicU64::new(1);
@@ -121,8 +122,8 @@ pub fn execute_query(
     }
     if config.group_by.is_empty() && config.aggregations.is_empty() {
         if source.is_database_view() {
-            let (where_sql, values) =
-                source.build_filter_clause(&slicer_filters(slicers), filters)?;
+            let slicer_filters = slicer_filters(slicers);
+            let (where_sql, values) = source.build_filter_clause(&slicer_filters, filters)?;
             let projection = source
                 .schema()
                 .iter()
@@ -139,7 +140,7 @@ pub fn execute_query(
             let sql = limited(
                 format!(
                     "SELECT {projection}\nFROM {}{where_sql}",
-                    source.table_sql()
+                    source.query_relation(filters_mention_rowid(&slicer_filters, filters), &[])
                 ),
                 limit,
                 result_view,
@@ -155,8 +156,8 @@ pub fn execute_query(
         }
         return Err("empty query configuration must use table mode".into());
     }
-    let (where_sql, where_values) =
-        source.build_filter_clause(&slicer_filters(slicers), filters)?;
+    let slicer_filters = slicer_filters(slicers);
+    let (where_sql, where_values) = source.build_filter_clause(&slicer_filters, filters)?;
     let dimensions = bind_dimensions(source, config)?;
     let group_count = config.group_by.len();
     let group_by = dimensions[..group_count]
@@ -171,15 +172,17 @@ pub fn execute_query(
         .iter()
         .filter_map(|dimension| dimension.projection.clone())
         .collect::<Vec<_>>();
-    let from_sql = if derived.is_empty() {
-        source.table_sql().to_owned()
-    } else {
-        format!(
-            "(SELECT *, rowid AS rowid, {} FROM {})",
-            derived.join(", "),
-            source.table_sql()
-        )
-    };
+    // Pivot discovery only filters rows, so it reads rowid only when they do.
+    let filters_read_rowid = filters_mention_rowid(&slicer_filters, filters)
+        || config
+            .group_by
+            .iter()
+            .chain(&config.pivot_by)
+            .any(dimension_mentions_rowid);
+    let from_sql = source.query_relation(
+        filters_read_rowid || aggregations_read_rowid(config),
+        &derived,
+    );
     let order = if group_by.is_empty() {
         String::new()
     } else {
@@ -214,15 +217,7 @@ pub fn execute_query(
         );
     }
 
-    let ordered = config.aggregations.iter().any(|aggregation| {
-        matches!(
-            aggregation.operation,
-            AggregationOp::First
-                | AggregationOp::Last
-                | AggregationOp::ValuesList
-                | AggregationOp::UniqueValuesList
-        )
-    });
+    let ordered = config.aggregations.iter().any(is_ordered);
     let internal_name = |base: String| {
         let mut name = base;
         while source
@@ -336,6 +331,7 @@ pub fn execute_query(
     let enums = if parameters.is_empty() && totals.is_none() && result_view.is_none() {
         Vec::new()
     } else {
+        let discovery_sql = source.query_relation(filters_read_rowid, &derived);
         pivot_by
             .iter()
             .enumerate()
@@ -349,7 +345,7 @@ pub fn execute_query(
                     name: format!("__qp_query_enum_{identity}_{index}"),
                     sql: format!(
                         "SELECT DISTINCT CAST({column} AS VARCHAR)\nFROM {}{nonnull}\nORDER BY 1",
-                        from_sql
+                        discovery_sql
                     ),
                     values: where_values.clone(),
                 }
@@ -432,6 +428,33 @@ pub fn execute_query(
         },
         trace,
     )
+}
+
+/// Aggregations that keep source row order: they read rowid.
+fn is_ordered(aggregation: &Aggregation) -> bool {
+    matches!(
+        aggregation.operation,
+        AggregationOp::First
+            | AggregationOp::Last
+            | AggregationOp::ValuesList
+            | AggregationOp::UniqueValuesList
+    )
+}
+
+/// Whether the aggregations read rowid, which relations without DuckDB's own
+/// rowid supply by numbering every row.
+fn aggregations_read_rowid(config: &QueryConfig) -> bool {
+    config.aggregations.iter().any(|aggregation| {
+        aggregation.sql.as_deref().map_or_else(
+            || is_ordered(aggregation),
+            crate::domain::aggregation_sql::mentions_rowid,
+        )
+    })
+}
+
+fn dimension_mentions_rowid(dimension: &Dimension) -> bool {
+    matches!(dimension, Dimension::Expression { sql }
+        if crate::domain::aggregation_sql::mentions_rowid(sql))
 }
 
 /// Values by column name, rendered as text.
@@ -1433,6 +1456,37 @@ mod tests {
         let connection = duckdb::Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TEMP TABLE qp_data AS SELECT * FROM (VALUES ('West', 'A', 10), ('West', 'B', 20), ('East', 'A', 5)) t(region, kind, amount)").unwrap();
         DuckDbStore::from_connection(connection).unwrap()
+    }
+
+    #[test]
+    fn tables_order_by_their_own_rowid_without_numbering_rows() {
+        let source = source();
+        for group_by in [
+            vec![Dimension::from("region")],
+            vec![Dimension::expression("lower(region) AS area")],
+        ] {
+            let config = QueryConfig {
+                group_by,
+                aggregations: vec![Aggregation {
+                    sql: None,
+                    source_column: "kind".into(),
+                    operation: AggregationOp::Last,
+                    ..Aggregation::sql_expression(String::new(), Some("kind".into()))
+                }],
+                ..Default::default()
+            };
+            let mut trace = SqlTrace::default();
+            let result = execute_traced(
+                &source,
+                &config,
+                &[],
+                &EvaluationClock::system(),
+                &mut trace,
+            )
+            .unwrap();
+            assert_eq!(rows(&result)[1][1].as_deref(), Some("B"));
+            assert!(!trace.text().contains("row_number"), "{}", trace.text());
+        }
     }
 
     fn athletes() -> DuckDbStore {

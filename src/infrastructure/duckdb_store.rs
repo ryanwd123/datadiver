@@ -93,6 +93,20 @@ pub struct ColumnFilter {
     pub sql: bool,
 }
 
+/// Whether any SQL card or expression filter names `rowid`.
+pub(crate) fn filters_mention_rowid(
+    filters: &[ColumnFilter],
+    value_filters: &[ValueFilter],
+) -> bool {
+    use crate::domain::aggregation_sql::mentions_rowid;
+    filters
+        .iter()
+        .any(|filter| filter.sql && filter.condition.as_deref().is_some_and(mentions_rowid))
+        || value_filters.iter().any(
+            |filter| matches!(&filter.target, Dimension::Expression { sql } if mentions_rowid(sql)),
+        )
+}
+
 pub struct QueryInput<'a> {
     pub enums: &'a [QueryEnum],
 }
@@ -446,9 +460,10 @@ impl DuckDbStore {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| error.to_string())?
         };
-        // Views lack DuckDB's pseudocolumn. Supply it for ordered aggregations,
-        // while keeping any user column named rowid separate and visible.
-        if let Some(index) = columns
+        // Views lack DuckDB's pseudocolumn, so queries that read rowid number
+        // the rows (see `query_relation`). A user column named rowid is renamed
+        // so that number cannot collide with it.
+        let table_sql = if let Some(index) = columns
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case("rowid"))
         {
@@ -460,20 +475,21 @@ impl DuckDbStore {
                 name.push('_');
             }
             columns[index].storage_name = name;
-        }
-        let projection = columns
-            .iter()
-            .map(|column| {
-                format!(
-                    "{} AS {}",
-                    quote_identifier(&column.name),
-                    quote_identifier(&column.storage_name)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let table_sql =
-            format!("(SELECT row_number() OVER () - 1 AS rowid, {projection} FROM {relation})");
+            let projection = columns
+                .iter()
+                .map(|column| {
+                    format!(
+                        "{} AS {}",
+                        quote_identifier(&column.name),
+                        quote_identifier(&column.storage_name)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("(SELECT {projection} FROM {relation})")
+        } else {
+            relation
+        };
         Ok(Self {
             connection,
             table_sql,
@@ -494,6 +510,34 @@ impl DuckDbStore {
 
     pub fn is_database_view(&self) -> bool {
         self.database_view
+    }
+
+    /// The FROM for a query over this store, adding `extra` projections. With
+    /// `rowid`, the relation has a `rowid` column: DuckDB's own, or a row
+    /// number for relations without one, which costs a window over every row,
+    /// so callers ask for it only when the query reads rowid.
+    pub fn query_relation(&self, rowid: bool, extra: &[String]) -> String {
+        let numbered = rowid && self.database_view;
+        let relation = if numbered {
+            format!(
+                "(SELECT *, row_number() OVER () - 1 AS rowid FROM {})",
+                self.table_sql
+            )
+        } else {
+            self.table_sql.clone()
+        };
+        let extra = extra
+            .iter()
+            .map(|sql| format!(", {sql}"))
+            .collect::<String>();
+        if extra.is_empty() {
+            relation
+        } else if rowid && !numbered {
+            // `*` leaves out DuckDB's rowid pseudocolumn.
+            format!("(SELECT *, rowid AS rowid{extra} FROM {relation})")
+        } else {
+            format!("(SELECT *{extra} FROM {relation})")
+        }
     }
 
     pub fn database_view_revision(&self) -> Option<u64> {
@@ -586,7 +630,7 @@ impl DuckDbStore {
         let body = crate::domain::aggregation_sql::dimension_body(sql)?;
         let query = format!(
             "DESCRIBE SELECT {sql}\nFROM {} WHERE ({body}\n) IS NULL",
-            self.table_sql
+            self.query_relation(true, &[])
         );
         let mut statement = self
             .connection
@@ -818,7 +862,7 @@ impl DuckDbStore {
             "SELECT {} FROM (SELECT DISTINCT {} FROM {}{} ORDER BY {}) AS __qp_distinct",
             outer_projection.join(", "),
             projection.join(", "),
-            self.table_sql,
+            self.query_relation(filters_mention_rowid(filters, &[]), &[]),
             where_sql,
             projection.join(", ")
         );
@@ -862,7 +906,7 @@ impl DuckDbStore {
             "SELECT {identifier}, CAST({identifier} AS VARCHAR) FROM \
              (SELECT DISTINCT {identifier} FROM {}{where_sql} LIMIT {}) \
              ORDER BY {order} ASC NULLS LAST",
-            self.table_sql,
+            self.query_relation(filters_mention_rowid(filters, value_filters), &[]),
             crate::domain::slicers::MAX_UNIQUE_VALUES + 1
         );
         let mut statement = self
@@ -1207,9 +1251,14 @@ impl DuckDbStore {
             .collect::<Result<Vec<_>, _>>()?
             .join(", ");
         let (where_sql, parameters) = self.build_filter_clause(filters, value_filters)?;
+        let rowid = filters_mention_rowid(filters, value_filters)
+            || dimensions.iter().any(|dimension| {
+                matches!(dimension, Dimension::Expression { sql }
+                    if crate::domain::aggregation_sql::mentions_rowid(sql))
+            });
         let sql = format!(
             "SELECT DISTINCT {projection} FROM {}{where_sql}",
-            self.table_sql
+            self.query_relation(rowid, &[])
         );
         let mut statement = self
             .connection
@@ -1384,7 +1433,7 @@ impl DuckDbStore {
         self.connection
             .prepare(&format!(
                 "SELECT 1 FROM {} WHERE {predicate} LIMIT 0",
-                self.table_sql
+                self.query_relation(true, &[])
             ))
             .map(|_| ())
             .map_err(|error| {
