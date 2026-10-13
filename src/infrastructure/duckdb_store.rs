@@ -19,10 +19,55 @@ use crate::domain::{
 
 static NEXT_VIEW_ROW_MAP: AtomicU64 = AtomicU64::new(1);
 
+/// The DuckDB rowid at each display position.
+#[derive(Clone, Debug)]
+pub enum RowIds {
+    Listed(Arc<[i64]>),
+    /// Every row in rowid order, where the rowids are exactly `0..n`, so a
+    /// position is its rowid and no list is built.
+    Natural(usize),
+}
+
+impl RowIds {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Listed(ids) => ids.len(),
+            Self::Natural(count) => *count,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The rowids at positions `start..end`, clamped to the rows there are.
+    pub fn range(&self, start: usize, end: usize) -> Vec<i64> {
+        let end = end.min(self.len());
+        match self {
+            Self::Listed(ids) => ids.get(start..end).unwrap_or_default().to_vec(),
+            Self::Natural(_) => (start as i64..end as i64).collect(),
+        }
+    }
+
+    pub fn to_vec(&self) -> Vec<i64> {
+        self.range(0, self.len())
+    }
+
+    /// Whether both are the same order without comparing every id.
+    pub fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Listed(a), Self::Listed(b)) => Arc::ptr_eq(a, b),
+            (Self::Natural(a), Self::Natural(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MaterializedViewRows {
-    pub row_ids: Arc<[i64]>,
-    pub row_map: Arc<ViewRowMap>,
+    pub row_ids: RowIds,
+    /// The order as a DuckDB table; natural order has none.
+    pub row_map: Option<Arc<ViewRowMap>>,
 }
 
 pub struct ViewRowMap {
@@ -1001,6 +1046,12 @@ impl DuckDbStore {
         trace: &mut SqlTrace,
     ) -> Result<MaterializedViewRows, String> {
         self.drop_retired_view_row_maps()?;
+        if let Some(count) = self.natural_row_count(view, trace)? {
+            return Ok(MaterializedViewRows {
+                row_ids: RowIds::Natural(count),
+                row_map: None,
+            });
+        }
         let (row_sql, values) = self.build_view_sql(view)?;
         let (table_name, row_map) = self.allocate_view_row_map();
         let create_sql = format!(
@@ -1016,6 +1067,35 @@ impl DuckDbStore {
         })?;
         super::performance::record("row_map_creation", create_start);
         self.collect_view_rows(table_name, row_map)
+    }
+
+    /// The row count when `view` shows every row in rowid order and the rowids
+    /// are exactly `0..n`, so display positions need no list. Tables with
+    /// deleted rows have gaps and get a list.
+    fn natural_row_count(
+        &self,
+        view: &ViewQuery,
+        trace: &mut SqlTrace,
+    ) -> Result<Option<usize>, String> {
+        if self.is_database_view() {
+            return Ok(None);
+        }
+        let (predicates, _, order) = self.view_clauses(view)?;
+        if !predicates.is_empty() || !order.is_empty() {
+            return Ok(None);
+        }
+        let sql = format!(
+            "SELECT count(*), coalesce(max(rowid), -1) FROM {}",
+            self.table_sql
+        );
+        let (count, last) = trace.execute("Result search and sort", &sql, &[], || {
+            self.connection
+                .query_row(&sql, [], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|error| error.to_string())
+        })?;
+        Ok((last == count - 1).then_some(count as usize))
     }
 
     /// Build a mapping for an already materialized row order. This is used
@@ -1078,8 +1158,8 @@ impl DuckDbStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         Ok(MaterializedViewRows {
-            row_ids: row_ids.into(),
-            row_map,
+            row_ids: RowIds::Listed(row_ids.into()),
+            row_map: Some(row_map),
         })
     }
 
@@ -1539,43 +1619,46 @@ impl DuckDbStore {
         start: usize,
         count: usize,
     ) -> Result<Vec<CachedRow>, String> {
-        self.fetch_view_page(None, row_ids, start, count)
+        let end = start.saturating_add(count).min(row_ids.len());
+        let ids = row_ids.get(start..end).unwrap_or_default();
+        let mut rows = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(crate::domain::frame::PAGE_SIZE) {
+            rows.extend(self.fetch_row_ids(chunk)?);
+        }
+        Ok(rows)
     }
 
     /// Fetch display positions `start..start + count`. With the view's row map, rows
     /// are selected by position inside DuckDB: a sort scatters row IDs across the
     /// table, where a literal IN list is several times slower and long ranges
-    /// (copies and exports) would otherwise need one query per page.
+    /// (copies and exports) would otherwise need one query per page. In natural
+    /// order a position is its rowid.
     pub fn fetch_view_page(
         &self,
         row_map: Option<&ViewRowMap>,
-        row_ids: &[i64],
+        row_ids: &RowIds,
         start: usize,
         count: usize,
     ) -> Result<Vec<CachedRow>, String> {
         let end = start.saturating_add(count).min(row_ids.len());
-        let ids = row_ids.get(start..end).unwrap_or_default();
-        if ids.is_empty() {
+        if start >= end {
             return Ok(Vec::new());
         }
-        let Some(row_map) = row_map else {
-            let mut rows = Vec::with_capacity(ids.len());
-            for chunk in ids.chunks(crate::domain::frame::PAGE_SIZE) {
-                rows.extend(self.fetch_row_ids(chunk)?);
-            }
-            return Ok(rows);
+        let predicate = match (row_ids, row_map) {
+            (RowIds::Natural(_), _) => "rowid >= ? AND rowid < ?".to_owned(),
+            (RowIds::Listed(ids), None) => return self.fetch_page(ids, start, count),
+            (RowIds::Listed(_), Some(row_map)) => format!(
+                "rowid IN (SELECT source_row_id FROM {} \
+                 WHERE display_position >= ? AND display_position < ?)",
+                quote_identifier(row_map.table_name())
+            ),
         };
-        let predicate = format!(
-            "rowid IN (SELECT source_row_id FROM {} \
-             WHERE display_position >= ? AND display_position < ?)",
-            quote_identifier(row_map.table_name())
-        );
         let bounds = [start, end]
             .map(|position| i64::try_from(position).map(Value::BigInt))
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| "display position is out of range".to_owned())?;
-        self.fetch_rows_where(ids, &predicate, &bounds)
+        self.fetch_rows_where(&row_ids.range(start, end), &predicate, &bounds)
     }
 
     /// Copies the rows `row_map` orders (or `row_ids`, when there is no map) to
@@ -1584,18 +1667,19 @@ impl DuckDbStore {
     pub fn export_view(
         &self,
         row_map: Option<&ViewRowMap>,
-        row_ids: &[i64],
+        row_ids: &RowIds,
         columns: &[usize],
         path: &Path,
         format: crate::domain::export::FileFormat,
     ) -> Result<usize, String> {
         self.drop_retired_view_row_maps()?;
         let built;
-        let row_map = match row_map {
-            Some(row_map) => row_map,
-            None => {
-                built = self.materialize_view_rows_from_ids(row_ids)?;
-                &*built.row_map
+        let row_map = match (row_ids, row_map) {
+            (RowIds::Natural(_), _) => None,
+            (RowIds::Listed(_), Some(row_map)) => Some(row_map),
+            (RowIds::Listed(ids), None) => {
+                built = self.materialize_view_rows_from_ids(ids)?;
+                built.row_map.as_deref()
             }
         };
         let projection = columns
@@ -1627,13 +1711,18 @@ impl DuckDbStore {
                     })?;
             }
         }
+        let rows = match row_map {
+            Some(row_map) => format!(
+                "JOIN {} AS __qp_rows ON __qp_source.rowid = __qp_rows.source_row_id\n    \
+                 ORDER BY __qp_rows.display_position",
+                quote_identifier(row_map.table_name())
+            ),
+            None => "ORDER BY __qp_source.rowid".to_owned(),
+        };
         let sql = format!(
-            "COPY (\n    SELECT {}\n    FROM {} AS __qp_source\n    JOIN {} AS __qp_rows \
-             ON __qp_source.rowid = __qp_rows.source_row_id\n    \
-             ORDER BY __qp_rows.display_position\n) TO ? ({})",
+            "COPY (\n    SELECT {}\n    FROM {} AS __qp_source\n    {rows}\n) TO ? ({})",
             projection.join(", "),
             self.table_sql,
-            quote_identifier(row_map.table_name()),
             format.copy_options()
         );
         self.connection
@@ -1708,7 +1797,7 @@ impl DuckDbStore {
     /// `row_ids` is supplied for query results; tables sample their unfiltered source.
     pub fn width_candidates(
         &self,
-        row_ids: Option<&[i64]>,
+        row_ids: Option<&RowIds>,
         columns: &[(String, Option<crate::domain::formatting::NumericFormat>)],
     ) -> Result<Vec<(String, Vec<String>)>, String> {
         use crate::domain::widths::{candidates, sample_positions};
@@ -1722,7 +1811,10 @@ impl DuckDbStore {
         let ids = if let Some(rows) = row_ids {
             sample_positions(rows.len())
                 .into_iter()
-                .map(|position| rows[position])
+                .map(|position| match rows {
+                    RowIds::Listed(ids) => ids[position],
+                    RowIds::Natural(_) => position as i64,
+                })
                 .collect::<Vec<_>>()
         } else {
             let positions = sample_positions(self.row_count);
@@ -1822,9 +1914,11 @@ impl DuckDbStore {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Aggregates over display positions `start..end`, read through `row_map`,
+    /// or by rowid when the rows are in natural order.
     pub(crate) fn selection_column_aggregates(
         &self,
-        row_map: &ViewRowMap,
+        row_map: Option<&ViewRowMap>,
         start: usize,
         end: usize,
         column_indices: &[usize],
@@ -1893,12 +1987,16 @@ impl DuckDbStore {
                 ]);
             }
         }
-        let map_table = quote_identifier(row_map.table_name());
-        let sql = format!(
-            "SELECT {} FROM {map_table} AS v JOIN {} AS d ON d.rowid = v.source_row_id WHERE v.display_position >= ? AND v.display_position < ?",
-            projections.join(", "),
-            self.table_sql
-        );
+        let rows = match row_map {
+            Some(row_map) => format!(
+                "{} AS v JOIN {} AS d ON d.rowid = v.source_row_id \
+                 WHERE v.display_position >= ? AND v.display_position < ?",
+                quote_identifier(row_map.table_name()),
+                self.table_sql
+            ),
+            None => format!("{} AS d WHERE d.rowid >= ? AND d.rowid < ?", self.table_sql),
+        };
+        let sql = format!("SELECT {} FROM {rows}", projections.join(", "));
         let mut statement = self
             .connection
             .prepare(&sql)
@@ -1911,7 +2009,7 @@ impl DuckDbStore {
             })
             .map_err(|error| error.to_string())?;
 
-        let integer_sums = self.query_integer_sums(&map_table, start, end, &integer_columns)?;
+        let integer_sums = self.query_integer_sums(&rows, start, end, &integer_columns)?;
         let unique = parse_count(raw[0].as_deref())?;
         let mut result = Vec::with_capacity(column_indices.len());
         let mut offset = 1;
@@ -1958,9 +2056,10 @@ impl DuckDbStore {
         Ok((result, unique))
     }
 
+    /// `rows` is the FROM and WHERE of the selection, bound to `start` and `end`.
     fn query_integer_sums(
         &self,
-        map_table: &str,
+        rows: &str,
         start: i64,
         end: i64,
         columns: &[(usize, String)],
@@ -1968,7 +2067,7 @@ impl DuckDbStore {
         if columns.is_empty() {
             return Ok(Vec::new());
         }
-        match self.run_integer_sum_query(map_table, start, end, columns) {
+        match self.run_integer_sum_query(rows, start, end, columns) {
             Ok(results) => Ok(columns
                 .iter()
                 .zip(results)
@@ -1978,7 +2077,7 @@ impl DuckDbStore {
                 .iter()
                 .map(|(index, column)| {
                     let result =
-                        self.run_integer_sum_query(map_table, start, end, &[(0, column.clone())]);
+                        self.run_integer_sum_query(rows, start, end, &[(0, column.clone())]);
                     match result {
                         Ok(mut result) => {
                             let (sum, overflow) = result.pop().unwrap_or((None, true));
@@ -1999,7 +2098,7 @@ impl DuckDbStore {
 
     fn run_integer_sum_query(
         &self,
-        map_table: &str,
+        rows: &str,
         start: i64,
         end: i64,
         columns: &[(usize, String)],
@@ -2016,11 +2115,7 @@ impl DuckDbStore {
                 ]
             })
             .collect::<Vec<_>>();
-        let sql = format!(
-            "SELECT {} FROM {map_table} AS v JOIN {} AS d ON d.rowid = v.source_row_id WHERE v.display_position >= ? AND v.display_position < ?",
-            projections.join(", "),
-            self.table_sql
-        );
+        let sql = format!("SELECT {} FROM {rows}", projections.join(", "));
         let mut statement = self
             .connection
             .prepare(&sql)
@@ -2496,6 +2591,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unsorted_tables_read_by_rowid_without_listing_rows() {
+        let store = DuckDbStore::synthetic(5).unwrap();
+        let rows = store.query_view_rows(&ViewQuery::default()).unwrap();
+        assert!(matches!(rows.row_ids, RowIds::Natural(5)));
+        assert!(rows.row_map.is_none());
+        let page = store
+            .fetch_view_page(None, &rows.row_ids, 1, 2)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.values[0].clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(page, ["1", "2"]);
+        assert!(
+            store
+                .fetch_view_page(None, &rows.row_ids, 5, 2)
+                .unwrap()
+                .is_empty()
+        );
+        let (aggregates, unique) = store
+            .selection_column_aggregates(None, 1, 4, &[0], &["BIGINT".into()])
+            .unwrap();
+        assert_eq!(unique, 3);
+        assert_eq!(aggregates[0].integer_sum.as_deref(), Some("6"));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("rows.csv");
+        let written = store
+            .export_view(
+                None,
+                &rows.row_ids,
+                &[0],
+                &path,
+                crate::domain::export::FileFormat::Csv,
+            )
+            .unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "Row\n0\n1\n2\n3\n4\n"
+        );
+        let widths = store
+            .width_candidates(Some(&rows.row_ids), &[("Row".into(), None)])
+            .unwrap();
+        assert!(widths[0].1.contains(&"4".to_owned()));
+
+        // Deleting a row leaves a gap in the rowids, so positions need a list.
+        store
+            .connection
+            .execute_batch("DELETE FROM qp_data WHERE \"Row\" = 1")
+            .unwrap();
+        let rows = store.query_view_rows(&ViewQuery::default()).unwrap();
+        assert_eq!(rows.row_ids.to_vec(), [0, 2, 3, 4]);
+        assert!(rows.row_map.is_some());
+        let sorted = store
+            .query_view_rows(&ViewQuery {
+                sort: vec![SortKey {
+                    column: "Row".into(),
+                    descending: true,
+                }],
+                ..ViewQuery::default()
+            })
+            .unwrap();
+        assert_eq!(sorted.row_ids.to_vec(), [4, 3, 2, 0]);
+    }
+
+    #[test]
     fn width_previews_project_quote_and_sample_real_row_ids_without_pages() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE qp_data AS SELECT i AS \"a\"\"b\", repeat('界', 500) AS long, 'ignored' AS other FROM range(5) t(i); DELETE FROM qp_data WHERE \"a\"\"b\" IN (1, 3)").unwrap();
@@ -2507,7 +2669,9 @@ mod tests {
         assert_eq!(sampled[1].1.len(), 1);
         assert_eq!(sampled[1].1[0].chars().count(), 201);
         assert!(sampled[1].1[0].ends_with('…'));
-        let subset = store.width_candidates(Some(&[4]), &columns[..1]).unwrap();
+        let subset = store
+            .width_candidates(Some(&RowIds::Listed(Arc::from([4]))), &columns[..1])
+            .unwrap();
         assert_eq!(subset[0].1, ["4"]);
         assert_eq!(store.width_sampling_calls(), 2);
         assert!(store.width_candidates(None, &[]).unwrap().is_empty());
@@ -2817,9 +2981,11 @@ mod tests {
         for (start, count) in [(0, 250), (5, 40), (100, 250), (110, 1), (111, 5), (500, 3)] {
             assert_eq!(
                 store
-                    .fetch_view_page(Some(&rows.row_map), &rows.row_ids, start, count)
+                    .fetch_view_page(rows.row_map.as_deref(), &rows.row_ids, start, count)
                     .unwrap(),
-                store.fetch_page(&rows.row_ids, start, count).unwrap(),
+                store
+                    .fetch_page(&rows.row_ids.to_vec(), start, count)
+                    .unwrap(),
                 "range {start}+{count}"
             );
         }

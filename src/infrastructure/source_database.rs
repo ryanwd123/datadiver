@@ -1399,7 +1399,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             .unwrap();
         assert_eq!(sorted.row_ids.len(), 20);
         assert_eq!(
-            source.fetch_row_ids(&sorted.row_ids[..1]).unwrap()[0].values,
+            source.fetch_row_ids(&sorted.row_ids.range(0, 1)).unwrap()[0].values,
             [Some("19".into()), Some("1".into())]
         );
 

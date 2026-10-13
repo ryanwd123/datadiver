@@ -1,7 +1,7 @@
 use crate::domain::formatting::{numeric_type_name, string_type_name};
 use crate::domain::frame::ResultSnapshot;
 use crate::domain::selection::Selection;
-use crate::infrastructure::duckdb_store::DuckDbStore;
+use crate::infrastructure::duckdb_store::{DuckDbStore, RowIds};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectionStatistics {
@@ -68,11 +68,12 @@ pub fn calculate(
             .lock()
             .map_err(|_| "DuckDB store lock poisoned".to_owned())?;
         let temporary_map;
-        let row_map = match result.row_map.as_deref() {
-            Some(row_map) => row_map,
-            None => {
-                temporary_map = store.materialize_view_rows_from_ids(&result.row_ids)?;
-                temporary_map.row_map.as_ref()
+        let row_map = match (&result.row_ids, result.row_map.as_deref()) {
+            (RowIds::Natural(_), _) => None,
+            (RowIds::Listed(_), Some(row_map)) => Some(row_map),
+            (RowIds::Listed(ids), None) => {
+                temporary_map = store.materialize_view_rows_from_ids(ids)?;
+                temporary_map.row_map.as_deref()
             }
         };
         DuckDbStore::selection_column_aggregates(

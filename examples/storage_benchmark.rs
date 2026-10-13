@@ -140,7 +140,11 @@ fn main() {
                 })
                 .unwrap()
         });
-        measure("page", || store.fetch_page(&rows.row_ids, 0, 250).unwrap());
+        measure("page", || {
+            store
+                .fetch_view_page(rows.row_map.as_deref(), &rows.row_ids, 0, 250)
+                .unwrap()
+        });
     }
     measure("pivot", || {
         pivot::execute(

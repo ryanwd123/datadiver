@@ -217,7 +217,7 @@ fn database_views_use_query_mode_limits_full_aggregations_and_persist(cx: &mut T
         assert_eq!(view.session.identity, SessionIdentity::DraftQuery);
         assert!(window.try_find("query-limit").is_some());
         assert_eq!(view.session.result.row_count(), 3);
-        assert_eq!(view.session.result.row_ids.as_ref(), &[0, 1, 2]);
+        assert_eq!(view.session.result.row_ids.to_vec(), [0, 1, 2]);
         assert_eq!(
             view.session.result.fetch_rows(0, 3).unwrap()[2].values[0],
             Some("2".into())

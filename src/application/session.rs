@@ -1195,10 +1195,7 @@ mod tests {
         session
             .navigate_to_view(Ok(source.clone()), definition)
             .unwrap();
-        assert!(std::sync::Arc::ptr_eq(
-            &session.result.row_ids,
-            &displayed.row_ids
-        ));
+        assert!(session.result.row_ids.same(&displayed.row_ids));
         assert!(session.token().request_revision > old.request_revision);
         assert!(!session.accepts(old));
         let changed = session.token();

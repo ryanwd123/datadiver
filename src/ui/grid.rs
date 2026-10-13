@@ -461,7 +461,7 @@ impl GridView {
                     store
                         .lock()
                         .map_err(|_| "Width sampling store lock poisoned".to_owned())?
-                        .width_candidates(rows.as_deref(), &columns)
+                        .width_candidates(rows.as_ref(), &columns)
                 })
                 .await;
             let _ = this.update(cx, |grid, cx| {

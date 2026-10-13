@@ -539,11 +539,9 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
         assert!(Arc::ptr_eq(&source.store, &view.session.source.store));
         assert_eq!(source.source_revision, view.session.source.source_revision);
         let result = &view.session.result;
-        assert!(Arc::ptr_eq(&first.row_ids, &result.row_ids));
-        assert!(Arc::ptr_eq(
-            first.row_map.as_ref().unwrap(),
-            result.row_map.as_ref().unwrap()
-        ));
+        assert!(first.row_ids.same(&result.row_ids));
+        // An unsorted, unfiltered table reads by rowid without a row map.
+        assert!(first.row_map.is_none() && result.row_map.is_none());
         assert!(result.page_is_cached(0));
         assert_eq!(result.columns[0].0, "n");
         assert!(result.result_revision > first.result_revision);
@@ -559,8 +557,8 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
     navigate(cx, sorted);
     cx.update(|cx| {
         let result = &view.read(cx).session.result;
-        assert!(!Arc::ptr_eq(&first.row_ids, &result.row_ids));
-        assert_eq!(&*result.row_ids, &[1, 0]);
+        assert!(!first.row_ids.same(&result.row_ids));
+        assert_eq!(result.row_ids.to_vec(), [1, 0]);
     });
     let mut sliced = base;
     sliced.slicers = vec![SlicerDefinition {
@@ -570,7 +568,7 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
         selected: vec![ScalarKey::String("North".into())],
     }];
     navigate(cx, sliced);
-    cx.update(|cx| assert_eq!(&*view.read(cx).session.result.row_ids, &[0]));
+    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_ids.to_vec(), [0]));
     let writer = cx.update(|cx| view.read(cx).history_writer.clone());
     writer.flush();
 }
@@ -678,7 +676,7 @@ fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search(cx: &mut Test
         assert_eq!(view.session.working.as_ref().unwrap().name, "Latest");
         assert_eq!(view.session.search_text, "north");
         assert_eq!(view.session.sort[0].column, "n");
-        assert_eq!(&*view.session.result.row_ids, &[0]);
+        assert_eq!(view.session.result.row_ids.to_vec(), [0]);
         assert!(!view.loading && !view.busy);
     });
     cx.update_window(handle.into(), |_, _, cx| {
@@ -698,7 +696,7 @@ fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search(cx: &mut Test
     cx.update(|cx| {
         let view = view.read(cx);
         assert!(view.session.search_text.is_empty());
-        assert_eq!(&*view.session.result.row_ids, &[1, 0]);
+        assert_eq!(view.session.result.row_ids.to_vec(), [1, 0]);
     });
     let writer = cx.update(|cx| view.read(cx).history_writer.clone());
     writer.flush();
@@ -1746,7 +1744,7 @@ fn clear_filters_button_clears_search_and_all_cards_preserving_sort(cx: &mut Tes
                 .all(|card| card.selected.is_empty())
         );
         assert!(!session.dirty);
-        assert_eq!(&*session.result.row_ids, &[1, 0]);
+        assert_eq!(session.result.row_ids.to_vec(), [1, 0]);
     })
     .unwrap();
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::infrastructure::duckdb_store::{
-    CachedRow, ColumnSchema, DuckDbStore, MaterializedViewRows, ViewQuery, ViewRowMap,
+    CachedRow, ColumnSchema, DuckDbStore, MaterializedViewRows, RowIds, ViewQuery, ViewRowMap,
 };
 
 pub const PAGE_SIZE: usize = 250;
@@ -54,8 +54,8 @@ impl FrameSnapshot {
 #[derive(Clone)]
 pub struct ResultSnapshot {
     pub store: Arc<Mutex<DuckDbStore>>,
-    /// Display position maps through this ordered vector to DuckDB's rowid.
-    pub row_ids: Arc<[i64]>,
+    /// Display position maps through these to DuckDB's rowid.
+    pub row_ids: RowIds,
     pub result_revision: u64,
     pub source_revision: u64,
     pub generation: u64,
@@ -105,7 +105,7 @@ impl ResultSnapshot {
     pub fn pending(source: &FrameSnapshot) -> Self {
         Self {
             store: source.store.clone(),
-            row_ids: Arc::from([]),
+            row_ids: RowIds::Listed(Arc::from([])),
             result_revision: 0,
             source_revision: source.source_revision,
             generation: 0,
@@ -167,14 +167,14 @@ impl ResultSnapshot {
                 .ok()
         });
         let (row_ids, row_map) = rows
-            .map(|rows| (rows.row_ids, Some(rows.row_map)))
+            .map(|rows| (rows.row_ids, rows.row_map))
             .unwrap_or_else(|| {
                 let row_ids = source
                     .store
                     .lock()
                     .map(|store| store.initial_row_ids().unwrap_or_default())
                     .unwrap_or_default();
-                (row_ids.into(), None)
+                (RowIds::Listed(row_ids.into()), None)
             });
         Self {
             store: source.store.clone(),
@@ -221,7 +221,7 @@ impl ResultSnapshot {
             columns,
             dtypes,
             column_indices: column_indices.into(),
-            row_map: Some(rows.row_map),
+            row_map: rows.row_map,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
             store_row_count: source.row_count(),
         }
@@ -450,7 +450,7 @@ mod tests {
         original.prefetch_page(0).unwrap();
         schema.reverse();
         let projected = original.reproject(&frame, &schema, 5);
-        assert!(Arc::ptr_eq(&original.row_ids, &projected.row_ids));
+        assert!(original.row_ids.same(&projected.row_ids));
         assert!(Arc::ptr_eq(&original.page_cache, &projected.page_cache));
         assert!(Arc::ptr_eq(
             original.row_map.as_ref().unwrap(),
