@@ -33,7 +33,7 @@ DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, 
 ## Features
 
 - **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, drop files on the window, or attach a DuckDB or SQLite database.
-- **Browse the database:** a sidebar tree of saved views, imported files, database tables and views, attached databases, and source folders.
+- **Browse the database:** a sidebar tree of saved views, cached files, database tables and views, attached databases, and watched files and folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any DuckDB aggregate. Add grand totals and a heat map.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
@@ -128,6 +128,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | < / > | Decrease / increase decimal places |
 | , | Toggle thousands grouping |
 | D | Show or hide cell detail |
+| N | Drop files to add to cache |
 | I | Information and column profiles |
 | Ctrl+C or C | Copy selection |
 | Ctrl+Shift+C | Copy as… |
@@ -149,11 +150,12 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 
 ## Opening data
 
-- **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too.
-- **Folders:** **Add folder** in the command palette watches a folder, and its supported files appear under **Ctrl+P** and in the database tree.
+- **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too. A file that is not watched opens in query mode: DuckDB reads it in place on every query, nothing is cached, and the row limit sets how many rows the grid shows. Aggregations still read every row. These files are remembered under **Recent files**.
+- **Watched files and folders:** watched sources are cached, so they open in table mode and can be scrolled, sorted, and filtered whole. Press **N** in the grid and drop files on the overlay, or use **Add watched files** in the command palette, to watch single files. **Add folder** watches a whole folder, and its supported files appear under **Ctrl+P** and in the database tree. A watched file opens from the cache however you open it.
 - **Clipboard:** **Ctrl+V** in the grid saves pasted text, such as cells copied from Excel or a web page, as a TSV or CSV file and opens it like any other source. Files copied in Explorer open directly.
-- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
-- **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, imported files, tables and views in the profile database and any attached databases, watched source folders, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
+- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows, in query mode unless they are watched. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
+- **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, cached files, tables and views in the profile database and any attached databases, watched files and folders, recent files, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
+- **Deleting from the tree:** **Delete** removes what the selected item stands for. A saved view is archived, a recent file is forgotten, a watched file or folder stops being watched and its cached tables are dropped, and an attached database is detached. A table or view in the profile database is dropped after you confirm. Folders are watched whole, so deleting a file inside a watched folder offers to stop watching the folder; to leave files out, move them out of the folder. Cached tables in the `files` schema are managed from their watched file or folder.
 - **Favorites:** **Ctrl+Shift+1–9** assigns the current file or view to a slot, and **Ctrl+1–9** opens it.
 
 ## Search
@@ -300,7 +302,7 @@ Choose one of `--file`, `--view`, or `--rows` per launch. `--home` and `--epheme
 
 CSV and TSV imports use a header row and automatic type detection. Excel imports read the first worksheet with a header row. Older `.xls` files, `.xlsb`, and `.ods` are not supported. The first Excel import or export may need internet access for DuckDB to download its `excel` extension.
 
-Imported sources are cached in an on-disk DuckDB database. Reopening an unchanged file can reuse its imported data instead of parsing it again. Source changes are detected using file size and modification time. Open windows check on activation and every second, then refresh their grids and pivots when the data changes; **Ctrl+R** forces a fresh import when needed.
+Watched files and the files in watched folders are cached in an on-disk DuckDB database. Reopening an unchanged file can reuse its imported data instead of parsing it again. Saved table and query views of a file also read it from the cache. Source changes are detected using file size and modification time. Open windows check on activation and every second, then refresh their grids and pivots when the data changes, including files open in query mode; **Ctrl+R** forces a fresh import when needed.
 
 Each file has one table in the `files` schema: `sales.csv` becomes `files.sales_csv`. Names are lowercase, with punctuation replaced by underscores. Files that map to the same table name are rejected. Reloads replace the table transactionally.
 
