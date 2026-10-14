@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::documents::DocumentDefinition;
 use crate::infrastructure::source_database::database_file_kind;
-use crate::ui::database_tree::{DatabaseTree, DatabaseTreeEvent, TreeTarget};
+use crate::domain::documents::RelationKind;
+use crate::ui::database_tree::{DatabaseTree, DatabaseTreeEvent, DeleteTarget, TreeTarget};
 
 /// Says how to make an attached database writable, since a drop attaches it
 /// read-only.
@@ -35,6 +36,9 @@ impl DataFrameView {
                     new_window,
                     pivot_draft,
                 } => view.open_tree_target(target.clone(), *new_window, *pivot_draft, window, cx),
+                DatabaseTreeEvent::Delete(target) => {
+                    view.delete_tree_target(target.clone(), window, cx)
+                }
                 DatabaseTreeEvent::FocusGrid => {
                     window.focus(&view.grid.read(cx).focus_handle(cx), cx)
                 }
@@ -124,6 +128,190 @@ impl DataFrameView {
             });
         })
         .detach();
+    }
+
+    /// Delete in the tree: removes what the selected item stands for, asking
+    /// first when that cannot be undone or reaches beyond the item.
+    fn delete_tree_target(
+        &mut self,
+        target: DeleteTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            DeleteTarget::View(definition) => {
+                self.archive_view(&definition, window, cx);
+                self.copy_status = Some(format!("Archived {}", definition.name));
+                self.refresh_database_tree(cx);
+            }
+            DeleteTarget::Relation(relation) => {
+                if let Some(catalog) = &relation.catalog {
+                    self.copy_status = Some(format!(
+                        "{} is in {catalog}, which the tree does not change; use SQL to change it",
+                        relation.label()
+                    ));
+                } else if relation.schema == "files" {
+                    self.copy_status = Some(format!(
+                        "{} is a cached file; remove its watched file or folder under Sources",
+                        relation.label()
+                    ));
+                } else {
+                    let kind = if relation.kind == RelationKind::View {
+                        "view"
+                    } else {
+                        "table"
+                    };
+                    self.confirm_tree_delete(
+                        format!("Drop {kind} {}?", relation.label()),
+                        "This cannot be undone.".into(),
+                        format!("Drop {kind}"),
+                        move |view, cx| {
+                            let database = view.database.clone();
+                            let relation = relation.clone();
+                            view.run_tree_delete(move || database.drop_relation(&relation), cx);
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+            DeleteTarget::FilesSchema => {
+                self.copy_status = Some(
+                    "files holds cached sources; remove watched files or folders under Sources"
+                        .into(),
+                );
+            }
+            DeleteTarget::Database(None) => {
+                self.copy_status = Some("The profile database cannot be detached".into());
+            }
+            DeleteTarget::Database(Some(catalog)) if catalog == "temp" => {
+                self.copy_status =
+                    Some("temp holds this session's temporary objects; drop them in SQL".into());
+            }
+            DeleteTarget::Database(Some(catalog)) => {
+                let database = self.database.clone();
+                self.run_tree_delete(move || database.detach(&catalog), cx);
+            }
+            DeleteTarget::RecentFile(path) => {
+                let result = ApplicationState::load(self.repository.clone())
+                    .and_then(|mut state| state.remove_recent_source(&path.to_string_lossy()));
+                self.error = result
+                    .err()
+                    .map(|error| format!("Cannot remove the recent file: {error}"));
+                self.refresh_database_tree(cx);
+            }
+            DeleteTarget::WatchedFile(path) => {
+                let removed = ApplicationState::load(self.repository.clone())
+                    .and_then(|mut state| state.remove_watched_file(&path.to_string_lossy()));
+                self.forget_cached(path, removed, cx);
+            }
+            DeleteTarget::WatchedFolder(root) => {
+                self.remove_watched_folder(root, cx);
+            }
+            DeleteTarget::InWatchedFolder { root, path } => {
+                let name = source_file_name(&path);
+                self.confirm_tree_delete(
+                    format!("Stop watching {}?", root.display()),
+                    format!(
+                        "{name} is in a watched folder, and DataDiver watches whole folders. \
+                         Removing the folder drops the cached tables of all its files. To \
+                         leave out only some files, move them out of the folder."
+                    ),
+                    "Remove folder".into(),
+                    move |view, cx| view.remove_watched_folder(root.clone(), cx),
+                    window,
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn remove_watched_folder(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let removed = ApplicationState::load(self.repository.clone())
+            .and_then(|mut state| state.remove_watched_folder(&root.to_string_lossy()));
+        self.forget_cached(root, removed, cx);
+    }
+
+    /// Drops the cached tables under `path` once it is no longer watched,
+    /// keeping files still watched some other way.
+    fn forget_cached(
+        &mut self,
+        path: PathBuf,
+        removed: std::io::Result<()>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = removed {
+            self.error = Some(format!("Cannot update watched sources: {error}"));
+            cx.notify();
+            return;
+        }
+        let database = self.database.clone();
+        let repository = self.repository.clone();
+        self.run_tree_delete(
+            move || {
+                let state =
+                    ApplicationState::load(repository).map_err(|error| error.to_string())?;
+                database.forget_sources(&path, |source| state.is_watched(source))
+            },
+            cx,
+        );
+    }
+
+    /// Runs a database change off the UI thread, then shows its error, if
+    /// any, and refreshes the tree.
+    fn run_tree_delete(
+        &mut self,
+        change: impl FnOnce() -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { change() }).await;
+            let _ = this.update(cx, |view, cx| {
+                if let Err(error) = result {
+                    view.error = Some(error);
+                }
+                view.refresh_database_tree(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_tree_delete(
+        &mut self,
+        title: String,
+        message: String,
+        action: String,
+        confirmed: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.entity();
+        let confirmed = std::rc::Rc::new(confirmed);
+        window.open_dialog(cx, move |dialog, _, _| {
+            let entity = entity.clone();
+            let confirmed = confirmed.clone();
+            let message = message.clone();
+            dialog
+                .title(title.clone())
+                .content(move |content, _, _| content.child(message.clone()))
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("tree-delete-confirm")
+                                    .danger()
+                                    .label(action.clone()),
+                            ),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    entity.update(cx, |view, cx| confirmed(view, cx));
+                    true
+                })
+        });
     }
 
     pub(super) fn save_database_tree_width(&mut self, width: f32) {

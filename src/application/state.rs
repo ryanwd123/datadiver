@@ -359,9 +359,7 @@ mod tests {
         let other = loose.path().join("other.csv");
         for path in [&inside, &single, &other] {
             std::fs::write(
-                path, "n
-1
-",
+                path, "n\n1\n",
             )
             .unwrap();
         }

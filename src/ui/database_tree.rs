@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::application::state::ApplicationState;
-use crate::domain::documents::{DatabaseView, DocumentDefinition, ViewKind};
+use crate::domain::documents::{DatabaseView, DocumentDefinition, RelationKind, ViewKind};
 use crate::infrastructure::catalog::scan_sources;
 use crate::infrastructure::json_store::ViewRepository;
 use crate::infrastructure::source_database::SourceDatabase;
@@ -24,12 +24,29 @@ pub enum TreeTarget {
     Relation(DatabaseView),
 }
 
+/// What pressing Delete on a tree item removes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeleteTarget {
+    View(Box<DocumentDefinition>),
+    Relation(DatabaseView),
+    /// A database folder; `None` is the profile database.
+    Database(Option<String>),
+    /// The profile database's `files` schema of cached sources.
+    FilesSchema,
+    RecentFile(PathBuf),
+    WatchedFile(PathBuf),
+    WatchedFolder(PathBuf),
+    /// A file or subfolder of the watched folder `root`.
+    InWatchedFolder { root: PathBuf, path: PathBuf },
+}
+
 pub enum DatabaseTreeEvent {
     Open {
         target: TreeTarget,
         new_window: bool,
         pivot_draft: bool,
     },
+    Delete(DeleteTarget),
     FocusGrid,
     Refresh,
     Close,
@@ -126,12 +143,27 @@ struct Folder {
 }
 
 impl Folder {
-    fn into_items(self, id: &str, builder: &mut Builder) -> Vec<TreeItem> {
+    /// `path` is this folder on disk, under the watched folder `root`.
+    fn into_items(
+        self,
+        id: &str,
+        root: &Path,
+        path: &Path,
+        builder: &mut Builder,
+    ) -> Vec<TreeItem> {
         let mut items = Vec::new();
         for (name, folder) in self.folders {
             let id = format!("{id}/{name}");
-            let children = folder.into_items(&id, builder);
+            let path = path.join(&name);
+            let children = folder.into_items(&id, root, &path, builder);
             if let Some(item) = builder.folder(&id, &name, children) {
+                builder.deletable.insert(
+                    id.into(),
+                    DeleteTarget::InWatchedFolder {
+                        root: root.to_path_buf(),
+                        path,
+                    },
+                );
                 items.push(item);
             }
         }
@@ -150,6 +182,7 @@ struct Builder<'a> {
     terms: Vec<String>,
     expanded: &'a HashSet<String>,
     targets: HashMap<SharedString, TreeTarget>,
+    deletable: HashMap<SharedString, DeleteTarget>,
 }
 
 impl Builder<'_> {
@@ -160,6 +193,22 @@ impl Builder<'_> {
         };
         if !self.terms.iter().all(|term| searchable.contains(term)) {
             return None;
+        }
+        let deletable = match (&target, id.split_once(':').map(|(kind, _)| kind)) {
+            (TreeTarget::View(view), _) => Some(DeleteTarget::View(view.clone())),
+            (TreeTarget::Relation(relation), _) if relation.kind != RelationKind::Function => {
+                Some(DeleteTarget::Relation(relation.clone()))
+            }
+            (TreeTarget::Source(path), Some("recent")) => {
+                Some(DeleteTarget::RecentFile(path.clone()))
+            }
+            (TreeTarget::Source(path), Some("watched")) => {
+                Some(DeleteTarget::WatchedFile(path.clone()))
+            }
+            _ => None,
+        };
+        if let Some(deletable) = deletable {
+            self.deletable.insert(id.clone().into(), deletable);
         }
         self.targets.insert(id.clone().into(), target);
         Some(TreeItem::new(id, label))
@@ -181,6 +230,21 @@ pub fn build_items(
     filter: &str,
     expanded: &HashSet<String>,
 ) -> (Vec<TreeItem>, HashMap<SharedString, TreeTarget>) {
+    let (items, targets, _) = build_tree(data, filter, expanded);
+    (items, targets)
+}
+
+/// [`build_items`], plus what Delete removes for each item that has one.
+#[allow(clippy::type_complexity)]
+fn build_tree(
+    data: &TreeData,
+    filter: &str,
+    expanded: &HashSet<String>,
+) -> (
+    Vec<TreeItem>,
+    HashMap<SharedString, TreeTarget>,
+    HashMap<SharedString, DeleteTarget>,
+) {
     let mut builder = Builder {
         terms: filter
             .to_lowercase()
@@ -189,6 +253,7 @@ pub fn build_items(
             .collect(),
         expanded,
         targets: HashMap::new(),
+        deletable: HashMap::new(),
     };
     let mut groups = Vec::new();
 
@@ -236,14 +301,24 @@ pub fn build_items(
     }
     let databases = databases
         .into_iter()
-        .filter_map(|((_, catalog), schemas)| {
+        .filter_map(|((attached, catalog), schemas)| {
             let schemas = schemas
                 .into_iter()
                 .filter_map(|(schema, items)| {
-                    builder.folder(&format!("db:{catalog}.{schema}"), &schema, items)
+                    let id = format!("db:{catalog}.{schema}");
+                    let item = builder.folder(&id, &schema, items)?;
+                    if !attached && schema == "files" {
+                        builder.deletable.insert(id.into(), DeleteTarget::FilesSchema);
+                    }
+                    Some(item)
                 })
                 .collect();
-            builder.folder(&format!("db:{catalog}"), &catalog, schemas)
+            let id = format!("db:{catalog}");
+            let item = builder.folder(&id, &catalog, schemas)?;
+            builder
+                .deletable
+                .insert(id.into(), DeleteTarget::Database(attached.then_some(catalog)));
+            Some(item)
         })
         .collect();
     groups.extend(builder.folder("group:databases", "Databases", databases));
@@ -264,15 +339,24 @@ pub fn build_items(
                 folder = folder.folders.entry(parent.clone()).or_default();
             }
             let path = root.join(file);
-            folder.leaves.push((
-                format!("src:{}", path.display()),
-                name.clone(),
-                TreeTarget::Source(path),
-            ));
+            let id = format!("src:{}", path.display());
+            builder.deletable.insert(
+                id.clone().into(),
+                DeleteTarget::InWatchedFolder {
+                    root: root.clone(),
+                    path: path.clone(),
+                },
+            );
+            folder.leaves.push((id, name.clone(), TreeTarget::Source(path)));
         }
         let id = format!("src:{}", root.display());
-        let children = tree.into_items(&id, &mut builder);
-        sources.extend(builder.folder(&id, &root.display().to_string(), children));
+        let children = tree.into_items(&id, root, root, &mut builder);
+        if let Some(item) = builder.folder(&id, &root.display().to_string(), children) {
+            builder
+                .deletable
+                .insert(id.into(), DeleteTarget::WatchedFolder(root.clone()));
+            sources.push(item);
+        }
     }
     let watched_files = data
         .watched_files
@@ -313,7 +397,7 @@ pub fn build_items(
         .collect();
     groups.extend(builder.folder("group:metadata", "DuckDB metadata", functions));
 
-    (groups, builder.targets)
+    (groups, builder.targets, builder.deletable)
 }
 
 /// A left pane listing saved views, database relations, watched source
@@ -324,6 +408,7 @@ pub struct DatabaseTree {
     pub(crate) filter: Entity<InputState>,
     data: TreeData,
     targets: HashMap<SharedString, TreeTarget>,
+    deletable: HashMap<SharedString, DeleteTarget>,
     expanded: HashSet<String>,
     loading: bool,
     error: Option<String>,
@@ -360,6 +445,7 @@ impl DatabaseTree {
             filter,
             data: TreeData::default(),
             targets: HashMap::new(),
+            deletable: HashMap::new(),
             expanded: OPEN_GROUPS.iter().map(|id| (*id).to_owned()).collect(),
             loading: false,
             error: None,
@@ -428,6 +514,26 @@ impl DatabaseTree {
             .map(|item| item.id.to_string())
     }
 
+    /// Opens every folder and selects the item `id`.
+    #[cfg(all(test, feature = "snapshots"))]
+    pub(crate) fn select(&mut self, id: &str, cx: &mut Context<Self>) {
+        fn folders(items: &[TreeItem], ids: &mut HashSet<String>) {
+            for item in items.iter().filter(|item| item.is_folder()) {
+                ids.insert(item.id.to_string());
+                folders(&item.children, ids);
+            }
+        }
+        let (items, _, _) = build_tree(&self.data, "", &self.expanded);
+        folders(&items, &mut self.expanded);
+        self.rebuild(cx);
+        let id = SharedString::from(id.to_owned());
+        self.tree.update(cx, |tree, cx| {
+            let index = tree.index_of(&id);
+            assert!(index.is_some(), "no tree item {id}");
+            tree.set_selected_index(index, cx);
+        });
+    }
+
     #[cfg(all(test, feature = "snapshots"))]
     pub(crate) fn relation_labels(&self) -> Vec<String> {
         let mut labels = self
@@ -444,8 +550,9 @@ impl DatabaseTree {
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let filter = self.filter.read(cx).value().to_string();
-        let (items, targets) = build_items(&self.data, &filter, &self.expanded);
+        let (items, targets, deletable) = build_tree(&self.data, &filter, &self.expanded);
         self.targets = targets;
+        self.deletable = deletable;
         // While filtering, a selected folder gives way to the first match so
         // Enter opens it.
         let selected = self
@@ -529,6 +636,15 @@ impl DatabaseTree {
             }
             "escape" => {
                 cx.emit(DatabaseTreeEvent::FocusGrid);
+                cx.stop_propagation();
+            }
+            "delete" if !modifiers.modified() => {
+                if let Some(target) = selected
+                    .and_then(|entry| self.deletable.get(&entry.item().id))
+                    .cloned()
+                {
+                    cx.emit(DatabaseTreeEvent::Delete(target));
+                }
                 cx.stop_propagation();
             }
             _ => {

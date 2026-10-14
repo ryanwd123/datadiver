@@ -568,6 +568,45 @@ impl SourceDatabase {
         Ok(())
     }
 
+    /// Detaches an attached database for the rest of this session.
+    pub fn detach(&self, catalog: &str) -> Result<(), String> {
+        self.execute_and_invalidate(&format!("DETACH {}", quote_identifier(catalog)))
+            .map_err(|error| format!("Cannot detach {catalog}: {error}"))
+    }
+
+    /// Drops a table or view of the profile database.
+    pub fn drop_relation(&self, relation: &DatabaseView) -> Result<(), String> {
+        let kind = match relation.kind {
+            RelationKind::View => "VIEW",
+            RelationKind::Table | RelationKind::TableWithoutRowid => "TABLE",
+            RelationKind::Function | RelationKind::File => {
+                return Err(format!("{} is not a table or view", relation.label()));
+            }
+        };
+        if relation.catalog.is_some() {
+            return Err(format!("{} is not in the profile database", relation.label()));
+        }
+        self.execute_and_invalidate(&format!("DROP {kind} {}", relation.relation_sql()))
+            .map_err(|error| format!("Cannot drop {}: {error}", relation.label()))
+    }
+
+    fn execute_and_invalidate(&self, sql: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "database writer lock poisoned")?;
+        self.ensure_initialized(&mut state)?;
+        let result = state
+            .as_ref()
+            .unwrap()
+            .connection
+            .execute_batch(sql)
+            .map_err(|error| error.to_string());
+        drop(state);
+        self.invalidate();
+        result
+    }
+
     /// Drops the cached tables of `path`, or of every file under it when it
     /// is a folder, except files `keep` says are still watched.
     pub fn forget_sources(&self, path: &Path, keep: impl Fn(&Path) -> bool) -> Result<(), String> {
@@ -2048,10 +2087,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let path = home.path().join("it's data.csv");
         fs::write(
             &path,
-            "region,sales
-North,10
-South,20
-",
+            "region,sales\nNorth,10\nSouth,20\n",
         )
         .unwrap();
         let database = SourceDatabase::for_profile(&home.path().join("profile"));
@@ -2092,6 +2128,48 @@ South,20
                 .unwrap()
                 .contains("unsupported source type")
         );
+    }
+
+    #[test]
+    fn detach_and_drop_change_only_what_the_tree_may_change() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("shop.duckdb");
+        let shop = Connection::open(&path).unwrap();
+        shop.execute_batch("CREATE TABLE orders AS SELECT 1 AS id")
+            .unwrap();
+        drop(shop);
+        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        database
+            .connect()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE main.notes AS SELECT 1 AS n; \
+                 CREATE VIEW main.note_view AS SELECT * FROM main.notes",
+            )
+            .unwrap();
+        let alias = database.attach(&path, DatabaseFileKind::DuckDb).unwrap();
+        let find = |name: &str| {
+            database
+                .relations()
+                .unwrap()
+                .into_iter()
+                .find(|relation| relation.name == name)
+        };
+        let orders = find("orders").unwrap();
+        assert!(database.drop_relation(&orders).is_err());
+        assert!(
+            database
+                .drop_relation(&DatabaseView::function("duckdb_tables"))
+                .is_err()
+        );
+        let revision = database.revision();
+        database.drop_relation(&find("note_view").unwrap()).unwrap();
+        database.drop_relation(&find("notes").unwrap()).unwrap();
+        assert!(database.revision() > revision);
+        assert!(find("notes").is_none() && find("note_view").is_none());
+        database.detach(&alias).unwrap();
+        assert!(find("orders").is_none());
+        assert!(database.detach(&alias).is_err());
     }
 
     #[test]

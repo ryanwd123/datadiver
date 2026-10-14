@@ -1080,9 +1080,7 @@ fn n_opens_an_overlay_that_caches_dropped_files_as_watched(cx: &mut TestAppConte
     let home = tempfile::tempdir().unwrap();
     let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
-    std::fs::write(&a, "word
-ur
-").unwrap();
+    std::fs::write(&a, "word\nur\n").unwrap();
     let folder = home.path().join("folder");
     std::fs::create_dir(&folder).unwrap();
     let (handle, entity) = viewer(cx, repository.clone());
@@ -1310,6 +1308,136 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &m
     press(cx, &["ctrl-b"]);
     cx.update(|cx| assert!(!entity.read(cx).database_tree_open));
     assert!(!repository.load_settings().unwrap().database_tree_open);
+}
+
+#[gpui_kit::test]
+fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAppContext) {
+    use crate::application::state::ApplicationState;
+    use gpui_kit::component::WindowExt as _;
+    use crate::infrastructure::source_database::LoadMode;
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("data");
+    std::fs::create_dir_all(folder.join("2024")).unwrap();
+    let q1 = folder.join("2024").join("q1.csv");
+    std::fs::write(&q1, "n\n1\n").unwrap();
+    let single = home.path().join("single.csv");
+    std::fs::write(&single, "n\n1\n").unwrap();
+    let recent = home.path().join("recent.csv");
+    std::fs::write(&recent, "n\n1\n").unwrap();
+    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let mut state = ApplicationState::load(repository.clone()).unwrap();
+    let mut settings = state.settings.clone();
+    settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
+    repository.save_settings(&settings).unwrap();
+    state.settings = settings;
+    state.add_watched_files(std::slice::from_ref(&single)).unwrap();
+    state.record_source(&recent).unwrap();
+    let mut saved = DocumentDefinition::draft_table("Old view".into(), recent.to_string_lossy().into());
+    repository.save_view(&mut saved).unwrap();
+    let (handle, entity) = viewer(cx, repository.clone());
+    let database = cx.update(|cx| entity.read(cx).database.clone());
+    database.load(&q1, LoadMode::Check).unwrap();
+    database.load(&single, LoadMode::Check).unwrap();
+    database
+        .connect()
+        .unwrap()
+        .execute_batch("CREATE TABLE main.notes AS SELECT 1 AS n")
+        .unwrap();
+    let tables = |database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>| {
+        database
+            .relations()
+            .unwrap()
+            .into_iter()
+            .map(|relation| relation.label())
+            .collect::<Vec<_>>()
+    };
+    assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-b", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let delete = |cx: &mut TestAppContext, id: &str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let tree = entity.read(cx).database_tree.clone();
+            tree.update(cx, |tree, cx| {
+                tree.select(id, cx);
+                tree.focus(window, cx);
+            });
+            window.render_frame(cx);
+            window.press("delete", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let confirm = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(window.has_active_dialog(cx));
+            window.render_frame(cx);
+            window.click("tree-delete-confirm", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let status = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let view = entity.read(cx);
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.copy_status.clone().unwrap_or_default()
+        })
+    };
+
+    // Groups, schema folders and metadata functions have nothing to delete.
+    delete(cx, "group:sources");
+    delete(cx, "db:profile.main");
+    cx.update_window(handle.into(), |_, window, cx| assert!(!window.has_active_dialog(cx)))
+        .unwrap();
+
+    // The profile database and cached tables explain where to manage them.
+    delete(cx, "db:profile");
+    assert!(status(cx).contains("cannot be detached"));
+    delete(cx, "db:files.q1_csv");
+    assert!(status(cx).contains("remove its watched file or folder"));
+
+    // A recent file is forgotten.
+    let recorded = state.history.recent_sources[0].clone();
+    delete(cx, &format!("recent:{recorded}"));
+    let state = ApplicationState::load(repository.clone()).unwrap();
+    assert!(
+        !state
+            .history
+            .recent_sources
+            .iter()
+            .any(|path| path.ends_with("recent.csv"))
+    );
+
+    // A watched file stops being watched and its cached table is dropped.
+    delete(cx, &format!("watched:{}", state.settings.watched_files[0]));
+    status(cx);
+    assert!(!ApplicationState::load(repository.clone()).unwrap().is_watched(&single));
+    assert!(!tables(&database).contains(&"files.single_csv".to_owned()));
+
+    // A file in a watched folder asks before removing the whole folder.
+    delete(cx, &format!("src:{}", q1.display()));
+    assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
+    confirm(cx);
+    status(cx);
+    let state = ApplicationState::load(repository.clone()).unwrap();
+    assert!(state.settings.watched_folders.is_empty());
+    assert!(!tables(&database).contains(&"files.q1_csv".to_owned()));
+
+    // A table of the profile database is dropped once confirmed.
+    delete(cx, "db:main.notes");
+    assert!(tables(&database).contains(&"main.notes".to_owned()));
+    confirm(cx);
+    status(cx);
+    assert!(!tables(&database).contains(&"main.notes".to_owned()));
+
+    // A saved view is archived.
+    delete(cx, &format!("view:{}", saved.id));
+    assert!(status(cx).starts_with("Archived Old view"));
+    assert!(repository.load_views().0.is_empty());
 }
 
 #[gpui_kit::test]
