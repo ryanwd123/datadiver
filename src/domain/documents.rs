@@ -394,6 +394,9 @@ pub enum RelationKind {
     TableWithoutRowid,
     /// A table function called without arguments, such as `duckdb_tables()`.
     Function,
+    /// A source file read in place through DuckDB's reader, never imported.
+    /// The relation's `name` is the file's path.
+    File,
 }
 
 /// A relation in the profile database, or in a database attached to it,
@@ -430,9 +433,27 @@ impl DatabaseView {
         }
     }
 
+    /// A source file opened in query mode, read in place on every query.
+    pub fn file(path: impl Into<String>) -> Self {
+        Self {
+            name: path.into(),
+            kind: RelationKind::File,
+            ..Self::default()
+        }
+    }
+
+    /// The source path of a file opened in query mode.
+    pub fn file_path(&self) -> Option<&str> {
+        (self.kind == RelationKind::File).then_some(self.name.as_str())
+    }
+
     pub fn label(&self) -> String {
         match (&self.kind, &self.catalog) {
             (RelationKind::Function, _) => format!("{}()", self.name),
+            (RelationKind::File, _) => std::path::Path::new(&self.name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.name.clone()),
             (_, Some(catalog)) => format!("{catalog}.{}.{}", self.schema, self.name),
             (_, None) => format!("{}.{}", self.schema, self.name),
         }
@@ -443,6 +464,15 @@ impl DatabaseView {
         use crate::infrastructure::duckdb_store::quote_identifier;
         if self.kind == RelationKind::Function {
             return format!("{}()", quote_identifier(&self.name));
+        }
+        if self.kind == RelationKind::File {
+            // An unsupported path fails when the store opens, with the reader's message.
+            let path = format!("'{}'", self.name.replace('\'', "''"));
+            return crate::infrastructure::source_database::source_reader(std::path::Path::new(
+                &self.name,
+            ))
+            .map(|reader| reader.replacen('?', &path, 1))
+            .unwrap_or_else(|_| format!("read_csv({path})"));
         }
         let relation = format!(
             "{}.{}",
@@ -503,7 +533,8 @@ impl DocumentDefinition {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(view) = &self.database_view {
             if view.name.trim().is_empty()
-                || (view.kind != RelationKind::Function && view.schema.trim().is_empty())
+                || (!matches!(view.kind, RelationKind::Function | RelationKind::File)
+                    && view.schema.trim().is_empty())
             {
                 return Err("database view schema and name are required".into());
             }

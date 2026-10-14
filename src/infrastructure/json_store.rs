@@ -52,6 +52,8 @@ pub struct Settings {
     pub query_limit: u64,
     pub keybindings: std::collections::BTreeMap<String, String>,
     pub watched_folders: Vec<String>,
+    /// Single files kept in the cache, outside every watched folder.
+    pub watched_files: Vec<String>,
     pub favorites: [Option<FavoriteTarget>; 9],
     pub ai: crate::domain::ai::AiSettings,
 }
@@ -71,6 +73,7 @@ impl Default for Settings {
             query_limit: DEFAULT_QUERY_LIMIT,
             keybindings: Default::default(),
             watched_folders: Vec::new(),
+            watched_files: Vec::new(),
             favorites: Default::default(),
             ai: Default::default(),
         }

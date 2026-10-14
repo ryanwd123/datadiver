@@ -153,7 +153,7 @@ impl DataFrameView {
     ) {
         let entry = match target {
             TreeTarget::View(definition) => FileEntry::View(*definition),
-            TreeTarget::Source(path) => FileEntry::Source(path),
+            TreeTarget::Source(path) => self.resolve_source(FileEntry::Source(path)),
             TreeTarget::Relation(relation) => {
                 FileEntry::View(DocumentDefinition::draft_database_view(relation))
             }

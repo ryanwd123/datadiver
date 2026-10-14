@@ -917,9 +917,11 @@ fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns(cx: &mut Tes
                 .as_deref()
                 .is_some_and(|status| status.starts_with("Pasted table saved to"))
         );
-        std::path::PathBuf::from(view.session.source_path.clone().unwrap())
+        std::path::PathBuf::from(view.query_file().unwrap())
     });
-    assert_eq!(pasted.parent().unwrap(), home.path().join("pasted"));
+    let pasted_folder =
+        crate::infrastructure::source_database::absolute_source_path(&home.path().join("pasted"));
+    assert_eq!(pasted.parent().unwrap(), pasted_folder);
     assert_eq!(pasted.extension().unwrap(), "tsv");
     assert_eq!(column_names(&entity, cx), ["city", "sales"]);
     let rows = cx.update(|cx| {
@@ -978,7 +980,8 @@ fn pasting_without_text_reports_an_error_and_keeps_the_table(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn dropped_files_open_the_first_here_and_the_rest_in_new_windows(cx: &mut TestAppContext) {
+fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
+    use crate::application::state::ApplicationState;
     use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
     let home = tempfile::tempdir().unwrap();
     let repository = ViewRepository::new(StorePaths::for_home(home.path()));
@@ -986,7 +989,7 @@ fn dropped_files_open_the_first_here_and_the_rest_in_new_windows(cx: &mut TestAp
     let b = home.path().join("b.tsv");
     std::fs::write(&a, "word\nur\n").unwrap();
     std::fs::write(&b, "x\ty\n1\t2\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
+    let (handle, entity) = viewer(cx, repository.clone());
     let windows = cx.update(|cx| cx.windows().len());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -1005,14 +1008,68 @@ fn dropped_files_open_the_first_here_and_the_rest_in_new_windows(cx: &mut TestAp
     })
     .unwrap();
     cx.run_until_parked();
+    let database = cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        // Dropped files open in query mode, read in place without importing.
+        assert_eq!(view.session.source_path, None);
+        assert_eq!(
+            view.query_file(),
+            Some(
+                crate::infrastructure::source_database::absolute_source_path(&a)
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        assert!(!view.is_table());
+        assert_eq!(view.session.result.row_count(), 1);
+        assert_eq!(cx.windows().len(), windows + 1);
+        view.database.clone()
+    });
+    assert!(
+        !database
+            .relations()
+            .unwrap()
+            .iter()
+            .any(|relation| relation.schema == "files")
+    );
+    crate::application::history::HistoryWriter::flush_profiles();
+    let mut state = ApplicationState::load(repository.clone()).unwrap();
+    assert!(
+        state
+            .history
+            .recent_sources
+            .iter()
+            .any(|path| path.ends_with("a.csv"))
+    );
+
+    // A watched file opens from the cache instead.
+    state.add_watched_files(&[a.clone()]).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        let position = point(px(400.), px(300.));
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Entered {
+                position,
+                paths: ExternalPaths([a.clone()].into_iter().collect()),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
     cx.update(|cx| {
         let view = entity.read(cx);
         assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.query_file(), None);
         assert_eq!(
             view.session.source_path.as_deref(),
             Some(a.to_str().unwrap())
         );
-        assert_eq!(cx.windows().len(), windows + 1);
+        assert!(view.is_table());
     });
 }
 

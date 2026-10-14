@@ -226,6 +226,14 @@ enum FileEntry {
     StartupSql,
 }
 
+/// `path` read in place in query mode, without importing it.
+fn query_file_entry(path: &std::path::Path) -> FileEntry {
+    let path = crate::infrastructure::source_database::absolute_source_path(path);
+    FileEntry::View(DocumentDefinition::draft_database_view(
+        crate::domain::documents::DatabaseView::file(path.to_string_lossy()),
+    ))
+}
+
 /// Filters applied to a source table once a drill-down has opened it.
 #[derive(Clone)]
 struct DrillDown {
@@ -1300,6 +1308,24 @@ impl DataFrameView {
             .as_ref()
             .and_then(|d| d.database_view.clone())
         {
+            if let Some(path) = database_view.file_path() {
+                // A file read in place reloads when it changes on disk.
+                let revision = self.session.source.source_revision;
+                let probe = self.database.probe(std::path::Path::new(path));
+                let changed = match (&self.source_probe, &probe) {
+                    (Some((seen, seen_revision, last)), probe)
+                        if seen == path && *seen_revision == revision =>
+                    {
+                        !probe.as_ref().is_some_and(|probe| probe.same_file(last))
+                    }
+                    _ => false,
+                };
+                self.source_probe = probe.map(|probe| (path.to_owned(), revision, probe));
+                if changed {
+                    self.check_database_view(database_view, cx);
+                }
+                return;
+            }
             if self
                 .session
                 .source
@@ -4275,6 +4301,7 @@ impl DataFrameView {
                                             window.close_dialog(cx);
                                             let handle = window.window_handle();
                                             view.update(cx, |view, cx| {
+                                                let entry = view.resolve_source(entry);
                                                 view.navigate_to_file(
                                                     entry,
                                                     carry_search,
@@ -4312,6 +4339,7 @@ impl DataFrameView {
                         .map(PathBuf::from)
                         .collect::<Vec<_>>();
                     let mut sources = scan_sources(&folders);
+                    sources.extend(state.settings.watched_files.iter().map(PathBuf::from));
                     sources.extend(state.history.recent_sources.into_iter().map(PathBuf::from));
                     let mut seen = std::collections::HashSet::new();
                     sources.retain(|path| seen.insert(path.to_string_lossy().to_lowercase()));
@@ -4557,6 +4585,9 @@ impl DataFrameView {
                     | SessionIdentity::SavedSql(id) => Some(FavoriteTarget::View {
                         view_id: id.clone(),
                     }),
+                    SessionIdentity::DraftQuery if self.query_file().is_some() => {
+                        self.query_file().map(FavoriteTarget::Source)
+                    }
                     SessionIdentity::DraftQuery | SessionIdentity::DraftSql => {
                         self.error =
                             Some("Save this view before assigning it as a favorite".into());
@@ -4583,7 +4614,7 @@ impl DataFrameView {
                 Some(target) => {
                     let entry = match target {
                         FavoriteTarget::Source(path) => {
-                            Some(FileEntry::Source(PathBuf::from(path)))
+                            Some(self.resolve_source(FileEntry::Source(PathBuf::from(path))))
                         }
                         FavoriteTarget::View { view_id } => state
                             .views
@@ -4686,14 +4717,8 @@ impl DataFrameView {
                     && let Some(this) = this.upgrade()
                 {
                     this.update(cx, |view, cx| {
-                        view.navigate_to_file(
-                            FileEntry::Source(path),
-                            false,
-                            false,
-                            true,
-                            handle,
-                            cx,
-                        )
+                        let entry = view.resolve_source(FileEntry::Source(path));
+                        view.navigate_to_file(entry, false, false, true, handle, cx)
                     });
                 }
             }
@@ -4752,14 +4777,8 @@ impl DataFrameView {
                     Ok(path) => {
                         view.copy_status =
                             Some(format!("Pasted table saved to {}", path.display()));
-                        view.navigate_to_file(
-                            FileEntry::Source(path),
-                            false,
-                            false,
-                            true,
-                            handle,
-                            cx,
-                        );
+                        let entry = view.resolve_source(FileEntry::Source(path));
+                        view.navigate_to_file(entry, false, false, true, handle, cx);
                     }
                     Err(error) => {
                         view.error = Some(error);
@@ -4792,16 +4811,24 @@ impl DataFrameView {
             cx.notify();
             return;
         }
-        self.navigate_to_file(
-            FileEntry::Source(first),
-            false,
-            false,
-            true,
-            window.window_handle(),
-            cx,
-        );
+        let entry = self.resolve_source(FileEntry::Source(first));
+        self.navigate_to_file(entry, false, false, true, window.window_handle(), cx);
         for path in paths.filter(|path| !path.is_dir()) {
             self.open_blank_window(Some(path), cx);
+        }
+    }
+
+    /// Watched files open from the cache; any other file is read in place
+    /// in query mode, so opening it never imports it.
+    fn resolve_source(&self, entry: FileEntry) -> FileEntry {
+        match entry {
+            FileEntry::Source(path)
+                if !ApplicationState::load(self.repository.clone())
+                    .is_ok_and(|state| state.is_watched(&path)) =>
+            {
+                query_file_entry(&path)
+            }
+            entry => entry,
         }
     }
 
@@ -5456,13 +5483,27 @@ impl DataFrameView {
         }
     }
 
+    /// The source path of a file open in query mode.
+    fn query_file(&self) -> Option<String> {
+        self.session
+            .working
+            .as_ref()?
+            .database_view
+            .as_ref()?
+            .file_path()
+            .map(str::to_owned)
+    }
+
     fn record_opened(&self) -> Result<(), String> {
         if matches!(self.session.identity, SessionIdentity::StartupSql) {
             return Ok(());
         }
         self.history_writer.opened(
             self.session.working.clone(),
-            self.session.source_path.clone(),
+            self.session
+                .source_path
+                .clone()
+                .or_else(|| self.query_file()),
         )
     }
 
@@ -6389,7 +6430,31 @@ impl DataFrameView {
                     });
                 } else if let Some(path) = viewer_options.load_path.clone() {
                     view.update(cx, |view, cx| {
-                        view.load_source(path, false, LoadMode::Check, window.window_handle(), cx)
+                        // A saved view's source always comes from the cache.
+                        let entry = if viewer_options.load_view.is_some() {
+                            FileEntry::Source(path)
+                        } else {
+                            view.resolve_source(FileEntry::Source(path))
+                        };
+                        match entry {
+                            FileEntry::Source(path) => view.load_source(
+                                path,
+                                false,
+                                LoadMode::Check,
+                                window.window_handle(),
+                                cx,
+                            ),
+                            entry => view.navigate_to_location(
+                                entry,
+                                false,
+                                false,
+                                true,
+                                None,
+                                None,
+                                window.window_handle(),
+                                cx,
+                            ),
+                        }
                     });
                 } else if !viewer_options.search_text.is_empty() {
                     view.update(cx, |view, cx| {

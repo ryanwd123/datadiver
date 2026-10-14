@@ -1893,18 +1893,18 @@ fn file_picker_empty_query_escape_and_filtered_source_confirmation(cx: &mut Test
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(!window.has_active_dialog(cx));
-        let session = &view.read(cx).session;
+        // A recent file that is not watched opens in query mode.
         assert!(
-            session
-                .source_path
-                .as_ref()
+            view.read(cx)
+                .query_file()
                 .unwrap()
                 .ends_with("West report.csv")
         );
+        let session = &view.read(cx).session;
         assert_eq!(session.result.row_count(), 2);
         assert!(matches!(
             session.identity,
-            crate::application::session::SessionIdentity::DraftTable
+            crate::application::session::SessionIdentity::DraftQuery
         ));
     })
     .unwrap();

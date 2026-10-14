@@ -40,6 +40,13 @@ pub struct SourceProbe {
     stamp: FileStamp,
 }
 
+impl SourceProbe {
+    /// Whether both probes saw the same file contents, ignoring the database.
+    pub fn same_file(&self, other: &Self) -> bool {
+        self.stamp == other.stamp
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileStamp {
     modified_ns: i128,
@@ -278,7 +285,13 @@ impl SourceDatabase {
     }
 
     pub fn load_view(self: &Arc<Self>, view: &DatabaseView) -> Result<DuckDbStore, String> {
-        if !self.relation_exists(view)? {
+        if let Some(path) = view.file_path() {
+            let path = Path::new(path);
+            source_reader(path)?;
+            if !path.is_file() {
+                return Err(format!("cannot access source {}", path.display()));
+            }
+        } else if !self.relation_exists(view)? {
             return Err(format!("Database view {} no longer exists", view.label()));
         }
         DuckDbStore::from_database_view(self.connect()?, self.clone(), view)
@@ -876,7 +889,7 @@ fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     })
 }
 
-fn absolute_source_path(path: &Path) -> PathBuf {
+pub(crate) fn absolute_source_path(path: &Path) -> PathBuf {
     // A deleted file can't be canonicalized, but its folder usually can; without
     // this, 8.3 short names (C:\Users\RUNNER~1) would give it a different key.
     let canonical_in_parent = || {
@@ -1985,6 +1998,58 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(alias("sales.duckdb"), "sales_2");
         assert_eq!(alias("2024.db"), "db_2024");
         assert_eq!(alias("memory.db"), "memory_2");
+    }
+
+    #[test]
+    fn files_open_in_query_mode_without_importing() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("it's data.csv");
+        fs::write(
+            &path,
+            "region,sales
+North,10
+South,20
+",
+        )
+        .unwrap();
+        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        let view = DatabaseView::file(path.to_string_lossy());
+        assert_eq!(view.label(), "it's data.csv");
+        let store = database.load_view(&view).unwrap();
+        assert!(store.is_database_view());
+        let count: i64 = database
+            .connect()
+            .unwrap()
+            .query_row(
+                &format!("SELECT count(*) FROM {}", view.relation_sql()),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        assert!(
+            !database
+                .relations()
+                .unwrap()
+                .iter()
+                .any(|relation| relation.schema == "files")
+        );
+        let missing = DatabaseView::file(home.path().join("gone.csv").to_string_lossy());
+        assert!(
+            database
+                .load_view(&missing)
+                .err()
+                .unwrap()
+                .contains("cannot access")
+        );
+        let unsupported = DatabaseView::file(home.path().join("notes.txt").to_string_lossy());
+        assert!(
+            database
+                .load_view(&unsupported)
+                .err()
+                .unwrap()
+                .contains("unsupported source type")
+        );
     }
 
     #[test]

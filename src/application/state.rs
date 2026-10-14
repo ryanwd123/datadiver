@@ -50,7 +50,11 @@ impl ApplicationState {
         self.history = self.repository.update_history(|history| {
             history.last_view_id = Some(view.id.clone());
             history.last_raw_source = None;
-            push_recent(history, view.source_path.clone());
+            let file = view
+                .database_view
+                .as_ref()
+                .and_then(|relation| relation.file_path());
+            push_recent(history, file.unwrap_or(&view.source_path).to_owned());
         })?;
         Ok(())
     }
@@ -99,6 +103,60 @@ impl ApplicationState {
             .retain(|saved| !same_path(saved, path));
         self.repository.save_settings(&settings)?;
         self.settings = settings;
+        Ok(())
+    }
+
+    /// Adds files to the cache list, skipping ones already watched directly
+    /// or through a folder.
+    pub fn add_watched_files(&mut self, paths: &[std::path::PathBuf]) -> io::Result<()> {
+        let mut settings = self.settings.clone();
+        for path in paths {
+            if !path.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("not a file: {}", path.display()),
+                ));
+            }
+            if watched_in(&settings, path) {
+                continue;
+            }
+            settings
+                .watched_files
+                .push(path.canonicalize()?.to_string_lossy().into_owned());
+        }
+        self.repository.save_settings(&settings)?;
+        self.settings = settings;
+        Ok(())
+    }
+
+    pub fn remove_watched_file(&mut self, path: &str) -> io::Result<()> {
+        let mut settings = self.settings.clone();
+        settings
+            .watched_files
+            .retain(|saved| !same_path(saved, path));
+        self.repository.save_settings(&settings)?;
+        self.settings = settings;
+        Ok(())
+    }
+
+    /// Whether `path` is cached: a watched file, or a file under a watched folder.
+    pub fn is_watched(&self, path: &Path) -> bool {
+        watched_in(&self.settings, path)
+    }
+
+    pub fn remove_recent_source(&mut self, path: &str) -> io::Result<()> {
+        self.history = self.repository.update_history(|history| {
+            history
+                .recent_sources
+                .retain(|saved| !same_path(saved, path));
+            if history
+                .last_raw_source
+                .as_deref()
+                .is_some_and(|saved| same_path(saved, path))
+            {
+                history.last_raw_source = None;
+            }
+        })?;
         Ok(())
     }
 
@@ -153,6 +211,19 @@ fn same_path(left: &str, right: &str) -> bool {
     {
         left == right
     }
+}
+
+fn watched_in(settings: &Settings, path: &Path) -> bool {
+    use crate::infrastructure::source_database::normalized_path;
+    let key = normalized_path(path);
+    settings
+        .watched_files
+        .iter()
+        .any(|file| normalized_path(Path::new(file)) == key)
+        || settings
+            .watched_folders
+            .iter()
+            .any(|folder| key.starts_with(normalized_path(Path::new(folder))))
 }
 
 fn push_recent(history: &mut ApplicationHistory, path: String) {
@@ -276,6 +347,58 @@ mod tests {
                 .watched_folders
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn watched_files_and_folders_decide_what_is_cached() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let loose = tempfile::tempdir().unwrap();
+        let inside = folder.path().join("inside.csv");
+        let single = loose.path().join("single.csv");
+        let other = loose.path().join("other.csv");
+        for path in [&inside, &single, &other] {
+            std::fs::write(
+                path, "n
+1
+",
+            )
+            .unwrap();
+        }
+        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        let mut state = ApplicationState::load(repository.clone()).unwrap();
+        state.add_watched_folder(folder.path()).unwrap();
+        // A file under a watched folder is already cached, so it is not added again.
+        state
+            .add_watched_files(&[single.clone(), inside.clone(), single.clone()])
+            .unwrap();
+        assert_eq!(state.settings.watched_files.len(), 1);
+        assert!(state.add_watched_files(&[loose.path().into()]).is_err());
+        let saved = ApplicationState::load(repository.clone()).unwrap();
+        assert!(saved.is_watched(&inside));
+        assert!(saved.is_watched(&single));
+        assert!(!saved.is_watched(&other));
+        state
+            .remove_watched_file(&saved.settings.watched_files[0])
+            .unwrap();
+        assert!(
+            !ApplicationState::load(repository)
+                .unwrap()
+                .is_watched(&single)
+        );
+    }
+
+    #[test]
+    fn removing_a_recent_source_forgets_it_for_restore() {
+        let home = tempfile::tempdir().unwrap();
+        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        let mut state = ApplicationState::load(repository.clone()).unwrap();
+        state.record_source(Path::new("a.csv")).unwrap();
+        state.record_source(Path::new("b.csv")).unwrap();
+        state.remove_recent_source("b.csv").unwrap();
+        let saved = ApplicationState::load(repository).unwrap();
+        assert_eq!(saved.history.recent_sources, ["a.csv"]);
+        assert_eq!(saved.history.last_raw_source, None);
     }
 
     #[test]
