@@ -799,6 +799,8 @@ fn source_monitor_reports_missing_files_and_recovers_when_recreated(cx: &mut Tes
     let source = home.path().join("source.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
     let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let mut state = crate::application::state::ApplicationState::load(repository.clone()).unwrap();
+    state.add_watched_files(std::slice::from_ref(&source)).unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
     let frame = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
     let (_, view) = viewer_with_document(
@@ -842,6 +844,25 @@ fn source_monitor_reports_missing_files_and_recovers_when_recreated(cx: &mut Tes
             Some("East".into())
         );
     });
+
+    // Removing the file from the cache does not let the window import it again.
+    let watched = state.settings.watched_files[0].clone();
+    state.remove_watched_file(&watched).unwrap();
+    database.forget_sources(&source, |_| false).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let error = view.read(cx).error.clone().unwrap();
+        assert!(error.contains("was removed from the cache"), "{error}");
+    });
+    assert!(
+        !database
+            .relations()
+            .unwrap()
+            .iter()
+            .any(|relation| relation.schema == "files")
+    );
 }
 
 fn viewer(

@@ -16,6 +16,8 @@ pub enum CommandId {
     Open,
     PasteTable,
     AddFolder,
+    AddWatchedFiles,
+    CacheFiles,
     OpenSettingsDirectory,
     Reload,
     ReloadReset,
@@ -165,6 +167,18 @@ pub const COMMANDS: &[Command] = &[
         key: "add_folder",
         label: "Add folder",
         default_binding: None,
+    },
+    Command {
+        id: CommandId::AddWatchedFiles,
+        key: "add_watched_files",
+        label: "Add watched files",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::CacheFiles,
+        key: "cache_files",
+        label: "Drop files to add to cache",
+        default_binding: Some("n"),
     },
     Command {
         id: CommandId::OpenSettingsDirectory,

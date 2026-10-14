@@ -17,6 +17,10 @@ static PROFILES: OnceLock<Mutex<Profiles>> = OnceLock::new();
 pub enum LoadMode {
     Check,
     Force,
+    /// Like `Check`, but a file with no cached table returns
+    /// [`SourceLoad::NotCached`] instead of being imported, so an open window
+    /// can tell a file removed from the cache from one that changed.
+    Refresh,
 }
 
 #[derive(Clone)]
@@ -30,6 +34,8 @@ pub struct PersistentSourceIdentity {
 pub enum SourceLoad {
     Reused,
     Loaded(Box<DuckDbStore>),
+    /// A [`LoadMode::Refresh`] found no cached table for the file.
+    NotCached,
 }
 
 /// What a source's freshness depends on, cheap enough to read every second:
@@ -375,6 +381,7 @@ impl SourceDatabase {
         match self.load_internal(path, mode, None, after_import)? {
             SourceLoad::Loaded(store) => Ok(*store),
             SourceLoad::Reused => unreachable!("no existing source was supplied"),
+            SourceLoad::NotCached => Err(format!("{} is not cached", path.display())),
         }
     }
 
@@ -421,7 +428,10 @@ impl SourceDatabase {
             }
         }
         let previous = catalog_entry(&state.connection, &key)?;
-        if mode == LoadMode::Check
+        if mode == LoadMode::Refresh && previous.is_none() {
+            return Ok(SourceLoad::NotCached);
+        }
+        if mode != LoadMode::Force
             && let Some(entry) = &previous
             && entry.stamp == stamp
             && table_exists(&state.connection, &entry.table_name)?
@@ -555,6 +565,38 @@ impl SourceDatabase {
         if let Some(state) = state.as_mut() {
             sweep_missing(&state.connection)?;
         }
+        Ok(())
+    }
+
+    /// Drops the cached tables of `path`, or of every file under it when it
+    /// is a folder, except files `keep` says are still watched.
+    pub fn forget_sources(&self, path: &Path, keep: impl Fn(&Path) -> bool) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "database writer lock poisoned")?;
+        self.ensure_initialized(&mut state)?;
+        let connection = &state.as_ref().unwrap().connection;
+        let root = PathBuf::from(path_key(&absolute_source_path(path)));
+        let entries = {
+            let mut statement = connection
+                .prepare("SELECT path_key, source_path FROM main.__qp_file_catalog")
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        for (key, source) in entries {
+            if Path::new(&key).starts_with(&root) && !keep(Path::new(&source)) {
+                remove_source(connection, &key)?;
+            }
+        }
+        drop(state);
+        self.invalidate();
         Ok(())
     }
 

@@ -85,6 +85,7 @@ mod navigation_tests;
 mod performance;
 mod search_completion;
 mod sql_editor;
+mod watched_files;
 #[cfg(all(test, feature = "snapshots"))]
 mod sql_tests;
 
@@ -169,6 +170,8 @@ pub struct DataFrameView {
     file_revision: u64,
     space_menu_open: bool,
     action_menu_open: bool,
+    /// The overlay that adds dropped files to the cache instead of opening them.
+    cache_drop_open: bool,
     keymap: KeymapFile,
     theme: ThemeSettings,
     font: FontPreferences,
@@ -360,6 +363,8 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::Open,
     CommandId::PasteTable,
     CommandId::AddFolder,
+    CommandId::AddWatchedFiles,
+    CommandId::CacheFiles,
     CommandId::OpenSettingsDirectory,
     CommandId::Reload,
     CommandId::ReloadReset,
@@ -1232,6 +1237,7 @@ impl DataFrameView {
             file_revision: 0,
             space_menu_open: false,
             action_menu_open: false,
+            cache_drop_open: false,
             keymap,
             theme,
             font,
@@ -1343,6 +1349,12 @@ impl DataFrameView {
             return;
         };
         let database = self.database.clone();
+        let repository = self.repository.clone();
+        let saved_view = self
+            .session
+            .working
+            .as_ref()
+            .is_some_and(|definition| !definition.id.is_empty());
         let source_revision = self.session.source.source_revision;
         let last_probe = self
             .source_probe
@@ -1361,8 +1373,20 @@ impl DataFrameView {
                     if probe.is_some() && probe == last_probe {
                         return (probe, Ok(SourceLoad::Reused));
                     }
-                    let result =
-                        database.load_reusing(&read_path, LoadMode::Check, Some(&identity));
+                    let mut result =
+                        database.load_reusing(&read_path, LoadMode::Refresh, Some(&identity));
+                    if matches!(result, Ok(SourceLoad::NotCached)) {
+                        // The cached table is gone: the file was deleted and
+                        // has come back, or it was removed from the cache.
+                        // Only a saved view or a still-watched file imports it again.
+                        let watched = ApplicationState::load(repository)
+                            .is_ok_and(|state| state.is_watched(&read_path));
+                        result = if saved_view || watched {
+                            database.load_reusing(&read_path, LoadMode::Check, Some(&identity))
+                        } else {
+                            Err(format!("{} was removed from the cache", read_path.display()))
+                        };
+                    }
                     (probe, result)
                 })
                 .await;
@@ -2381,6 +2405,8 @@ impl DataFrameView {
             CommandId::Open => self.open_native_file(window, cx),
             CommandId::PasteTable => self.paste_table(window, cx),
             CommandId::AddFolder => self.add_folder_with_picker(cx),
+            CommandId::AddWatchedFiles => self.add_watched_files_with_picker(cx),
+            CommandId::CacheFiles => self.set_cache_drop_open(!self.cache_drop_open, cx),
             CommandId::OpenSettingsDirectory => self.open_settings_directory(cx),
             CommandId::ReloadReset => self.reload(true, window, cx),
             CommandId::Save => self.open_save_dialog(window, cx),
@@ -5101,6 +5127,7 @@ impl DataFrameView {
                         existing.persistent_identity.as_ref(),
                     )? {
                         SourceLoad::Reused => existing,
+                        SourceLoad::NotCached => unreachable!("checked loads import the file"),
                         SourceLoad::Loaded(store) => {
                             FrameSnapshot::new(*store, existing.source_revision + 1)
                         }
@@ -6548,6 +6575,7 @@ impl DataFrameView {
                                 view.open_theme_editor(window, cx);
                             }
                             "space" => view.open_space_menu(window, cx),
+                            "cache-drop" => view.set_cache_drop_open(true, cx),
                             "cell-detail" => view.toggle_cell_detail(window, cx),
                             "save" => view.open_save_dialog(window, cx),
                             "palette:copy-as" => view.open_copy_as(window, cx),
@@ -6797,6 +6825,11 @@ impl Render for DataFrameView {
             }))
             .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if view.keymap_editor.is_some() || window.has_active_dialog(cx) {
+                    return;
+                }
+                if view.cache_drop_open && event.keystroke.key == "escape" {
+                    view.set_cache_drop_open(false, cx);
+                    cx.stop_propagation();
                     return;
                 }
                 if view.action_menu_open {
@@ -7263,6 +7296,9 @@ impl Render for DataFrameView {
                         edit_entity.update(cx, |view, cx| view.open_actions_editor(window, cx));
                     },
                 ))
+            })
+            .when(self.cache_drop_open, |view| {
+                view.child(self.render_cache_drop(cx))
             })
             .children(dialog_layer);
         div()

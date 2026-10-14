@@ -1044,7 +1044,7 @@ fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
     );
 
     // A watched file opens from the cache instead.
-    state.add_watched_files(&[a.clone()]).unwrap();
+    state.add_watched_files(std::slice::from_ref(&a)).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         let position = point(px(400.), px(300.));
         window.dispatch_event(
@@ -1071,6 +1071,94 @@ fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
         );
         assert!(view.is_table());
     });
+}
+
+#[gpui_kit::test]
+fn n_opens_an_overlay_that_caches_dropped_files_as_watched(cx: &mut TestAppContext) {
+    use crate::application::state::ApplicationState;
+    use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
+    let home = tempfile::tempdir().unwrap();
+    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let a = home.path().join("a.csv");
+    std::fs::write(&a, "word
+ur
+").unwrap();
+    let folder = home.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let (handle, entity) = viewer(cx, repository.clone());
+    let drop_paths = |cx: &mut TestAppContext, paths: Vec<std::path::PathBuf>| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let position = point(px(400.), px(300.));
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Entered {
+                    position,
+                    paths: ExternalPaths(paths.into_iter().collect()),
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+            window.dispatch_event(
+                PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let press = |cx: &mut TestAppContext, key: &str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let grid = entity.read(cx).grid.clone();
+            window.focus(&grid.read(cx).focus_handle(cx), cx);
+            window.render_frame(cx);
+            window.press(key, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let open_overlay = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            entity.update(cx, |view, cx| {
+                view.dispatch_command(CommandId::CacheFiles, window, cx)
+            })
+        })
+        .unwrap();
+        cx.update(|cx| assert!(entity.read(cx).cache_drop_open));
+    };
+
+    // Folders are rejected; only files can be added.
+    open_overlay(cx);
+    drop_paths(cx, vec![folder.clone()]);
+    cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(!view.cache_drop_open);
+        assert!(view.error.as_deref().unwrap().contains("is a folder"));
+    });
+
+    open_overlay(cx);
+    drop_paths(cx, vec![a.clone()]);
+    let database = cx.update(|cx| {
+        let view = entity.read(cx);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.copy_status.as_deref(), Some("Cached a.csv"));
+        // The overlay caches the file without opening it.
+        assert_eq!(view.query_file(), None);
+        view.database.clone()
+    });
+    assert!(ApplicationState::load(repository).unwrap().is_watched(&a));
+    assert!(
+        database
+            .relations()
+            .unwrap()
+            .iter()
+            .any(|relation| relation.schema == "files" && relation.name == "a_csv")
+    );
+
+    // N opens the overlay from the grid and Escape closes it.
+    press(cx, "n");
+    cx.update(|cx| assert!(entity.read(cx).cache_drop_open));
+    press(cx, "escape");
+    cx.update(|cx| assert!(!entity.read(cx).cache_drop_open));
 }
 
 #[gpui_kit::test]

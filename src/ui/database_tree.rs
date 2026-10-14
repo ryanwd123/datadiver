@@ -43,7 +43,9 @@ pub struct TreeData {
     pub functions: Vec<DatabaseView>,
     /// Each watched folder with the source files found under it.
     pub folders: Vec<(PathBuf, Vec<PathBuf>)>,
-    /// Recently opened sources outside every watched folder.
+    /// Single files kept in the cache.
+    pub watched_files: Vec<PathBuf>,
+    /// Recently opened sources that are not watched.
     pub recent: Vec<PathBuf>,
 }
 
@@ -72,7 +74,16 @@ impl TreeData {
             .iter()
             .map(|folder| normalized(Path::new(folder)))
             .collect::<Vec<_>>();
-        let mut seen = HashSet::new();
+        let watched_files = state
+            .settings
+            .watched_files
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let mut seen = watched_files
+            .iter()
+            .map(|path| normalized(path))
+            .collect::<HashSet<_>>();
         let recent = state
             .history
             .recent_sources
@@ -88,6 +99,7 @@ impl TreeData {
             relations: database.relations()?,
             functions: database.metadata_functions()?,
             folders,
+            watched_files,
             recent,
         })
     }
@@ -262,6 +274,18 @@ pub fn build_items(
         let children = tree.into_items(&id, &mut builder);
         sources.extend(builder.folder(&id, &root.display().to_string(), children));
     }
+    let watched_files = data
+        .watched_files
+        .iter()
+        .filter_map(|path| {
+            builder.leaf(
+                format!("watched:{}", path.display()),
+                file_name(path),
+                TreeTarget::Source(path.clone()),
+            )
+        })
+        .collect();
+    sources.extend(builder.folder("src:watched", "Watched files", watched_files));
     let recent = data
         .recent
         .iter()
@@ -731,6 +755,7 @@ mod tests {
                 PathBuf::from("C:/data"),
                 vec![PathBuf::from("2024/q1.csv"), PathBuf::from("top.parquet")],
             )],
+            watched_files: vec![PathBuf::from("E:/kept/single.csv")],
             recent: vec![PathBuf::from("D:/elsewhere/old.csv")],
         }
     }
@@ -772,11 +797,12 @@ mod tests {
                 "  +shop",
                 "Sources",
                 "  +C:/data",
+                "  +Watched files",
                 "  +Recent files",
                 "+DuckDB metadata",
             ]
         );
-        assert_eq!(targets.len(), 9);
+        assert_eq!(targets.len(), 10);
         assert!(
             targets
                 .values()

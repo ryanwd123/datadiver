@@ -150,6 +150,7 @@ pub enum ActionId {
     DecreaseFontSize,
     Open,
     PasteTable,
+    CacheFiles,
     Reload,
     ReloadReset,
     Save,
@@ -451,6 +452,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::Grid,
         command: Some(CommandId::PasteTable),
         default_bindings: &["ctrl-v"],
+    },
+    ActionSpec {
+        id: ActionId::CacheFiles,
+        category: ActionCategory::FilesViews,
+        name: "Drop files to add to cache",
+        context: KeyContext::Grid,
+        command: Some(CommandId::CacheFiles),
+        default_bindings: &["n"],
     },
     ActionSpec {
         id: ActionId::Reload,

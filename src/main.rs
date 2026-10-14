@@ -100,6 +100,7 @@ fn main() {
                             | "theme-editor"
                             | "help"
                             | "space"
+                            | "cache-drop"
                             | "save"
                             | "palette:copy-as"
                             | "palette:commands"
