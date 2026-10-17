@@ -11,44 +11,37 @@ has their write-ups.
     and `read_*()` sources, via a cached `DESCRIBE`). Infer CTE columns from their select lists.
   - Functions from `duckdb_functions()` (scalar, aggregate, table), with the signature and
     description as detail. Keywords from `duckdb_keywords()`.
-  - `ctrl-space` triggers completion by hand (`present_completion_items`). (`tab` already accepts
-    as well as `enter`.)
-  - Fix: both providers set `filter_text = label`, so the whole label highlights instead of the
-    typed prefix.
+  - `ctrl-space` triggers completion by hand (`Editor::refresh_completion(true)`). (`tab` already
+    accepts as well as `enter`.)
   - Done: the group-by, pivot, and aggregation editors list columns after `"` (ranked like the
     search box), offer nothing inside `'strings'`, and accept with Tab. Condition and SQL cards
     share the search box's `"` list (`ui::column_completion`).
-  - Later: hover docs for functions (`HoverProvider`), and red squiggles from a prepare/EXPLAIN on
-    pause (`diagnostics_mut`).
+  - Later: hover docs for functions, and red squiggles from a prepare/EXPLAIN on pause. The editor
+    draws neither yet.
 - [ ] **8. VS Code editing keys in the SQL editor.** Built as app actions in `SqlPanel` (scoped to the
   editor, so `ctrl-d`/`ctrl-l`/`ctrl-g` keep their grid meaning elsewhere) using the editor's public
-  API (`text`, `selected_range`, `set_selected_range`, `replace`, `apply_lsp_edits`):
+  API (`text`, `selected_range`, `set_selection`, `replace`):
   - `ctrl-/` toggle line comment, `shift-alt-a` block comment
   - `alt-up`/`alt-down` move line, `shift-alt-up`/`down` copy line, `ctrl-shift-k` delete line
   - `ctrl-l` select line, `ctrl-g` go to line, `ctrl-shift-\` jump to bracket
-  - `ctrl-d` add next occurrence and `ctrl-shift-l` all occurrences. This needs the multi-cursor
-    API; check that it is public before promising it.
-  - `ctrl-shift-z` redo (missing on Windows), `F3`/`shift-F3` find next/previous
+  - `ctrl-d` add next occurrence and `ctrl-shift-l` all occurrences. This needs multiple cursors,
+    which the editor does not have yet.
   - `ctrl-enter` stays "run statement".
 
-  **What the editor already has** (gpui-kit 0.6.4 → gpui-base/gpui-component 0.6.6, all bindings in
-  gpui-base `input/base/state.rs`):
-  - **Display:** line numbers, indent guides, code folding (gutter, mouse only), soft wrap,
-    tree-sitter SQL highlighting.
-  - **Editing:** auto-close `( [ { " '` outside strings, smart indent.
-  - **Movement:** arrows, `home`/`end`, `ctrl-home`/`ctrl-end`, `pageup`/`pagedown`,
-    `ctrl-left`/`right` (word).
-  - **Selection:** `shift-`+movement, `ctrl-shift-left`/`right` (word), `ctrl-a`, double-click
-    word, triple-click line.
+  **What the editor already has** (`ui::widgets::editor::Editor`, with the find bar in
+  `ui::sql_panel`):
+  - **Display:** line numbers, soft wrap, SQL highlighting, scroll bars.
+  - **Editing:** auto-close `( [ { " '` outside strings, Enter keeps the indentation.
+  - **Movement:** arrows, `home` (indentation, then line start)/`end`, `ctrl-home`/`ctrl-end`,
+    `pageup`/`pagedown`, `ctrl-left`/`right` (word).
+  - **Selection:** `shift-`+movement, `ctrl-a`, double-click word, triple-click line, drag.
   - **Delete:** `ctrl-backspace`/`ctrl-delete` (word).
-  - **Indent:** `tab`/`shift-tab` and `ctrl-]`/`ctrl-[`.
-  - **Multi-cursor:** `ctrl-alt-up`/`down`, `alt`-click, `alt-shift`-drag column selection.
-  - **Clipboard and undo:** `ctrl-c`/`x`/`v`, `ctrl-z`/`ctrl-y`.
-  - **Find and replace:** `ctrl-f`, `ctrl-h` (literal, with case toggle; no regex or whole word).
-  - **Menus:** right-click menu; `ctrl-.` code actions (unused).
-  - **Completion menu:** `up`/`down`/`enter`/`escape`.
-  - **Language hooks (unused so far):** completion (popup and inline ghost text), hover, go to
-    definition, code actions, diagnostics.
+  - **Indent:** `tab`/`shift-tab` and `ctrl-]`/`ctrl-[` (four spaces).
+  - **Clipboard and undo:** `ctrl-c`/`x`/`v` (`ctrl-x` with no selection cuts the line),
+    `ctrl-z`, `ctrl-y`/`ctrl-shift-z`.
+  - **Find and replace:** `ctrl-f`, `ctrl-h`, `F3`/`shift-F3` (literal, with case toggle; no regex
+    or whole word).
+  - **Completion menu:** `up`/`down`/`enter`/`tab`/`escape`, filled by a `Completer`.
 
 ## Tier 4: bigger features
 

@@ -4,7 +4,7 @@
 
 A native desktop app for fast data exploration and quick lookups. Open a data file, search and filter rows, build a pivot, etc.
 
-DataDiver is built in Rust with GPUI Kit and DuckDB. The focus is an efficient, enjoyable workflow: responsive tables, keyboard commands, and reusable views.
+DataDiver is built in Rust and DuckDB, drawing its own Windows UI with Direct2D and DirectWrite. The focus is an efficient, enjoyable workflow: responsive tables, keyboard commands, and reusable views.
 
 ![A pivot of Olympic athletes by season and year, with a Sport slicer and totals](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot1.png)
 ![The SQL editor with Ask AI generating a medal count query](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot2.png)
