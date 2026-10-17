@@ -1,13 +1,10 @@
-use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::StyledExt as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::*;
-
 use crate::domain::actions::{launch_with_values, validate_action};
 use crate::domain::documents::ViewAction;
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Point, Rect, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
 pub enum ActionsEditorEvent {
     Changed(Vec<ViewAction>),
@@ -17,116 +14,89 @@ pub enum ActionsEditorEvent {
 
 /// Adds, edits, and removes the active view's row actions.
 pub struct ActionsEditor {
-    actions: Vec<ViewAction>,
+    pub(crate) actions: Vec<ViewAction>,
     /// Key of the action loaded into the form, or `None` when adding.
     editing: Option<String>,
-    key: Entity<InputState>,
-    description: Entity<InputState>,
-    command: Entity<InputState>,
+    pub(crate) key: Editor,
+    pub(crate) description: Editor,
+    pub(crate) command: Editor,
     columns: Vec<String>,
     /// The active row's `(column, value)` pairs for previews, if there is one.
     row: Option<Vec<(String, String)>>,
-    error: Option<String>,
-    _subscriptions: Vec<Subscription>,
+    pub(crate) error: Option<String>,
+    events: Vec<ActionsEditorEvent>,
 }
 
-impl EventEmitter<ActionsEditorEvent> for ActionsEditor {}
-
 impl ActionsEditor {
-    pub fn new(
-        actions: Vec<ViewAction>,
-        columns: Vec<String>,
-        row: Option<Vec<(String, String)>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let key = cx.new(|cx| InputState::new(window, cx).placeholder("k"));
-        let description = cx.new(|cx| InputState::new(window, cx).placeholder("Search the web"));
-        let command = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("https://www.google.com/search?q={Name}")
-        });
-        let _subscriptions = [&key, &description, &command]
-            .into_iter()
-            .map(|input| {
-                cx.subscribe_in(
-                    input,
-                    window,
-                    |editor, _, event: &InputEvent, window, cx| match event {
-                        InputEvent::PressEnter { .. } => editor.save(window, cx),
-                        // Keeps the command preview current.
-                        InputEvent::Change => cx.notify(),
-                        _ => {}
-                    },
-                )
-            })
-            .collect();
+    pub fn new(actions: Vec<ViewAction>, columns: Vec<String>, row: Option<Vec<(String, String)>>) -> Self {
         Self {
             actions,
             editing: None,
-            key,
-            description,
-            command,
+            key: Editor::single_line().with_placeholder("k"),
+            description: Editor::single_line().with_placeholder("Search the web"),
+            command: Editor::single_line().with_placeholder("https://www.google.com/search?q={Name}"),
             columns,
             row,
             error: None,
-            _subscriptions,
+            events: Vec::new(),
         }
     }
 
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        let focus = self.key.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
+    pub fn take_events(&mut self) -> Vec<ActionsEditorEvent> {
+        std::mem::take(&mut self.events)
     }
 
-    pub fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+    pub fn focus(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.key.id);
+    }
+
+    pub fn set_error(&mut self, error: Option<String>) {
         self.error = error;
-        cx.notify();
     }
 
-    fn fill_form(
-        &mut self,
-        action: Option<&ViewAction>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn inputs(&self) -> [WidgetId; 3] {
+        [self.key.id, self.description.id, self.command.id]
+    }
+
+    pub fn contains(&self, id: WidgetId) -> bool {
+        self.inputs().contains(&id)
+    }
+
+    fn input_mut(&mut self, id: WidgetId) -> Option<&mut Editor> {
+        [&mut self.key, &mut self.description, &mut self.command]
+            .into_iter()
+            .find(|input| input.id == id)
+    }
+
+    pub(crate) fn fill_form(&mut self, action: Option<&ViewAction>, focus: &mut Option<WidgetId>) {
         self.editing = action.map(|action| action.key.clone());
-        let fields = [
-            (&self.key, action.map(|action| action.key.clone())),
-            (
-                &self.description,
-                action.map(|action| action.description.clone()),
-            ),
-            (&self.command, action.map(|action| action.command.clone())),
-        ];
-        for (input, value) in fields {
-            input.update(cx, |input, cx| {
-                input.set_value(value.unwrap_or_default(), window, cx)
-            });
-        }
+        self.key.set_text(action.map(|action| action.key.clone()).unwrap_or_default());
+        self.description
+            .set_text(action.map(|action| action.description.clone()).unwrap_or_default());
+        self.command
+            .set_text(action.map(|action| action.command.clone()).unwrap_or_default());
         self.error = None;
-        self.focus(window, cx);
-        cx.notify();
+        self.focus(focus);
     }
 
-    fn form_action(&self, cx: &App) -> ViewAction {
-        let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+    fn form_action(&self) -> ViewAction {
         ViewAction {
-            key: value(&self.key),
-            description: value(&self.description),
-            command: value(&self.command),
+            key: self.key.text().trim().to_owned(),
+            description: self.description.text().trim().to_owned(),
+            command: self.command.text().trim().to_owned(),
         }
     }
 
-    fn run_form(&mut self, cx: &mut Context<Self>) {
-        let mut action = self.form_action(cx);
+    pub(crate) fn run_form(&mut self) {
+        let mut action = self.form_action();
         if action.command.is_empty() {
-            self.set_error(Some("action command is required".into()), cx);
+            self.set_error(Some("action command is required".into()));
             return;
         }
         if action.description.is_empty() {
             action.description = "Action".into();
         }
-        cx.emit(ActionsEditorEvent::Run(action));
+        self.events.push(ActionsEditorEvent::Run(action));
     }
 
     /// Example actions built on the first column, so they preview real values.
@@ -157,32 +127,32 @@ impl ActionsEditor {
     }
 
     /// Loads an example into the form as a new action, keeping its key when free.
-    fn use_example(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn use_example(&mut self, index: usize, focus: &mut Option<WidgetId>) {
         let Some(mut example) = self.examples().into_iter().nth(index) else {
             return;
         };
         if self.actions.iter().any(|action| action.key == example.key) {
             example.key.clear();
         }
-        self.fill_form(Some(&example), window, cx);
+        self.fill_form(Some(&example), focus);
         self.editing = None;
     }
 
-    fn preview(&self, cx: &App) -> Option<Result<String, String>> {
-        let command = self.command.read(cx).value();
+    pub(crate) fn preview(&self) -> Option<Result<String, String>> {
+        let command = self.command.text();
         if command.trim().is_empty() {
             return None;
         }
         Some(match &self.row {
-            Some(row) => launch_with_values(&command, row).map(|launch| launch.preview()),
+            Some(row) => launch_with_values(command, row).map(|launch| launch.preview()),
             None => Err("select a row to preview".into()),
         })
     }
 
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let action = self.form_action(cx);
+    pub(crate) fn save(&mut self, focus: &mut Option<WidgetId>) {
+        let action = self.form_action();
         if let Err(error) = validate_action(&action, &self.actions, self.editing.as_deref()) {
-            self.set_error(Some(error), cx);
+            self.set_error(Some(error));
             return;
         }
         match self
@@ -193,375 +163,321 @@ impl ActionsEditor {
             Some(index) => self.actions[index] = action,
             None => self.actions.push(action),
         }
-        cx.emit(ActionsEditorEvent::Changed(self.actions.clone()));
-        self.fill_form(None, window, cx);
+        self.events.push(ActionsEditorEvent::Changed(self.actions.clone()));
+        self.fill_form(None, focus);
     }
 
-    fn delete(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn delete(&mut self, index: usize, focus: &mut Option<WidgetId>) {
         if index >= self.actions.len() {
             return;
         }
         let removed = self.actions.remove(index);
-        cx.emit(ActionsEditorEvent::Changed(self.actions.clone()));
+        self.events.push(ActionsEditorEvent::Changed(self.actions.clone()));
         if self.editing.as_ref() == Some(&removed.key) {
-            self.fill_form(None, window, cx);
+            self.fill_form(None, focus);
         }
-        cx.notify();
     }
-}
 
-impl Render for ActionsEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let border = theme.tokens.border;
-        let highlight = theme.tokens.table_even;
-        let field = |label: &'static str, input: &Entity<InputState>| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_sm().text_color(muted).child(label))
-                .child(Input::new(input))
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        let Some(id) = *focus else {
+            return false;
         };
-        let columns = if self.columns.is_empty() {
-            String::new()
-        } else {
-            format!("Columns: {}", self.columns.join(", "))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .when(self.actions.is_empty(), |list| {
-                        list.child(div().text_color(muted).child("No actions yet"))
-                    })
-                    .children(self.actions.iter().enumerate().map(|(index, action)| {
-                        let editing = self.editing.as_ref() == Some(&action.key);
-                        div()
-                            .id(("view-action", index))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .when(editing, |row| row.bg(highlight))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .min_w(px(22.))
-                                    .px_1()
-                                    .border_1()
-                                    .border_color(border)
-                                    .rounded_sm()
-                                    .text_center()
-                                    .child(action.key.clone()),
-                            )
-                            .child(div().flex_shrink_0().child(action.description.clone()))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child(action.command.clone()),
-                            )
-                            .child(
-                                Button::new(("view-action-run", index))
-                                    .label("Run")
-                                    .small()
-                                    .ghost()
-                                    .on_click(cx.listener(move |editor, _, _, cx| {
-                                        if let Some(action) = editor.actions.get(index).cloned() {
-                                            cx.emit(ActionsEditorEvent::Run(action));
-                                        }
-                                    })),
-                            )
-                            .child(
-                                Button::new(("view-action-edit", index))
-                                    .label("Edit")
-                                    .small()
-                                    .ghost()
-                                    .on_click(cx.listener(move |editor, _, window, cx| {
-                                        let action = editor.actions.get(index).cloned();
-                                        editor.fill_form(action.as_ref(), window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("view-action-delete", index))
-                                    .label("Delete")
-                                    .small()
-                                    .ghost()
-                                    .on_click(cx.listener(move |editor, _, window, cx| {
-                                        editor.delete(index, window, cx)
-                                    })),
-                            )
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(div().w(px(70.)).child(field("Key", &self.key)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(field("Description", &self.description)),
-                    ),
-            )
-            .child(field("Command or URL", &self.command))
-            .when_some(self.preview(cx), |content, preview| {
-                let (text, color) = match preview {
-                    Ok(text) => (format!("→ {text}"), muted),
-                    Err(error) => (format!("Preview: {error}"), rgb(0xb33c3c).into()),
+        if event.key == "tab" && !event.modifiers.control && !event.modifiers.alt {
+            let inputs = self.inputs();
+            if let Some(position) = inputs.iter().position(|input| *input == id) {
+                let next = if event.modifiers.shift {
+                    (position + inputs.len() - 1) % inputs.len()
+                } else {
+                    (position + 1) % inputs.len()
                 };
-                content.child(
-                    div()
-                        .id("view-action-preview")
-                        .text_sm()
-                        .text_color(color)
-                        .child(text),
-                )
-            })
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(
-                        "{Column} inserts the active row's value; {{ and }} insert braces. \
-                         http(s) URLs open in the browser with values URL-encoded. Other \
-                         commands start a program directly (no shell), with quoted \
-                         arguments kept together; use cmd /C … for shell features.",
-                    )
-                    .when(!columns.is_empty(), |hint| {
-                        hint.child(div().pt_1().truncate().child(columns))
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_sm().font_semibold().child("Examples"))
-                    .children(
-                        self.examples()
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, example)| {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .text_sm()
-                                    .child(div().flex_shrink_0().child(example.description))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(muted)
-                                            .child(example.command),
-                                    )
-                                    .child(
-                                        Button::new(("view-action-example", index))
-                                            .label("Use")
-                                            .small()
-                                            .ghost()
-                                            .on_click(cx.listener(move |editor, _, window, cx| {
-                                                editor.use_example(index, window, cx)
-                                            })),
-                                    )
-                            }),
-                    ),
-            )
-            .when_some(self.error.clone(), |content, error| {
-                content.child(div().text_color(rgb(0xb33c3c)).child(error))
-            })
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .when(self.editing.is_some(), |buttons| {
-                        buttons.child(
-                            Button::new("view-action-cancel-edit")
-                                .label("Cancel edit")
-                                .on_click(cx.listener(|editor, _, window, cx| {
-                                    editor.fill_form(None, window, cx)
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("view-action-run-form")
-                            .label("Run")
-                            .on_click(cx.listener(|editor, _, _, cx| editor.run_form(cx))),
-                    )
-                    .child(
-                        Button::new("view-action-save")
-                            .primary()
-                            .label(if self.editing.is_some() {
-                                "Update action"
-                            } else {
-                                "Add action"
-                            })
-                            .on_click(cx.listener(|editor, _, window, cx| editor.save(window, cx))),
-                    ),
-            )
+                *focus = Some(inputs[next]);
+                return true;
+            }
+        }
+        let Some(input) = self.input_mut(id) else {
+            return false;
+        };
+        let outcome = input.key(event);
+        if outcome.submit {
+            self.save(focus);
+        }
+        outcome.handled
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        match focus.and_then(|id| self.input_mut(id)) {
+            Some(input) => {
+                input.type_text(typed);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> bool {
+        match hit {
+            Hit::Editor(id, part) => {
+                let id = *id;
+                let Some(input) = self.input_mut(id) else {
+                    return false;
+                };
+                input.mouse_down(*part, pos, clicks, shift);
+                *focus = Some(id);
+            }
+            Hit::Button(Button::ActionRun(index)) => {
+                if let Some(action) = self.actions.get(*index).cloned() {
+                    self.events.push(ActionsEditorEvent::Run(action));
+                }
+            }
+            Hit::Button(Button::ActionEdit(index)) => {
+                let action = self.actions.get(*index).cloned();
+                self.fill_form(action.as_ref(), focus);
+            }
+            Hit::Button(Button::ActionDelete(index)) => self.delete(*index, focus),
+            Hit::Button(Button::ActionExample(index)) => self.use_example(*index, focus),
+            Hit::Button(Button::ActionCancelEdit) => self.fill_form(None, focus),
+            Hit::Button(Button::ActionRunForm) => self.run_form(),
+            Hit::Button(Button::ActionSave) => self.save(focus),
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        for input in [&mut self.key, &mut self.description, &mut self.command] {
+            if input.is_dragging() {
+                input.mouse_drag(pos);
+            }
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        for input in [&mut self.key, &mut self.description, &mut self.command] {
+            input.mouse_up();
+        }
+    }
+
+    fn field_height(fonts: &Fonts) -> f32 {
+        text::line_height(&fonts.small) + 4.0 + Editor::line_box_height(&fonts.ui)
+    }
+
+    pub fn height(&self, fonts: &Fonts, width: f32) -> f32 {
+        // Mirrors the layout of `paint`, whose column puts GAP after each item.
+        const GAP: f32 = 12.0;
+        let line = text::line_height(&fonts.ui);
+        let list = if self.actions.is_empty() {
+            line + GAP
+        } else {
+            ((line + 10.0).round() + GAP) * self.actions.len() as f32
+        };
+        let hint = text::layout(
+            HINT,
+            &fonts.small,
+            crate::ui::platform::TextOptions::wrapped(width),
+        )
+        .height;
+        let optional = |shown: bool, height: f32| if shown { height + GAP } else { 0.0 };
+        list + (Self::field_height(fonts) + GAP) * 2.0
+            + optional(self.preview().is_some(), line)
+            + hint
+            + 4.0
+            + optional(!self.columns.is_empty(), line)
+            + line
+            + GAP
+            + (button_height(&fonts.small) + GAP) * self.examples().len() as f32
+            + optional(self.error.is_some(), line)
+            + button_height(&fonts.ui)
+    }
+
+    fn field(canvas: &mut Canvas<Hit>, r: Rect, label: &str, input: &mut Editor, fonts: &Fonts, focus: Option<WidgetId>) {
+        let label_height = text::line_height(&fonts.small) + 4.0;
+        canvas.text(rect(r.x, r.y, r.w, label_height), label, &fonts.small, colors::MUTED, Align::Left);
+        let id = input.id;
+        input.paint(
+            canvas,
+            rect(r.x, r.y + label_height, r.w, Editor::line_box_height(&fonts.ui)),
+            &fonts.ui,
+            focus == Some(id),
+            |part| Hit::Editor(id, part),
+        );
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        let font = &fonts.ui;
+        let line = text::line_height(font);
+        let small_button = button_height(&fonts.small);
+        let mut column = Column::new(r, 12.0);
+        let row_height = (line + 10.0).round();
+        if self.actions.is_empty() {
+            canvas.text(column.next(line), "No actions yet", font, colors::MUTED, Align::Left);
+        } else {
+            for (index, action) in self.actions.iter().enumerate() {
+                let row = column.next(row_height);
+                if self.editing.as_ref() == Some(&action.key) {
+                    canvas.fill_rounded(row, 4.0, colors::STRIPE);
+                }
+                let mut items = Row::new(row.inset_xy(8.0, (row_height - small_button) / 2.0), 8.0);
+                for (label, hit) in [
+                    ("Delete", Button::ActionDelete(index)),
+                    ("Edit", Button::ActionEdit(index)),
+                    ("Run", Button::ActionRun(index)),
+                ] {
+                    let r = items.right(button_width(label, &fonts.small));
+                    button(canvas, r, label, &fonts.small, ButtonStyle::Ghost, true, Hit::Button(hit));
+                }
+                let key_width = (text::measure(&action.key, font).0 + 12.0).max(22.0);
+                let key = items.left(key_width);
+                canvas.stroke_rounded(key, 4.0, colors::BORDER, 1.0);
+                canvas.text(key, &action.key, font, colors::FOREGROUND, Align::Center);
+                let description_width = text::measure(&action.description, font).0 + 4.0;
+                let description = items.left(description_width.min(items.rest().w * 0.5));
+                canvas.text(description, &action.description, font, colors::FOREGROUND, Align::Left);
+                canvas.text(items.rest(), &action.command, &fonts.small, colors::MUTED, Align::Left);
+            }
+            column.skip(0.0);
+        }
+        let fields = column.next(Self::field_height(fonts));
+        let mut fields_row = Row::new(fields, 8.0);
+        let key_area = fields_row.left(70.0);
+        Self::field(canvas, key_area, "Key", &mut self.key, fonts, focus);
+        let description_area = fields_row.rest();
+        Self::field(canvas, description_area, "Description", &mut self.description, fonts, focus);
+        let command_area = column.next(Self::field_height(fonts));
+        Self::field(canvas, command_area, "Command or URL", &mut self.command, fonts, focus);
+        if let Some(preview) = self.preview() {
+            let (text_value, color) = match preview {
+                Ok(text) => (format!("→ {text}"), colors::MUTED),
+                Err(error) => (format!("Preview: {error}"), colors::DANGER),
+            };
+            canvas.text(column.next(line), &text_value, &fonts.small, color, Align::Left);
+        }
+        let hint_area = column.rest();
+        let hint_height = canvas.paragraph(hint_area, HINT, &fonts.small, colors::MUTED);
+        column.skip(hint_height + 4.0);
+        if !self.columns.is_empty() {
+            canvas.text(
+                column.next(line),
+                &format!("Columns: {}", self.columns.join(", ")),
+                &fonts.small,
+                colors::MUTED,
+                Align::Left,
+            );
+        }
+        canvas.text(column.next(line), "Examples", &fonts.small.semibold(), colors::FOREGROUND, Align::Left);
+        for (index, example) in self.examples().into_iter().enumerate() {
+            let row = column.next(small_button);
+            let mut items = Row::new(row, 8.0);
+            let use_button = items.right(button_width("Use", &fonts.small));
+            button(canvas, use_button, "Use", &fonts.small, ButtonStyle::Ghost, true, Hit::Button(Button::ActionExample(index)));
+            let description = items.left(text::measure(&example.description, &fonts.small).0 + 4.0);
+            canvas.text(description, &example.description, &fonts.small, colors::FOREGROUND, Align::Left);
+            canvas.text(items.rest(), &example.command, &fonts.small, colors::MUTED, Align::Left);
+        }
+        if let Some(error) = self.error.clone() {
+            canvas.text(column.next(line), &error, font, colors::DANGER, Align::Left);
+        }
+        let buttons = column.next(button_height(font));
+        let mut buttons = Row::new(buttons, 8.0);
+        let save_label = if self.editing.is_some() { "Update action" } else { "Add action" };
+        let save = buttons.right(button_width(save_label, font));
+        button(canvas, save, save_label, font, ButtonStyle::Primary, true, Hit::Button(Button::ActionSave));
+        let run = buttons.right(button_width("Run", font));
+        button(canvas, run, "Run", font, ButtonStyle::Outline, true, Hit::Button(Button::ActionRunForm));
+        if self.editing.is_some() {
+            let cancel = buttons.right(button_width("Cancel edit", font));
+            button(canvas, cancel, "Cancel edit", font, ButtonStyle::Outline, true, Hit::Button(Button::ActionCancelEdit));
+        }
     }
 }
 
-#[cfg(all(test, feature = "snapshots"))]
+const HINT: &str = "{Column} inserts the active row's value; {{ and }} insert braces. \
+http(s) URLs open in the browser with values URL-encoded. Other commands start a program \
+directly (no shell), with quoted arguments kept together; use cmd /C … for shell features.";
+
+#[cfg(test)]
 mod tests {
     use super::{ActionsEditor, ActionsEditorEvent, ViewAction};
-    use gpui_kit::component::Root;
-    use gpui_kit::{AppContext as _, TestAppContext, px, size};
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
-    #[gpui_kit::test]
-    fn adds_rejects_duplicates_updates_and_deletes(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let mut editor = None;
-        let handle = cx.open_window(size(px(800.), px(600.)), |window, cx| {
-            let saved = vec![ViewAction {
-                key: "a".into(),
-                description: "Old".into(),
-                command: "echo {Name}".into(),
-            }];
-            let row = Some(vec![("Name".to_owned(), "Ada Lovelace".to_owned())]);
-            let entity =
-                cx.new(|cx| ActionsEditor::new(saved, vec!["Name".into()], row, window, cx));
-            editor = Some(entity.clone());
-            Root::new(entity, window, cx)
-        });
-        let editor = editor.unwrap();
-        let emitted = Rc::new(RefCell::new(Vec::new()));
-        cx.update(|cx| {
-            let emitted = emitted.clone();
-            cx.subscribe(&editor, move |_, event: &ActionsEditorEvent, _| {
+    #[test]
+    fn adds_rejects_duplicates_updates_and_deletes() {
+        let saved = vec![ViewAction {
+            key: "a".into(),
+            description: "Old".into(),
+            command: "echo {Name}".into(),
+        }];
+        let row = Some(vec![("Name".to_owned(), "Ada Lovelace".to_owned())]);
+        let mut editor = ActionsEditor::new(saved, vec!["Name".into()], row);
+        let mut focus = None;
+        let mut emitted = Vec::new();
+        let mut fill = |editor: &mut ActionsEditor, key: &str, description: &str, command: &str| {
+            editor.key.set_text(key);
+            editor.description.set_text(description);
+            editor.command.set_text(command);
+            editor.save(&mut focus);
+            for event in editor.take_events() {
                 if let ActionsEditorEvent::Changed(actions) = event {
-                    emitted.borrow_mut().push(actions.clone());
+                    emitted.push(actions);
                 }
-            })
-            .detach();
-        });
-        let fill = |cx: &mut TestAppContext, key: &str, description: &str, command: &str| {
-            let (key, description, command) =
-                (key.to_owned(), description.to_owned(), command.to_owned());
-            cx.update_window(handle.into(), |_, window, cx| {
-                editor.update(cx, |editor, cx| {
-                    for (input, value) in [
-                        (editor.key.clone(), key.clone()),
-                        (editor.description.clone(), description.clone()),
-                        (editor.command.clone(), command.clone()),
-                    ] {
-                        input.update(cx, |input, cx| input.set_value(value, window, cx));
-                    }
-                    editor.save(window, cx);
-                })
-            })
-            .unwrap();
+            }
         };
-
-        fill(cx, "a", "Clash", "echo x");
-        cx.update(|cx| {
-            assert!(
-                editor
-                    .read(cx)
-                    .error
-                    .as_deref()
-                    .unwrap()
-                    .contains("already used")
-            )
-        });
-        assert!(emitted.borrow().is_empty());
-
-        fill(cx, " g ", "Search", "https://example.com/?q={Name}");
-        assert_eq!(emitted.borrow().last().unwrap().len(), 2);
-        assert_eq!(emitted.borrow().last().unwrap()[1].key, "g");
-
-        cx.update_window(handle.into(), |_, window, cx| {
-            editor.update(cx, |editor, cx| {
-                let first = editor.actions[0].clone();
-                editor.fill_form(Some(&first), window, cx);
-            })
-        })
-        .unwrap();
-        fill(cx, "a", "Renamed", "echo {Name}");
-        assert_eq!(emitted.borrow().last().unwrap()[0].description, "Renamed");
-
-        cx.update_window(handle.into(), |_, window, cx| {
-            editor.update(cx, |editor, cx| editor.delete(0, window, cx))
-        })
-        .unwrap();
-        let last = emitted.borrow().last().unwrap().clone();
-        assert_eq!(last.len(), 1);
-        assert_eq!(last[0].key, "g");
+        fill(&mut editor, "a", "Clash", "echo x");
+        assert!(editor.error.as_deref().unwrap().contains("already used"));
+        fill(&mut editor, " g ", "Search", "https://example.com/?q={Name}");
+        let first = editor.actions[0].clone();
+        let mut focus = None;
+        editor.fill_form(Some(&first), &mut focus);
+        fill(&mut editor, "a", "Renamed", "echo {Name}");
+        let mut focus = None;
+        editor.delete(0, &mut focus);
+        if let Some(ActionsEditorEvent::Changed(actions)) = editor.take_events().pop() {
+            emitted.push(actions);
+        }
+        assert_eq!(emitted.len(), 3);
+        assert_eq!(emitted[0].len(), 2);
+        assert_eq!(emitted[0][1].key, "g");
+        assert_eq!(emitted[1][0].description, "Renamed");
+        assert_eq!(emitted[2].len(), 1);
+        assert_eq!(emitted[2][0].key, "g");
     }
 
-    #[gpui_kit::test]
-    fn previews_examples_and_runs_unsaved_form(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let mut editor = None;
-        let handle = cx.open_window(size(px(800.), px(600.)), |window, cx| {
-            let saved = vec![ViewAction {
-                key: "g".into(),
-                description: "Taken".into(),
-                command: "echo".into(),
-            }];
-            let row = Some(vec![("Name".to_owned(), "Ada Lovelace".to_owned())]);
-            let entity =
-                cx.new(|cx| ActionsEditor::new(saved, vec!["Name".into()], row, window, cx));
-            editor = Some(entity.clone());
-            Root::new(entity, window, cx)
-        });
-        let editor = editor.unwrap();
-        let runs = Rc::new(RefCell::new(Vec::new()));
-        cx.update(|cx| {
-            let runs = runs.clone();
-            cx.subscribe(&editor, move |_, event: &ActionsEditorEvent, _| {
-                if let ActionsEditorEvent::Run(action) = event {
-                    runs.borrow_mut().push(action.clone());
-                }
+    #[test]
+    fn previews_examples_and_runs_unsaved_form() {
+        let saved = vec![ViewAction {
+            key: "g".into(),
+            description: "Taken".into(),
+            command: "echo".into(),
+        }];
+        let row = Some(vec![("Name".to_owned(), "Ada Lovelace".to_owned())]);
+        let mut editor = ActionsEditor::new(saved, vec!["Name".into()], row);
+        let mut focus = None;
+        assert_eq!(editor.preview(), None);
+        // The example's key `g` is taken, so it is left blank.
+        editor.use_example(0, &mut focus);
+        assert_eq!(editor.key.text(), "");
+        assert_eq!(
+            editor.preview(),
+            Some(Ok("https://www.google.com/search?q=Ada%20Lovelace".into()))
+        );
+        editor.use_example(1, &mut focus);
+        assert_eq!(editor.key.text(), "n");
+        assert_eq!(
+            editor.preview(),
+            Some(Ok("notepad \"C:/notes/Ada Lovelace.txt\"".into()))
+        );
+        editor.command.set_text("echo {Missing}");
+        assert_eq!(
+            editor.preview(),
+            Some(Err("column Missing is missing".into()))
+        );
+        editor.run_form();
+        let runs = editor
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                ActionsEditorEvent::Run(action) => Some(action),
+                _ => None,
             })
-            .detach();
-        });
-        cx.update_window(handle.into(), |_, window, cx| {
-            editor.update(cx, |editor, cx| {
-                assert_eq!(editor.preview(cx), None);
-                // The example's key `g` is taken, so it is left blank.
-                editor.use_example(0, window, cx);
-                assert_eq!(editor.key.read(cx).value(), "");
-                assert_eq!(
-                    editor.preview(cx),
-                    Some(Ok("https://www.google.com/search?q=Ada%20Lovelace".into()))
-                );
-                editor.use_example(1, window, cx);
-                assert_eq!(editor.key.read(cx).value(), "n");
-                assert_eq!(
-                    editor.preview(cx),
-                    Some(Ok("notepad \"C:/notes/Ada Lovelace.txt\"".into()))
-                );
-                editor.command.update(cx, |input, cx| {
-                    input.set_value("echo {Missing}", window, cx)
-                });
-                assert_eq!(
-                    editor.preview(cx),
-                    Some(Err("column Missing is missing".into()))
-                );
-                editor.run_form(cx);
-            })
-        })
-        .unwrap();
-        let runs = runs.borrow();
+            .collect::<Vec<_>>();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].command, "echo {Missing}");
         assert_eq!(runs[0].description, "Open note in Notepad");

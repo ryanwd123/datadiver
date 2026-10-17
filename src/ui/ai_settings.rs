@@ -1,160 +1,144 @@
-use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::*;
-
 use crate::domain::ai::{AiHeader, AiProvider, AiSettings};
-use crate::infrastructure::ai_client;
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Point, Rect, TextOptions, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, checkbox, colors};
 
 pub enum AiSettingsEvent {
     Changed(AiSettings),
 }
 
-type HeaderInputs = (Entity<InputState>, Entity<InputState>);
-
 /// Adds, edits, tests, and removes AI providers.
 pub struct AiSettingsEditor {
-    settings: AiSettings,
+    pub(crate) settings: AiSettings,
     /// Name of the provider loaded into the form, or `None` when adding.
     editing: Option<String>,
-    name: Entity<InputState>,
-    base_url: Entity<InputState>,
-    model: Entity<InputState>,
-    api_key: Entity<InputState>,
-    headers: Vec<HeaderInputs>,
+    pub(crate) name: Editor,
+    pub(crate) base_url: Editor,
+    pub(crate) model: Editor,
+    pub(crate) api_key: Editor,
+    pub(crate) headers: Vec<(Editor, Editor)>,
     send_data: bool,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     /// Outcome of the last connection test: `Ok` text or an error.
     test: Option<Result<String, String>>,
-    testing: Option<Task<()>>,
-    _subscriptions: Vec<Subscription>,
+    testing: bool,
+    events: Vec<AiSettingsEvent>,
 }
 
-impl EventEmitter<AiSettingsEvent> for AiSettingsEditor {}
+const SEND_HINT: &str = "Requests go to <base URL>/chat/completions. Always sent: table and column \
+names, types, comments, and the SQL editor text; for tables named with @, row, null, and distinct \
+counts. Only with data allowed: their min and max values and their most frequent or (for 25 or \
+fewer) all values.";
 
 impl AiSettingsEditor {
-    pub fn new(settings: AiSettings, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
-            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
-        };
-        let name = input("AI Factory", window, cx);
-        let base_url = input("https://openrouter.ai/api/v1", window, cx);
-        let model = input("gpt-4.1", window, cx);
-        let api_key = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("sk-… or {env:OPENAI_API_KEY}")
-                .masked(true)
-        });
-        let _subscriptions = [&name, &base_url, &model, &api_key]
-            .into_iter()
-            .map(|input| {
-                cx.subscribe_in(
-                    input,
-                    window,
-                    |editor, _, event: &InputEvent, window, cx| {
-                        if let InputEvent::PressEnter { .. } = event {
-                            editor.save(window, cx);
-                        }
-                    },
-                )
-            })
-            .collect();
+    pub fn new(settings: AiSettings) -> Self {
+        let mut api_key = Editor::single_line().with_placeholder("sk-… or {env:OPENAI_API_KEY}");
+        api_key.masked = true;
         let mut editor = Self {
             settings,
             editing: None,
-            name,
-            base_url,
-            model,
+            name: Editor::single_line().with_placeholder("AI Factory"),
+            base_url: Editor::single_line().with_placeholder("https://openrouter.ai/api/v1"),
+            model: Editor::single_line().with_placeholder("gpt-4.1"),
             api_key,
             headers: Vec::new(),
             send_data: false,
             error: None,
             test: None,
-            testing: None,
-            _subscriptions,
+            testing: false,
+            events: Vec::new(),
         };
         // With one provider there is nothing to choose, so open it for editing.
         if let [only] = editor.settings.providers.as_slice() {
             let only = only.clone();
-            editor.fill_form(Some(&only), window, cx);
+            let mut focus = None;
+            editor.fill_form(Some(&only), &mut focus);
         }
         editor
     }
 
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        let focus = self.name.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
+    pub fn take_events(&mut self) -> Vec<AiSettingsEvent> {
+        std::mem::take(&mut self.events)
     }
 
-    fn fill_form(
-        &mut self,
-        provider: Option<&AiProvider>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn focus(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.name.id);
+    }
+
+    fn inputs(&self) -> Vec<WidgetId> {
+        let mut ids = vec![self.name.id, self.model.id, self.base_url.id, self.api_key.id];
+        for (name, value) in &self.headers {
+            ids.push(name.id);
+            ids.push(value.id);
+        }
+        ids
+    }
+
+    pub fn contains(&self, id: WidgetId) -> bool {
+        self.inputs().contains(&id)
+    }
+
+    fn input_mut(&mut self, id: WidgetId) -> Option<&mut Editor> {
+        if let Some(input) = [&mut self.name, &mut self.base_url, &mut self.model, &mut self.api_key]
+            .into_iter()
+            .find(|input| input.id == id)
+        {
+            return Some(input);
+        }
+        self.headers
+            .iter_mut()
+            .flat_map(|(name, value)| [name, value])
+            .find(|input| input.id == id)
+    }
+
+    pub(crate) fn fill_form(&mut self, provider: Option<&AiProvider>, focus: &mut Option<WidgetId>) {
         self.editing = provider.map(|provider| provider.name.clone());
         let blank = AiProvider::default();
         let provider = provider.unwrap_or(&blank);
-        for (input, value) in [
-            (&self.name, &provider.name),
-            (&self.base_url, &provider.base_url),
-            (&self.model, &provider.model),
-            (&self.api_key, &provider.api_key),
-        ] {
-            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
-        }
+        self.name.set_text(provider.name.clone());
+        self.base_url.set_text(provider.base_url.clone());
+        self.model.set_text(provider.model.clone());
+        self.api_key.set_text(provider.api_key.clone());
         self.headers.clear();
         for header in &provider.headers {
-            self.push_header(header, window, cx);
+            self.push_header(header);
         }
         self.send_data = provider.send_data;
         self.error = None;
         self.test = None;
-        self.testing = None;
-        self.focus(window, cx);
-        cx.notify();
+        self.testing = false;
+        self.focus(focus);
     }
 
-    fn push_header(&mut self, header: &AiHeader, window: &mut Window, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("Header name");
-            input.set_value(header.name.clone(), window, cx);
-            input
-        });
-        let value = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("Value");
-            input.set_value(header.value.clone(), window, cx);
-            input
-        });
+    fn push_header(&mut self, header: &AiHeader) {
+        let mut name = Editor::single_line().with_placeholder("Header name");
+        name.set_text(header.name.clone());
+        let mut value = Editor::single_line().with_placeholder("Value");
+        value.set_text(header.value.clone());
         self.headers.push((name, value));
     }
 
-    fn add_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.push_header(&AiHeader::default(), window, cx);
+    pub(crate) fn add_header(&mut self, focus: &mut Option<WidgetId>) {
+        self.push_header(&AiHeader::default());
         if let Some((name, _)) = self.headers.last() {
-            let focus = name.read(cx).focus_handle(cx);
-            window.focus(&focus, cx);
+            *focus = Some(name.id);
         }
-        cx.notify();
     }
 
-    fn form_provider(&self, cx: &App) -> AiProvider {
-        let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
+    pub(crate) fn form_provider(&self) -> AiProvider {
         AiProvider {
-            name: value(&self.name),
-            base_url: value(&self.base_url),
-            model: value(&self.model),
-            api_key: value(&self.api_key),
+            name: self.name.text().trim().to_owned(),
+            base_url: self.base_url.text().trim().to_owned(),
+            model: self.model.text().trim().to_owned(),
+            api_key: self.api_key.text().trim().to_owned(),
             headers: self
                 .headers
                 .iter()
-                .map(|(name, val)| AiHeader {
-                    name: value(name),
-                    value: value(val),
+                .map(|(name, value)| AiHeader {
+                    name: name.text().trim().to_owned(),
+                    value: value.text().trim().to_owned(),
                 })
                 .filter(|header| !header.name.is_empty() || !header.value.is_empty())
                 .collect(),
@@ -162,11 +146,10 @@ impl AiSettingsEditor {
         }
     }
 
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let provider = self.form_provider(cx);
+    pub(crate) fn save(&mut self, focus: &mut Option<WidgetId>) {
+        let provider = self.form_provider();
         if let Err(error) = provider.validate(&self.settings.providers, self.editing.as_deref()) {
             self.error = Some(error);
-            cx.notify();
             return;
         }
         let position = self.editing.as_ref().and_then(|name| {
@@ -183,11 +166,11 @@ impl AiSettingsEditor {
         } else {
             self.settings.providers.push(provider.clone());
         }
-        cx.emit(AiSettingsEvent::Changed(self.settings.clone()));
-        self.fill_form(Some(&provider), window, cx);
+        self.events.push(AiSettingsEvent::Changed(self.settings.clone()));
+        self.fill_form(Some(&provider), focus);
     }
 
-    fn delete(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn delete(&mut self, index: usize, focus: &mut Option<WidgetId>) {
         if index >= self.settings.providers.len() {
             return;
         }
@@ -195,347 +178,344 @@ impl AiSettingsEditor {
         if self.settings.default_provider.as_ref() == Some(&removed.name) {
             self.settings.default_provider = None;
         }
-        cx.emit(AiSettingsEvent::Changed(self.settings.clone()));
+        self.events.push(AiSettingsEvent::Changed(self.settings.clone()));
         if self.editing.as_ref() == Some(&removed.name) {
-            self.fill_form(None, window, cx);
+            self.fill_form(None, focus);
         }
-        cx.notify();
     }
 
-    fn make_default(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn make_default(&mut self, index: usize) {
         let Some(provider) = self.settings.providers.get(index) else {
             return;
         };
         self.settings.default_provider = Some(provider.name.clone());
-        cx.emit(AiSettingsEvent::Changed(self.settings.clone()));
-        cx.notify();
+        self.events.push(AiSettingsEvent::Changed(self.settings.clone()));
     }
 
-    /// Tests the form as typed, saved or not.
-    fn test_connection(&mut self, cx: &mut Context<Self>) {
-        let provider = self.form_provider(cx);
+    /// The form as typed, saved or not, to test; `None` when it is invalid.
+    pub(crate) fn begin_test(&mut self) -> Option<AiProvider> {
+        let provider = self.form_provider();
         if let Err(error) = provider.validate(&[], None) {
             self.test = Some(Err(error));
-            cx.notify();
-            return;
+            return None;
         }
         self.test = None;
-        self.testing = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { ai_client::test_connection(&provider) })
-                .await;
-            let _ = this.update(cx, |editor, cx| {
-                editor.test = Some(result);
-                editor.testing = None;
-                cx.notify();
-            });
-        }));
-        cx.notify();
+        self.testing = true;
+        Some(provider)
     }
-}
 
-impl Render for AiSettingsEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let highlight = theme.tokens.table_even;
-        let error_color: Hsla = rgb(0xb33c3c).into();
-        let field = |label: &'static str, input: AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_sm().text_color(muted).child(label))
-                .child(input)
+    pub(crate) fn finish_test(&mut self, result: Result<String, String>) {
+        self.test = Some(result);
+        self.testing = false;
+    }
+
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        let Some(id) = *focus else {
+            return false;
         };
-        let default_name = self.settings.active().map(|p| p.name.clone());
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .when(self.settings.providers.is_empty(), |list| {
-                        list.child(div().text_color(muted).child(
-                            "No providers yet. Any OpenAI-compatible endpoint works: \
-                             OpenAI, OpenRouter, company gateways, Ollama, LM Studio.",
-                        ))
-                    })
-                    .children(self.settings.providers.iter().enumerate().map(
-                        |(index, provider)| {
-                            let editing = self.editing.as_ref() == Some(&provider.name);
-                            let is_default = default_name.as_ref() == Some(&provider.name);
-                            div()
-                                .id(("ai-provider", index))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_2()
-                                .py_1()
-                                .rounded_sm()
-                                .when(editing, |row| row.bg(highlight))
-                                .child(div().flex_shrink_0().child(provider.name.clone()))
-                                .when(is_default, |row| {
-                                    row.child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .text_sm()
-                                            .text_color(muted)
-                                            .child("default"),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_sm()
-                                        .text_color(muted)
-                                        .child(format!(
-                                            "{} · {}",
-                                            provider.model, provider.base_url
-                                        )),
-                                )
-                                .when(!is_default, |row| {
-                                    row.child(
-                                        Button::new(("ai-provider-default", index))
-                                            .label("Make default")
-                                            .small()
-                                            .ghost()
-                                            .on_click(cx.listener(move |editor, _, _, cx| {
-                                                editor.make_default(index, cx)
-                                            })),
-                                    )
-                                })
-                                .child(
-                                    Button::new(("ai-provider-edit", index))
-                                        .label("Edit")
-                                        .small()
-                                        .ghost()
-                                        .on_click(cx.listener(move |editor, _, window, cx| {
-                                            let provider =
-                                                editor.settings.providers.get(index).cloned();
-                                            editor.fill_form(provider.as_ref(), window, cx);
-                                        })),
-                                )
-                                .child(
-                                    Button::new(("ai-provider-delete", index))
-                                        .label("Delete")
-                                        .small()
-                                        .ghost()
-                                        .on_click(cx.listener(move |editor, _, window, cx| {
-                                            editor.delete(index, window, cx)
-                                        })),
-                                )
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(field("Name", Input::new(&self.name).into_any_element())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(field("Model", Input::new(&self.model).into_any_element())),
-                    ),
-            )
-            .child(field(
-                "Base URL (the part before /chat/completions)",
-                Input::new(&self.base_url).into_any_element(),
-            ))
-            .child(field(
-                "API key · {env:NAME} reads an environment variable; leave empty for local servers",
-                Input::new(&self.api_key).mask_toggle().into_any_element(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_sm().text_color(muted).child("Headers"))
-                    .children(
-                        self.headers
-                            .iter()
-                            .enumerate()
-                            .map(|(index, (name, value))| {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(div().w(px(220.)).child(Input::new(name)))
-                                    .child(div().flex_1().child(Input::new(value)))
-                                    .child(
-                                        Button::new(("ai-header-remove", index))
-                                            .label("Remove")
-                                            .small()
-                                            .ghost()
-                                            .on_click(cx.listener(move |editor, _, _, cx| {
-                                                if index < editor.headers.len() {
-                                                    editor.headers.remove(index);
-                                                }
-                                                cx.notify();
-                                            })),
-                                    )
-                            }),
-                    )
-                    .child(
-                        div().flex().child(
-                            Button::new("ai-header-add")
-                                .label("Add header")
-                                .small()
-                                .on_click(cx.listener(|editor, _, window, cx| {
-                                    editor.add_header(window, cx)
-                                })),
-                        ),
-                    ),
-            )
-            .child(
-                Checkbox::new("ai-send-data")
-                    .label("Allow sending data to improve SQL output")
-                    .checked(self.send_data)
-                    .on_change(cx.listener(|editor, checked: &bool, _, cx| {
-                        editor.send_data = *checked;
-                        cx.notify();
-                    })),
-            )
-            .child(div().text_sm().text_color(muted).child(
-                "Requests go to <base URL>/chat/completions. Always sent: table and column \
-                 names, types, comments, and the SQL editor text; for tables named with @, \
-                 row, null, and distinct counts. Only with data allowed: their min and max \
-                 values and their most frequent or (for 25 or fewer) all values.",
-            ))
-            .when(self.testing.is_some(), |content| {
-                content.child(div().text_sm().text_color(muted).child("Testing…"))
-            })
-            .when_some(self.test.clone(), |content, test| {
-                let (text, color) = match test {
-                    Ok(text) => (format!("✓ {text}"), muted),
-                    Err(error) => (format!("Test failed: {error}"), error_color),
+        if event.key == "tab" && !event.modifiers.control && !event.modifiers.alt {
+            let inputs = self.inputs();
+            if let Some(position) = inputs.iter().position(|input| *input == id) {
+                let next = if event.modifiers.shift {
+                    (position + inputs.len() - 1) % inputs.len()
+                } else {
+                    (position + 1) % inputs.len()
                 };
-                content.child(
-                    div()
-                        .id("ai-test-result")
-                        .text_sm()
-                        .text_color(color)
-                        .child(text),
-                )
-            })
-            .when_some(self.error.clone(), |content, error| {
-                content.child(div().text_color(error_color).child(error))
-            })
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .when(self.editing.is_some(), |buttons| {
-                        buttons.child(
-                            Button::new("ai-provider-new")
-                                .label("New provider")
-                                .on_click(cx.listener(|editor, _, window, cx| {
-                                    editor.fill_form(None, window, cx)
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("ai-provider-test")
-                            .label("Test connection")
-                            .disabled(self.testing.is_some())
-                            .on_click(cx.listener(|editor, _, _, cx| editor.test_connection(cx))),
-                    )
-                    .child(
-                        Button::new("ai-provider-save")
-                            .primary()
-                            .label(if self.editing.is_some() {
-                                "Update provider"
-                            } else {
-                                "Add provider"
-                            })
-                            .on_click(cx.listener(|editor, _, window, cx| editor.save(window, cx))),
-                    ),
-            )
+                *focus = Some(inputs[next]);
+                return true;
+            }
+        }
+        let main = [self.name.id, self.base_url.id, self.model.id, self.api_key.id].contains(&id);
+        let Some(input) = self.input_mut(id) else {
+            return false;
+        };
+        let outcome = input.key(event);
+        if outcome.submit && main {
+            self.save(focus);
+        }
+        outcome.handled
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        match focus.and_then(|id| self.input_mut(id)) {
+            Some(input) => {
+                input.type_text(typed);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A click; returns whether it was used and whether a test should start.
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> (bool, Option<AiProvider>) {
+        match hit {
+            Hit::Editor(id, part) => {
+                let id = *id;
+                let Some(input) = self.input_mut(id) else {
+                    return (false, None);
+                };
+                input.mouse_down(*part, pos, clicks, shift);
+                *focus = Some(id);
+            }
+            Hit::Button(Button::ProviderDefault(index)) => self.make_default(*index),
+            Hit::Button(Button::ProviderEdit(index)) => {
+                let provider = self.settings.providers.get(*index).cloned();
+                self.fill_form(provider.as_ref(), focus);
+            }
+            Hit::Button(Button::ProviderDelete(index)) => self.delete(*index, focus),
+            Hit::Button(Button::HeaderRemove(index)) => {
+                if *index < self.headers.len() {
+                    self.headers.remove(*index);
+                }
+            }
+            Hit::Button(Button::HeaderAdd) => self.add_header(focus),
+            Hit::Button(Button::ProviderSendData) => self.send_data = !self.send_data,
+            Hit::Button(Button::ProviderNew) => self.fill_form(None, focus),
+            Hit::Button(Button::ProviderTest) => return (true, self.begin_test()),
+            Hit::Button(Button::ProviderSave) => self.save(focus),
+            _ => return (false, None),
+        }
+        (true, None)
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        for id in self.inputs() {
+            if let Some(input) = self.input_mut(id)
+                && input.is_dragging()
+            {
+                input.mouse_drag(pos);
+            }
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        for id in self.inputs() {
+            if let Some(input) = self.input_mut(id) {
+                input.mouse_up();
+            }
+        }
+    }
+
+    fn field_height(fonts: &Fonts) -> f32 {
+        text::line_height(&fonts.small) + 4.0 + Editor::line_box_height(&fonts.ui)
+    }
+
+    pub fn height(&self, fonts: &Fonts, width: f32) -> f32 {
+        let line = text::line_height(&fonts.ui);
+        let row = (line + 10.0).round();
+        let providers = if self.settings.providers.is_empty() {
+            text::layout(EMPTY_HINT, &fonts.ui, TextOptions::wrapped(width)).height
+        } else {
+            row * self.settings.providers.len() as f32
+        };
+        let hint = text::layout(SEND_HINT, &fonts.small, TextOptions::wrapped(width)).height;
+        providers
+            + 12.0
+            + Self::field_height(fonts) * 3.0
+            + 36.0
+            + line
+            + 4.0
+            + (Editor::line_box_height(&fonts.ui) + 4.0) * self.headers.len() as f32
+            + button_height(&fonts.small)
+            + 12.0
+            + line
+            + 12.0
+            + hint
+            + 12.0
+            + if self.testing || self.test.is_some() { line + 12.0 } else { 0.0 }
+            + if self.error.is_some() { line + 12.0 } else { 0.0 }
+            + button_height(&fonts.ui)
+            + 12.0
+    }
+
+    fn field(canvas: &mut Canvas<Hit>, r: Rect, label: &str, input: &mut Editor, fonts: &Fonts, focus: Option<WidgetId>) {
+        let label_height = text::line_height(&fonts.small) + 4.0;
+        canvas.text(rect(r.x, r.y, r.w, label_height), label, &fonts.small, colors::MUTED, Align::Left);
+        let id = input.id;
+        input.paint(
+            canvas,
+            rect(r.x, r.y + label_height, r.w, Editor::line_box_height(&fonts.ui)),
+            &fonts.ui,
+            focus == Some(id),
+            |part| Hit::Editor(id, part),
+        );
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        let font = &fonts.ui;
+        let line = text::line_height(font);
+        let small = &fonts.small;
+        let mut column = Column::new(r, 12.0);
+        if self.settings.providers.is_empty() {
+            let height = canvas.paragraph(column.rest(), EMPTY_HINT, font, colors::MUTED);
+            column.skip(height + 12.0);
+        }
+        let default_name = self.settings.active().map(|provider| provider.name.clone());
+        let row_height = (line + 10.0).round();
+        let providers = self.settings.providers.clone();
+        for (index, provider) in providers.iter().enumerate() {
+            let row = column.next(row_height);
+            let editing = self.editing.as_ref() == Some(&provider.name);
+            let is_default = default_name.as_ref() == Some(&provider.name);
+            if editing {
+                canvas.fill_rounded(row, 4.0, colors::STRIPE);
+            }
+            let mut items = Row::new(row.inset_xy(8.0, (row_height - button_height(small)) / 2.0), 8.0);
+            for (label, hit) in [
+                ("Delete", Button::ProviderDelete(index)),
+                ("Edit", Button::ProviderEdit(index)),
+            ] {
+                let r = items.right(button_width(label, small));
+                button(canvas, r, label, small, ButtonStyle::Ghost, true, Hit::Button(hit));
+            }
+            if !is_default {
+                let r = items.right(button_width("Make default", small));
+                button(canvas, r, "Make default", small, ButtonStyle::Ghost, true, Hit::Button(Button::ProviderDefault(index)));
+            }
+            let name = items.left(text::measure(&provider.name, font).0 + 4.0);
+            canvas.text(name, &provider.name, font, colors::FOREGROUND, Align::Left);
+            if is_default {
+                let label = items.left(text::measure("default", small).0 + 4.0);
+                canvas.text(label, "default", small, colors::MUTED, Align::Left);
+            }
+            canvas.text(
+                items.rest(),
+                &format!("{} · {}", provider.model, provider.base_url),
+                small,
+                colors::MUTED,
+                Align::Left,
+            );
+        }
+        let names = column.next(Self::field_height(fonts));
+        let mut names = Row::new(names, 8.0);
+        let half = (names.area.w - 8.0) / 2.0;
+        let name_area = names.left(half);
+        Self::field(canvas, name_area, "Name", &mut self.name, fonts, focus);
+        let model_area = names.left(half);
+        Self::field(canvas, model_area, "Model", &mut self.model, fonts, focus);
+        let base = column.next(Self::field_height(fonts));
+        Self::field(canvas, base, "Base URL (the part before /chat/completions)", &mut self.base_url, fonts, focus);
+        let key = column.next(Self::field_height(fonts));
+        Self::field(
+            canvas,
+            key,
+            "API key · {env:NAME} reads an environment variable; leave empty for local servers",
+            &mut self.api_key,
+            fonts,
+            focus,
+        );
+        canvas.text(column.next(line), "Headers", small, colors::MUTED, Align::Left);
+        let input_height = Editor::line_box_height(font);
+        for index in 0..self.headers.len() {
+            let row = column.next(input_height);
+            let mut items = Row::new(row, 8.0);
+            let remove = items.right(button_width("Remove", small));
+            button(
+                canvas,
+                rect(remove.x, remove.y + (input_height - button_height(small)) / 2.0, remove.w, button_height(small)),
+                "Remove",
+                small,
+                ButtonStyle::Ghost,
+                true,
+                Hit::Button(Button::HeaderRemove(index)),
+            );
+            let name_area = items.left(220.0);
+            let value_area = items.rest();
+            let (name, value) = &mut self.headers[index];
+            let (name_id, value_id) = (name.id, value.id);
+            name.paint(canvas, name_area, font, focus == Some(name_id), |part| Hit::Editor(name_id, part));
+            value.paint(canvas, value_area, font, focus == Some(value_id), |part| Hit::Editor(value_id, part));
+        }
+        let add = column.next(button_height(small));
+        button(
+            canvas,
+            add.with_w(button_width("Add header", small)),
+            "Add header",
+            small,
+            ButtonStyle::Outline,
+            true,
+            Hit::Button(Button::HeaderAdd),
+        );
+        let send = column.next(line + 4.0);
+        checkbox(
+            canvas,
+            send,
+            "Allow sending data to improve SQL output",
+            self.send_data,
+            font,
+            Hit::Button(Button::ProviderSendData),
+        );
+        let hint_height = canvas.paragraph(column.rest(), SEND_HINT, small, colors::MUTED);
+        column.skip(hint_height + 12.0);
+        if self.testing {
+            canvas.text(column.next(line), "Testing…", small, colors::MUTED, Align::Left);
+        }
+        if let Some(test) = self.test.clone() {
+            let (text_value, color) = match test {
+                Ok(text) => (format!("✓ {text}"), colors::MUTED),
+                Err(error) => (format!("Test failed: {error}"), colors::DANGER),
+            };
+            canvas.text(column.next(line), &text_value, small, color, Align::Left);
+        }
+        if let Some(error) = self.error.clone() {
+            canvas.text(column.next(line), &error, font, colors::DANGER, Align::Left);
+        }
+        let buttons = column.next(button_height(font));
+        let mut buttons = Row::new(buttons, 8.0);
+        let save_label = if self.editing.is_some() { "Update provider" } else { "Add provider" };
+        let save = buttons.right(button_width(save_label, font));
+        button(canvas, save, save_label, font, ButtonStyle::Primary, true, Hit::Button(Button::ProviderSave));
+        let test = buttons.right(button_width("Test connection", font));
+        button(canvas, test, "Test connection", font, ButtonStyle::Outline, !self.testing, Hit::Button(Button::ProviderTest));
+        if self.editing.is_some() {
+            let new = buttons.right(button_width("New provider", font));
+            button(canvas, new, "New provider", font, ButtonStyle::Outline, true, Hit::Button(Button::ProviderNew));
+        }
     }
 }
 
-#[cfg(all(test, feature = "snapshots"))]
+const EMPTY_HINT: &str = "No providers yet. Any OpenAI-compatible endpoint works: OpenAI, \
+OpenRouter, company gateways, Ollama, LM Studio.";
+
+#[cfg(test)]
 mod tests {
     use super::{AiSettingsEditor, AiSettingsEvent};
     use crate::domain::ai::{AiProvider, AiSettings};
-    use gpui_kit::component::Root;
-    use gpui_kit::{AppContext as _, TestAppContext, px, size};
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
-    #[gpui_kit::test]
-    fn adds_edits_renames_defaults_and_deletes_providers(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let mut editor = None;
-        let handle = cx.open_window(size(px(800.), px(700.)), |window, cx| {
-            let entity = cx.new(|cx| AiSettingsEditor::new(AiSettings::default(), window, cx));
-            editor = Some(entity.clone());
-            Root::new(entity, window, cx)
-        });
-        let editor = editor.unwrap();
-        let emitted = Rc::new(RefCell::new(Vec::<AiSettings>::new()));
-        cx.update(|cx| {
-            let emitted = emitted.clone();
-            cx.subscribe(&editor, move |_, event: &AiSettingsEvent, _| {
+    #[test]
+    fn adds_edits_renames_defaults_and_deletes_providers() {
+        let mut editor = AiSettingsEditor::new(AiSettings::default());
+        let mut emitted = Vec::<AiSettings>::new();
+        let collect = |editor: &mut AiSettingsEditor, emitted: &mut Vec<AiSettings>| {
+            for event in editor.take_events() {
                 let AiSettingsEvent::Changed(settings) = event;
-                emitted.borrow_mut().push(settings.clone());
-            })
-            .detach();
-        });
-        let fill = |cx: &mut TestAppContext, name: &str, headers: &[(&str, &str)]| {
-            let name = name.to_owned();
-            let headers = headers
-                .iter()
-                .map(|(n, v)| (n.to_string(), v.to_string()))
-                .collect::<Vec<_>>();
-            cx.update_window(handle.into(), |_, window, cx| {
-                editor.update(cx, |editor, cx| {
-                    for (input, value) in [
-                        (editor.name.clone(), name.clone()),
-                        (editor.base_url.clone(), "https://ai.example.com/v1".into()),
-                        (editor.model.clone(), "gpt-6-sole".into()),
-                        (editor.api_key.clone(), "{env:AI_KEY}".into()),
-                    ] {
-                        input.update(cx, |input, cx| input.set_value(value, window, cx));
-                    }
-                    editor.headers.clear();
-                    for (n, v) in &headers {
-                        editor.add_header(window, cx);
-                        let (name_input, value_input) = editor.headers.last().unwrap().clone();
-                        name_input.update(cx, |i, cx| i.set_value(n.clone(), window, cx));
-                        value_input.update(cx, |i, cx| i.set_value(v.clone(), window, cx));
-                    }
-                    // A blank header row is dropped.
-                    editor.add_header(window, cx);
-                    editor.save(window, cx);
-                })
-            })
-            .unwrap();
+                emitted.push(settings);
+            }
         };
-
+        let fill = |editor: &mut AiSettingsEditor, name: &str, headers: &[(&str, &str)]| {
+            let mut focus = None;
+            editor.name.set_text(name);
+            editor.base_url.set_text("https://ai.example.com/v1");
+            editor.model.set_text("gpt-6-sole");
+            editor.api_key.set_text("{env:AI_KEY}");
+            editor.headers.clear();
+            for (n, v) in headers {
+                editor.add_header(&mut focus);
+                let (name_input, value_input) = editor.headers.last_mut().unwrap();
+                name_input.set_text(*n);
+                value_input.set_text(*v);
+            }
+            // A blank header row is dropped.
+            editor.add_header(&mut focus);
+            editor.save(&mut focus);
+        };
         fill(
-            cx,
+            &mut editor,
             "AI Factory",
-            &[
-                ("OpenAI-Organization", "org"),
-                ("X-AI-Factory-Client", "dd"),
-            ],
+            &[("OpenAI-Organization", "org"), ("X-AI-Factory-Client", "dd")],
         );
-        let saved = emitted.borrow().last().unwrap().clone();
+        collect(&mut editor, &mut emitted);
+        let saved = emitted.last().unwrap().clone();
         assert_eq!(saved.providers.len(), 1);
         let provider: &AiProvider = &saved.providers[0];
         assert_eq!(provider.api_key, "{env:AI_KEY}");
@@ -543,40 +523,26 @@ mod tests {
         assert_eq!(provider.headers[1].name, "X-AI-Factory-Client");
 
         // Saving again updates in place; a rename keeps it the default.
-        cx.update_window(handle.into(), |_, _, cx| {
-            editor.update(cx, |editor, cx| editor.make_default(0, cx))
-        })
-        .unwrap();
-        fill(cx, "Factory", &[]);
-        let saved = emitted.borrow().last().unwrap().clone();
+        editor.make_default(0);
+        fill(&mut editor, "Factory", &[]);
+        collect(&mut editor, &mut emitted);
+        let saved = emitted.last().unwrap().clone();
         assert_eq!(saved.providers.len(), 1);
         assert_eq!(saved.default_provider.as_deref(), Some("Factory"));
         assert!(saved.providers[0].headers.is_empty());
 
         // A second provider with the same name is rejected.
-        cx.update_window(handle.into(), |_, window, cx| {
-            editor.update(cx, |editor, cx| editor.fill_form(None, window, cx))
-        })
-        .unwrap();
-        let count = emitted.borrow().len();
-        fill(cx, "Factory", &[]);
-        assert_eq!(emitted.borrow().len(), count);
-        cx.update(|cx| {
-            assert!(
-                editor
-                    .read(cx)
-                    .error
-                    .as_deref()
-                    .unwrap()
-                    .contains("already")
-            )
-        });
+        let mut focus = None;
+        editor.fill_form(None, &mut focus);
+        let count = emitted.len();
+        fill(&mut editor, "Factory", &[]);
+        collect(&mut editor, &mut emitted);
+        assert_eq!(emitted.len(), count);
+        assert!(editor.error.as_deref().unwrap().contains("already"));
 
-        cx.update_window(handle.into(), |_, window, cx| {
-            editor.update(cx, |editor, cx| editor.delete(0, window, cx))
-        })
-        .unwrap();
-        let saved = emitted.borrow().last().unwrap().clone();
+        editor.delete(0, &mut focus);
+        collect(&mut editor, &mut emitted);
+        let saved = emitted.last().unwrap().clone();
         assert!(saved.providers.is_empty());
         assert_eq!(saved.default_provider, None);
     }

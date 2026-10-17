@@ -1,13 +1,11 @@
 //! A side pane showing the active cell's whole value, for long, multi-line,
 //! and JSON values that do not fit in a grid cell.
-use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{Editor, EditorState};
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
 
 use crate::domain::cell_detail::{DetailText, detail_text};
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::{Align, Canvas, Point, Rect, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::{ButtonStyle, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
 /// What the pane shows: the active cell, or why there is none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,36 +19,32 @@ pub enum CellContent {
     Message(String),
 }
 
-pub enum CellDetailEvent {
-    Close,
-}
-
 pub struct CellDetailPane {
     content: CellContent,
     detail: Option<DetailText>,
-    /// The editor still shows earlier content; it updates on the next render.
-    stale: bool,
-    pub(crate) editor: Entity<EditorState>,
+    pub(crate) editor: Editor,
 }
 
-impl EventEmitter<CellDetailEvent> for CellDetailPane {}
+impl Default for CellDetailPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CellDetailPane {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .line_number(false)
-                .soft_wrap(true)
-        });
+    pub fn new() -> Self {
+        let mut editor = Editor::multi_line();
+        editor.read_only = true;
+        editor.soft_wrap = true;
+        editor.framed = false;
         Self {
             content: CellContent::Message(String::new()),
             detail: None,
-            stale: false,
             editor,
         }
     }
 
-    pub fn set_content(&mut self, content: CellContent, cx: &mut Context<Self>) {
+    pub fn set_content(&mut self, content: CellContent) {
         if self.content == content {
             return;
         }
@@ -61,28 +55,39 @@ impl CellDetailPane {
             _ => None,
         };
         self.content = content;
-        self.stale = true;
-        cx.notify();
+        let text = self.text().unwrap_or_default().to_owned();
+        self.editor.set_text(text);
+        self.editor.set_selection(0..0);
     }
 
     /// The text shown for the active cell, if it has a value.
     pub fn text(&self) -> Option<&str> {
         self.detail.as_ref().map(|detail| detail.text.as_str())
     }
-}
 
-impl Render for CellDetailPane {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.stale) {
-            let text = self.text().unwrap_or_default().to_owned();
-            self.editor
-                .update(cx, |editor, cx| editor.set_value(text, window, cx));
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> bool {
+        match hit {
+            Hit::Button(Button::CellDetailCopy) => {
+                if let Some(text) = self.text() {
+                    crate::ui::platform::system::write_clipboard(text);
+                }
+                true
+            }
+            Hit::Editor(id, part) if *id == self.editor.id => {
+                self.editor.mouse_down(*part, pos, clicks, shift);
+                *focus = Some(*id);
+                true
+            }
+            _ => false,
         }
-        let muted = cx.theme().tokens.muted_foreground;
-        // Match the grid, which uses the window's font, rather than the
-        // editor's monospace code font.
-        let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        let font = &fonts.ui;
+        let line = text::line_height(font);
+        canvas.fill(r, colors::BACKGROUND);
+        canvas.fill(rect(r.x, r.y, 1.0, r.h), colors::BORDER);
+        let inner = rect(r.x + 9.0, r.y + 8.0, r.w - 17.0, r.h - 16.0);
         let (title, subtitle) = match &self.content {
             CellContent::Cell {
                 column,
@@ -98,63 +103,27 @@ impl Render for CellDetailPane {
                 match (value, &self.detail) {
                     (None, _) => subtitle.push_str(" · NULL"),
                     (Some(_), Some(detail)) if detail.json => subtitle.push_str(" · JSON"),
-                    (Some(value), _) => {
-                        subtitle.push_str(&format!(" · {} characters", value.chars().count()))
-                    }
+                    (Some(value), _) => subtitle.push_str(&format!(" · {} characters", value.chars().count())),
                 }
                 (column.clone(), subtitle)
             }
             CellContent::Message(message) => ("Cell detail".to_owned(), message.clone()),
         };
-        let copy_text = self.text().map(str::to_owned);
-        div()
-            .id("cell-detail")
-            .flex()
-            .flex_col()
-            .h_full()
-            .gap_1()
-            .p_2()
-            .border_l_1()
-            .border_color(cx.theme().tokens.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .when_some(copy_text, |header, text| {
-                        header.child(
-                            Button::new("cell-detail-copy")
-                                .small()
-                                .label("Copy")
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
-                                }),
-                        )
-                    })
-                    .child(
-                        Button::new("cell-detail-close")
-                            .small()
-                            .label("×")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CellDetailEvent::Close))),
-                    ),
-            )
-            .child(div().text_color(muted).truncate().child(subtitle))
-            .child(
-                div().flex_1().min_h_0().child(
-                    Editor::new(&self.editor)
-                        .readonly(true)
-                        .font_family(text_style.font_family)
-                        .text_size(font_size)
-                        .h_full(),
-                ),
-            )
+        let small = &fonts.small;
+        let header = rect(inner.x, inner.y, inner.w, button_height(small));
+        let mut items = Row::new(header, 4.0);
+        let close = items.right(button_width("×", small));
+        button(canvas, close, "×", small, ButtonStyle::Outline, true, Hit::Button(Button::CellDetailClose));
+        if self.text().is_some() {
+            let copy = items.right(button_width("Copy", small));
+            button(canvas, copy, "Copy", small, ButtonStyle::Outline, true, Hit::Button(Button::CellDetailCopy));
+        }
+        canvas.text(items.rest(), &title, &font.semibold(), colors::FOREGROUND, Align::Left);
+        let subtitle_rect = rect(inner.x, header.bottom() + 4.0, inner.w, line);
+        canvas.text(subtitle_rect, &subtitle, font, colors::MUTED, Align::Left);
+        let body = rect(inner.x, subtitle_rect.bottom() + 4.0, inner.w, (inner.bottom() - subtitle_rect.bottom() - 4.0).max(0.0));
+        let id = self.editor.id;
+        // The grid's font, not the code editors' monospace font.
+        self.editor.paint(canvas, body, font, focus == Some(id), |part| Hit::Editor(id, part));
     }
 }

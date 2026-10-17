@@ -1,78 +1,19 @@
-use gpui_kit::component::button::Button;
-use gpui_kit::component::command::{Command, CommandItem, CommandState};
-use gpui_kit::component::input::{Editor, Enter, InputEvent};
-use gpui_kit::component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
-use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IndexPath, StyledExt as _, WindowExt as _,
-};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::*;
-
 use crate::application::pivot_editor::{PivotEdit, PivotFieldKind};
 use crate::domain::documents::Dimension;
 use crate::domain::pivot::dimension_editor_expression;
 use crate::infrastructure::duckdb_store::ColumnSchema;
-use crate::ui::input_with_autocompletion::InputWithAutocompletion;
-
-gpui_kit::actions!(
-    datadiver,
-    [ApplyDimension, DimensionNextFocus, DimensionPreviousFocus]
-);
-struct DimensionBindings;
-impl Global for DimensionBindings {}
+use crate::ui::hit::{Button, Hit};
+use crate::ui::input_with_autocompletion;
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Point, Rect, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::list::{self, Item, List, Palette};
+use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
 #[derive(Clone, Debug)]
 pub struct PivotPanelEvent {
     pub edit: PivotEdit,
     pub revision: u64,
-}
-
-struct ConfiguredDimensions {
-    entries: Vec<Dimension>,
-    selected: Option<IndexPath>,
-}
-
-impl ListDelegate for ConfiguredDimensions {
-    type Item = ListItem;
-    fn items_count(&self, _: usize, _: &App) -> usize {
-        self.entries.len()
-    }
-    fn render_item(
-        &mut self,
-        index: IndexPath,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        let entry = self.entries.get(index.row)?;
-        let label = entry
-            .to_string()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        Some(
-            ListItem::new(format!("dimension-{}", index.row))
-                .h(px(34.))
-                .selected(self.selected == Some(index))
-                .child(label),
-        )
-    }
-    fn set_selected_index(
-        &mut self,
-        index: Option<IndexPath>,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
-        self.selected = index;
-        cx.notify();
-    }
-    fn render_empty(
-        &mut self,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) -> impl IntoElement {
-        div().py_3().child("No dimensions configured")
-    }
 }
 
 #[derive(Clone)]
@@ -84,12 +25,22 @@ enum PanelAction {
     Remove,
 }
 
+/// What the panel asks of its host after input.
+#[derive(Default)]
+pub struct PanelResult {
+    pub handled: bool,
+    pub event: Option<PivotPanelEvent>,
+    pub close: bool,
+}
+
 pub struct PivotPanel {
+    /// Tells this panel apart from a later one in candidate checks.
+    pub id: WidgetId,
     schema: Vec<ColumnSchema>,
     configured: Vec<Dimension>,
-    command: Entity<CommandState>,
-    list: Entity<ListState<ConfiguredDimensions>>,
-    pub(crate) sql: Entity<InputWithAutocompletion>,
+    pub(crate) command: Palette,
+    pub(crate) list: List,
+    pub(crate) sql: Editor,
     selected: Option<usize>,
     custom: bool,
     initial_sql: String,
@@ -102,10 +53,16 @@ pub struct PivotPanel {
     pub(crate) error: Option<String>,
     kind: PivotFieldKind,
     blocked: Vec<Dimension>,
-    _subscriptions: Vec<Subscription>,
+    events: Vec<PivotPanelEvent>,
 }
 
-impl EventEmitter<PivotPanelEvent> for PivotPanel {}
+fn dimension_label(entry: &Dimension) -> String {
+    entry
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 impl PivotPanel {
     pub fn new(
@@ -113,62 +70,14 @@ impl PivotPanel {
         configured: Vec<Dimension>,
         kind: PivotFieldKind,
         blocked: Vec<Dimension>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
     ) -> Self {
-        if !cx.has_global::<DimensionBindings>() {
-            cx.bind_keys([
-                KeyBinding::new("ctrl-enter", ApplyDimension, Some("PivotPanel")),
-                KeyBinding::new("ctrl-enter", ApplyDimension, Some("PivotPanel > Input")),
-                KeyBinding::new("tab", DimensionNextFocus, Some("PivotPanel")),
-                KeyBinding::new("tab", DimensionNextFocus, Some("PivotPanel > Input")),
-                KeyBinding::new("shift-tab", DimensionPreviousFocus, Some("PivotPanel")),
-                KeyBinding::new(
-                    "shift-tab",
-                    DimensionPreviousFocus,
-                    Some("PivotPanel > Input"),
-                ),
-            ]);
-            cx.set_global(DimensionBindings);
-        }
-        let command = cx.new(|cx| CommandState::new(window, cx));
-        let list = cx.new(|cx| {
-            ListState::new(
-                ConfiguredDimensions {
-                    entries: configured.clone(),
-                    selected: None,
-                },
-                window,
-                cx,
-            )
-        });
-        let sql = cx.new(|cx| {
-            InputWithAutocompletion::sql_columns(
-                schema.iter().map(|column| column.storage_name.clone()),
-                window,
-                cx,
-            )
-        });
-        let list_subscription =
-            cx.subscribe_in(&list, window, |this, _, event: &ListEvent, window, cx| {
-                if let ListEvent::Select(index) | ListEvent::Confirm(index) = event {
-                    this.restore_list_selection(window, cx);
-                    if this.selected != Some(index.row) || this.custom {
-                        this.request_action(PanelAction::Select(index.row), window, cx);
-                    }
-                }
-            });
-        let sql_state = sql.read(cx).state().clone();
-        let sql_subscription = cx.subscribe(&sql_state, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.input_changed(cx);
-            }
-        });
+        let sql = input_with_autocompletion::sql_columns(schema.iter().map(|column| column.storage_name.clone()));
         let mut panel = Self {
+            id: WidgetId::new(),
             schema,
-            configured,
-            command,
-            list,
+            configured: Vec::new(),
+            command: Palette::new("Find a column"),
+            list: List::new(),
             sql,
             selected: None,
             custom: false,
@@ -182,135 +91,141 @@ impl PivotPanel {
             error: None,
             kind,
             blocked,
-            _subscriptions: vec![list_subscription, sql_subscription],
+            events: Vec::new(),
         };
+        panel.command.list.empty_text = "No available columns".into();
+        panel.list.empty_text = "No dimensions configured".into();
+        panel.list.select_on_click = true;
+        panel.set_configured(configured);
         if !panel.configured.is_empty() {
-            panel.select(0, window, cx);
+            panel.select(0);
         }
         panel
     }
 
-    fn input_changed(&mut self, cx: &mut Context<Self>) {
-        let sql = self.sql.read(cx).state().read(cx).value().to_string();
+    fn set_configured(&mut self, entries: Vec<Dimension>) {
+        self.configured = entries;
+        self.list
+            .set_items(self.configured.iter().map(|entry| Item::new(dimension_label(entry))).collect());
+        let available = self.available_columns().into_iter().map(Item::new).collect();
+        self.command.set_items(available);
+        self.restore_list_selection();
+    }
+
+    pub fn kind(&self) -> PivotFieldKind {
+        self.kind
+    }
+
+    pub fn take_event(&mut self) -> Option<PivotPanelEvent> {
+        (!self.events.is_empty()).then(|| self.events.remove(0))
+    }
+
+    fn input_changed(&mut self) {
+        let sql = self.sql.text().to_owned();
         if sql != self.observed_sql {
             self.observed_sql = sql;
             self.revision += 1;
             self.error = None;
-            cx.notify();
         }
     }
-    fn dirty(&self, cx: &App) -> bool {
-        self.custom || self.sql.read(cx).state().read(cx).value().as_ref() != self.initial_sql
+
+    fn dirty(&self) -> bool {
+        self.custom || self.sql.text() != self.initial_sql
     }
-    fn restore_list_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.list.update(cx, |list, cx| {
-            list.set_selected_index(self.selected.map(IndexPath::new), window, cx)
-        });
+
+    fn restore_list_selection(&mut self) {
+        self.list.select_item(self.selected);
     }
-    fn load_inputs(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+
+    fn load_inputs(&mut self, sql: String) {
         self.revision += 1;
         self.initial_sql = sql.clone();
         self.observed_sql = sql.clone();
-        self.sql
-            .read(cx)
-            .state()
-            .clone()
-            .update(cx, |state, cx| state.set_value(sql, window, cx));
+        self.sql.set_text(sql);
         self.error = None;
     }
-    pub(crate) fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+
+    pub(crate) fn select(&mut self, index: usize) {
         let Some(dimension) = self.configured.get(index).cloned() else {
             return;
         };
         self.selected = Some(index);
         self.custom = false;
         match dimension_editor_expression(&dimension, &self.schema) {
-            Ok(sql) => self.load_inputs(sql, window, cx),
+            Ok(sql) => self.load_inputs(sql),
             Err(error) => {
-                self.load_inputs(String::new(), window, cx);
+                self.load_inputs(String::new());
                 self.error = Some(error);
             }
         }
-        self.restore_list_selection(window, cx);
-        cx.notify();
+        self.restore_list_selection();
     }
-    pub(crate) fn start_custom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.request_action(PanelAction::Custom, window, cx);
+
+    pub(crate) fn start_custom(&mut self, focus: &mut Option<WidgetId>) {
+        self.request_action(PanelAction::Custom, focus);
     }
-    fn request_action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
+
+    fn request_action(&mut self, action: PanelAction, focus: &mut Option<WidgetId>) {
         if self.checking {
             return;
         }
-        if self.dirty(cx) && !matches!(action, PanelAction::Remove) {
+        if self.dirty() && !matches!(action, PanelAction::Remove) {
             self.pending_action = Some(action);
-            self.apply(cx);
+            self.apply();
         } else {
-            self.perform_action(action, window, cx);
+            self.perform_action(action, focus);
         }
     }
-    fn perform_action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
+
+    fn perform_action(&mut self, action: PanelAction, focus: &mut Option<WidgetId>) {
         match action {
-            PanelAction::Select(index) => self.select(index, window, cx),
+            PanelAction::Select(index) => self.select(index),
             PanelAction::Custom => {
                 self.custom = true;
                 self.selected = None;
-                self.load_inputs(String::new(), window, cx);
-                self.restore_list_selection(window, cx);
-                self.focus_sql(window, cx);
+                self.load_inputs(String::new());
+                self.restore_list_selection();
+                *focus = Some(self.sql.id);
             }
             PanelAction::Add(column) => {
-                self.emit_edit(PivotEdit::Add(Dimension::Column(column)), cx);
+                self.emit_edit(PivotEdit::Add(Dimension::Column(column)));
             }
             PanelAction::Move(direction) => {
-                if let Some(dimension) = self
-                    .selected
-                    .and_then(|index| self.configured.get(index))
-                    .cloned()
-                {
-                    self.emit_edit(
-                        PivotEdit::Move {
-                            field: dimension,
-                            direction,
-                        },
-                        cx,
-                    );
+                if let Some(dimension) = self.selected.and_then(|index| self.configured.get(index)).cloned() {
+                    self.emit_edit(PivotEdit::Move {
+                        field: dimension,
+                        direction,
+                    });
                 }
             }
             PanelAction::Remove => {
                 if self.custom {
-                    self.revert(window, cx);
-                } else if let Some(dimension) = self
-                    .selected
-                    .and_then(|index| self.configured.get(index))
-                    .cloned()
-                {
-                    self.emit_edit(PivotEdit::Remove(dimension), cx);
+                    self.revert(focus);
+                } else if let Some(dimension) = self.selected.and_then(|index| self.configured.get(index)).cloned() {
+                    self.emit_edit(PivotEdit::Remove(dimension));
                 }
             }
         }
-        cx.notify();
     }
-    fn emit_edit(&mut self, edit: PivotEdit, cx: &mut Context<Self>) {
-        self.input_changed(cx);
+
+    fn emit_edit(&mut self, edit: PivotEdit) {
+        self.input_changed();
         self.checking = true;
         self.checking_revision = self.revision;
         self.error = None;
-        cx.emit(PivotPanelEvent {
+        self.events.push(PivotPanelEvent {
             edit,
             revision: self.revision,
         });
-        cx.notify();
     }
-    pub(crate) fn apply(&mut self, cx: &mut Context<Self>) {
+
+    pub(crate) fn apply(&mut self) {
         if self.checking || (!self.custom && self.selected.is_none()) {
             return;
         }
-        self.input_changed(cx);
-        let sql = self.sql.read(cx).state().read(cx).value().to_string();
-        let original = self
-            .selected
-            .and_then(|index| self.configured.get(index))
-            .cloned();
+        self.input_changed();
+        let sql = self.sql.text().to_owned();
+        let original = self.selected.and_then(|index| self.configured.get(index)).cloned();
         let replacement = if sql == self.initial_sql
             && let Some(original) = &original
         {
@@ -321,7 +236,6 @@ impl PivotPanel {
         if let Err(error) = replacement.validate() {
             self.error = Some(error);
             self.pending_action = None;
-            cx.notify();
             return;
         }
         let edit = match original {
@@ -331,15 +245,14 @@ impl PivotPanel {
             },
             None => PivotEdit::Add(replacement),
         };
-        self.emit_edit(edit, cx);
+        self.emit_edit(edit);
     }
-    pub(crate) fn can_finish(&self, revision: u64, cx: &App) -> bool {
-        !self.closed
-            && self.checking
-            && self.revision == revision
-            && self.sql.read(cx).state().read(cx).value().as_ref() == self.observed_sql
+
+    pub(crate) fn can_finish(&self, revision: u64) -> bool {
+        !self.closed && self.checking && self.revision == revision && self.sql.text() == self.observed_sql
     }
-    pub(crate) fn finish_error(&mut self, revision: u64, error: String, cx: &mut Context<Self>) {
+
+    pub(crate) fn finish_error(&mut self, revision: u64, error: String) {
         if !self.checking || self.checking_revision != revision {
             return;
         }
@@ -348,15 +261,9 @@ impl PivotPanel {
         if !self.closed {
             self.error = Some(error);
         }
-        cx.notify();
     }
-    pub(crate) fn finish_success(
-        &mut self,
-        entries: Vec<Dimension>,
-        preferred: Option<Dimension>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+
+    pub(crate) fn finish_success(&mut self, entries: Vec<Dimension>, preferred: Option<Dimension>, focus: &mut Option<WidgetId>) {
         self.checking = false;
         let next = preferred
             .and_then(|entry| entries.iter().position(|saved| saved == &entry))
@@ -364,42 +271,39 @@ impl PivotPanel {
                 self.selected
                     .and_then(|index| entries.len().checked_sub(1).map(|last| index.min(last)))
             });
-        self.configured = entries.clone();
-        self.list.update(cx, |list, cx| {
-            list.delegate_mut().entries = entries;
-            cx.notify();
-        });
+        self.set_configured(entries);
         if let Some(index) = next {
-            self.select(index, window, cx);
+            self.select(index);
         } else {
             self.selected = None;
             self.custom = false;
-            self.load_inputs(String::new(), window, cx);
-            self.restore_list_selection(window, cx);
+            self.load_inputs(String::new());
+            self.restore_list_selection();
         }
         if let Some(action) = self.pending_action.take() {
-            self.perform_action(action, window, cx);
+            self.perform_action(action, focus);
         }
-        cx.notify();
     }
-    pub(crate) fn revert(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+
+    pub(crate) fn revert(&mut self, focus: &mut Option<WidgetId>) {
         self.checking = false;
         self.pending_action = None;
         if let Some(index) = self.selected {
-            self.select(index, window, cx);
+            self.select(index);
         } else if !self.configured.is_empty() {
-            self.select(0, window, cx);
+            self.select(0);
         } else {
             self.custom = false;
-            self.load_inputs(String::new(), window, cx);
-            self.focus_available(window, cx);
+            self.load_inputs(String::new());
+            self.focus_available(focus);
         }
-        cx.notify();
     }
+
     pub(crate) fn close(&mut self) {
         self.closed = true;
         self.revision += 1;
     }
+
     fn available_columns(&self) -> Vec<String> {
         self.schema
             .iter()
@@ -413,234 +317,295 @@ impl PivotPanel {
             })
             .collect()
     }
-    pub fn focus_available(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.command
-            .update(cx, |command, cx| command.focus(window, cx));
-    }
-    pub(crate) fn focus_sql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sql
-            .read(cx)
-            .state()
-            .clone()
-            .update(cx, |state, cx| state.focus(window, cx));
+
+    pub fn focus_available(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.command.query.id);
     }
 
-    fn cycle_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let command = self.command.read(cx).focus_handle(cx);
-        let list = self.list.read(cx).focus_handle(cx);
-        let sql = self.sql.read(cx).state().read(cx).focus_handle(cx);
-        let handles = if self.custom || self.selected.is_some() {
-            vec![command, list, sql]
-        } else {
-            vec![command, list]
-        };
+    pub(crate) fn focus_sql(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.sql.id);
+    }
+
+    fn editing(&self) -> bool {
+        self.custom || self.selected.is_some()
+    }
+
+    fn cycle_focus(&mut self, backwards: bool, focus: &mut Option<WidgetId>) {
+        let mut handles = vec![self.command.query.id, self.list.id];
+        if self.editing() {
+            handles.push(self.sql.id);
+        }
         let current = handles
             .iter()
-            .position(|handle| window.focused(cx).as_ref() == Some(handle))
+            .position(|handle| Some(*handle) == *focus)
             .unwrap_or(0);
         let next = if backwards {
             (current + handles.len() - 1) % handles.len()
         } else {
             (current + 1) % handles.len()
         };
-        window.focus(&handles[next], cx);
-        cx.stop_propagation();
+        *focus = Some(handles[next]);
     }
-}
 
-impl Render for PivotPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let source_columns = self.available_columns();
+    pub fn contains(&self, id: WidgetId) -> bool {
+        id == self.command.query.id || id == self.list.id || id == self.sql.id
+    }
+
+    fn list_selected(&mut self, focus: &mut Option<WidgetId>) {
+        let Some(index) = self.list.selected_item() else {
+            return;
+        };
+        self.restore_list_selection();
+        if self.selected != Some(index) || self.custom {
+            self.request_action(PanelAction::Select(index), focus);
+        }
+    }
+
+    fn take(&mut self, handled: bool) -> PanelResult {
+        PanelResult {
+            handled,
+            event: self.take_event(),
+            close: false,
+        }
+    }
+
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> PanelResult {
+        let m = event.modifiers;
+        let key = event.key.as_str();
+        let sql_focused = *focus == Some(self.sql.id);
+        if key == "enter" && m.control && !m.shift && !m.alt {
+            self.apply();
+            return self.take(true);
+        }
+        if key == "tab" && !m.control && !m.alt && !(sql_focused && self.sql.completion.is_some()) {
+            self.cycle_focus(m.shift, focus);
+            return self.take(true);
+        }
+        if *focus == Some(self.list.id) {
+            if key == "delete" && !m.modified() {
+                self.request_action(PanelAction::Remove, focus);
+                return self.take(true);
+            }
+            if m.alt && matches!(key, "up" | "down") {
+                self.request_action(PanelAction::Move(if key == "up" { -1 } else { 1 }), focus);
+                return self.take(true);
+            }
+            let outcome = self.list.key(event, true);
+            if outcome.selected || outcome.confirmed.is_some() {
+                self.list_selected(focus);
+            }
+            return self.take(outcome.handled);
+        }
+        if *focus == Some(self.command.query.id) {
+            let outcome = self.command.key(event);
+            if let Some(index) = outcome.confirmed {
+                if let Some(column) = self.available_columns().get(index).cloned() {
+                    self.request_action(PanelAction::Add(column), focus);
+                }
+                return self.take(true);
+            }
+            return self.take(outcome.handled);
+        }
+        if sql_focused {
+            let outcome = self.sql.key(event);
+            if outcome.changed {
+                self.input_changed();
+            }
+            return self.take(outcome.handled);
+        }
+        self.take(false)
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        if focus == Some(self.command.query.id) {
+            self.command.type_text(typed);
+            true
+        } else if focus == Some(self.sql.id) {
+            self.sql.type_text(typed);
+            self.input_changed();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> PanelResult {
+        match hit {
+            Hit::Button(Button::PanelCustom) => self.start_custom(focus),
+            Hit::Button(Button::PanelRevert) => self.revert(focus),
+            Hit::Button(Button::PanelApply) => self.apply(),
+            Hit::Button(Button::PanelClose) => {
+                self.close();
+                return PanelResult {
+                    handled: true,
+                    event: None,
+                    close: true,
+                };
+            }
+            Hit::Editor(id, part) if *id == self.command.query.id => {
+                self.command.query.mouse_down(*part, pos, clicks, shift);
+                self.focus_available(focus);
+            }
+            Hit::List(id, part) if *id == self.command.list.id => {
+                let outcome = self.command.mouse_down(*part, pos, clicks, shift);
+                self.focus_available(focus);
+                if let Some(index) = outcome.confirmed
+                    && let Some(column) = self.available_columns().get(index).cloned()
+                {
+                    self.request_action(PanelAction::Add(column), focus);
+                }
+            }
+            Hit::List(id, part) if *id == self.list.id => {
+                let outcome = self.list.mouse_down(*part, pos, clicks);
+                *focus = Some(self.list.id);
+                if outcome.selected {
+                    self.list_selected(focus);
+                }
+            }
+            Hit::Editor(id, part) if *id == self.sql.id => {
+                let outcome = self.sql.mouse_down(*part, pos, clicks, shift);
+                if outcome.changed {
+                    self.input_changed();
+                }
+                *focus = Some(self.sql.id);
+            }
+            _ => return PanelResult::default(),
+        }
+        self.take(true)
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        self.command.mouse_drag(pos);
+        self.list.mouse_drag(pos);
+        if self.sql.is_dragging() {
+            self.sql.mouse_drag(pos);
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        self.command.mouse_up();
+        self.list.mouse_up();
+        self.sql.mouse_up();
+    }
+
+    pub fn wheel(&mut self, hit: &Hit, delta: Point) -> bool {
+        match hit {
+            Hit::List(id, _) if *id == self.command.list.id => self.command.list.wheel(delta),
+            Hit::List(id, _) if *id == self.list.id => self.list.wheel(delta),
+            Hit::Editor(id, _) if *id == self.sql.id => self.sql.wheel(delta),
+            _ => false,
+        }
+    }
+
+    fn heights(window_height: f32) -> (f32, f32, f32) {
+        let available = (window_height - 290.0).clamp(90.0, 440.0);
+        let list = (available * 0.3).clamp(68.0, 150.0);
+        let editor = (window_height - 560.0).clamp(70.0, 220.0);
+        (available, list, editor)
+    }
+
+    pub fn height(&self, fonts: &Fonts, window_height: f32) -> f32 {
+        let line = text::line_height(&fonts.ui);
+        let (available, list, editor) = Self::heights(window_height);
+        let left = line + 8.0 + button_height(&fonts.ui) + 8.0 + available + 80.0;
+        let right = button_height(&fonts.ui) + 8.0 + list + 8.0 + line + 16.0
+            + if self.editing() {
+                line * 3.0 + editor + 24.0 + button_height(&fonts.ui) + if self.error.is_some() { 70.0 } else { 0.0 }
+            } else {
+                line + 8.0
+            };
+        left.max(right)
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>, window_height: f32) {
+        let font = &fonts.ui;
+        let line = text::line_height(font);
         let title = match self.kind {
             PivotFieldKind::GroupBy => "Group By",
             PivotFieldKind::PivotBy => "Pivot By",
         };
-        let panel = cx.entity();
-        let available_height = (window.bounds().size.height.as_f32() - 290.).clamp(90., 440.);
-        let list_height = (available_height * 0.3).clamp(68., 150.);
-        let editor_height = (window.bounds().size.height.as_f32() - 560.).clamp(70., 220.);
-        let editing = self.custom || self.selected.is_some();
-        div()
-            .key_context("PivotPanel")
-            .flex()
-            .gap_4()
-            .w_full()
-            .on_action(cx.listener(|panel, _: &ApplyDimension, _, cx| {
-                panel.apply(cx);
-                cx.stop_propagation();
-            }))
-            .on_action(cx.listener(|panel, _: &DimensionNextFocus, window, cx| {
-                panel.cycle_focus(false, window, cx)
-            }))
-            .on_action(
-                cx.listener(|panel, _: &DimensionPreviousFocus, window, cx| {
-                    panel.cycle_focus(true, window, cx)
-                }),
-            )
-            .capture_key_down(cx.listener(|panel, event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.to_ascii_lowercase();
-                let list_focus = panel.list.read(cx).focus_handle(cx);
-                if window.focused(cx).as_ref() == Some(&list_focus) {
-                    if key == "delete" {
-                        panel.request_action(PanelAction::Remove, window, cx);
-                        cx.stop_propagation();
-                    } else if event.keystroke.modifiers.alt && matches!(key.as_str(), "up" | "down")
-                    {
-                        panel.request_action(
-                            PanelAction::Move(if key == "up" { -1 } else { 1 }),
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }
-                }
-            }))
-            .on_action(cx.listener(|panel, _: &Enter, window, cx| {
-                let command_focus = panel.command.read(cx).focus_handle(cx);
-                if window.focused(cx).as_ref() == Some(&command_focus) {
-                    let selected = panel.command.read(cx).selected_index();
-                    if let Some(column) =
-                        selected.and_then(|index| panel.available_columns().get(index.row).cloned())
-                    {
-                        panel.request_action(PanelAction::Add(column), window, cx);
-                    }
-                    cx.stop_propagation();
-                }
-            }))
-            .child(
-                div()
-                    .w(relative(0.3))
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(div().font_semibold().child("Available columns"))
-                    .child(
-                        Button::new("dimension-custom")
-                            .label("+ Custom expression")
-                            .disabled(self.checking)
-                            .on_click(
-                                cx.listener(|panel, _, window, cx| panel.start_custom(window, cx)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .max_h(px(available_height + 80.))
-                            .overflow_y_scrollbar()
-                            .child(
-                                Command::new(&self.command)
-                                    .items(
-                                        source_columns
-                                            .iter()
-                                            .map(|column| CommandItem::new().label(column.clone())),
-                                    )
-                                    .placeholder("Find a column")
-                                    .empty(|_, _, _| div().child("No available columns"))
-                                    .on_confirm(move |index, window, cx| {
-                                        if let Some(column) = source_columns.get(index.row) {
-                                            panel.update(cx, |panel, cx| {
-                                                panel.request_action(
-                                                    PanelAction::Add(column.clone()),
-                                                    window,
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    }),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(div().font_semibold().child(format!("{title} order")))
-                            .child(Button::new("dimension-close").label("Close").on_click(
-                                cx.listener(|panel, _, window, cx| {
-                                    panel.close();
-                                    window.close_dialog(cx);
-                                }),
-                            )),
-                    )
-                    .child(div().h(px(list_height)).child(List::new(&self.list)))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Alt+↑/↓ move · Delete remove"),
-                    )
-                    .child(div().border_t_1().border_color(cx.theme().border).pt_2())
-                    .when(!editing, |content| {
-                        content.child(
-                            div()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Add a column or a custom expression to edit its SQL."),
-                        )
-                    })
-                    .when(editing, |content| {
-                        content
-                            .child(div().child("SQL expression"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "Use AS to name a column, or keep DuckDB’s default name.",
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("dimension-sql")
-                                    .h(px(editor_height))
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .child(Editor::new(self.sql.read(cx).state()).h(relative(1.)))
-                                    .children(self.sql.read(cx).completion_menu(cx)),
-                            )
-                            .when_some(self.error.clone(), |content, error| {
-                                content.child(
-                                    div().max_h(px(70.)).overflow_y_scrollbar().child(
-                                        div()
-                                            .id("dimension-error")
-                                            .text_sm()
-                                            .text_color(cx.theme().danger)
-                                            .child(error),
-                                    ),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_between()
-                                    .child(
-                                        Button::new("dimension-revert").label("Revert").on_click(
-                                            cx.listener(|panel, _, window, cx| {
-                                                panel.revert(window, cx)
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new("dimension-apply")
-                                            .label(if self.checking {
-                                                "Checking…"
-                                            } else {
-                                                "Apply · Ctrl+Enter"
-                                            })
-                                            .disabled(self.checking)
-                                            .on_click(
-                                                cx.listener(|panel, _, _, cx| panel.apply(cx)),
-                                            ),
-                                    ),
-                            )
-                    }),
-            )
+        let (available, list_height, editor_height) = Self::heights(window_height);
+        let mut row = Row::new(r, 16.0);
+        let left = row.left(r.w * 0.3);
+        let right = row.rest();
+        // Available columns.
+        let mut column = Column::new(left, 8.0);
+        canvas.text(column.next(line), "Available columns", &font.semibold(), colors::FOREGROUND, Align::Left);
+        let custom = column.next(button_height(font));
+        button(
+            canvas,
+            custom.with_w(button_width("+ Custom expression", font).min(custom.w)),
+            "+ Custom expression",
+            font,
+            ButtonStyle::Outline,
+            !self.checking,
+            Hit::Button(Button::PanelCustom),
+        );
+        let command_area = column.next((column.rest().h).min(available + 80.0));
+        let (query_id, list_id) = (self.command.query.id, self.command.list.id);
+        self.command.paint(canvas, command_area, font, focus == Some(query_id), |part| match part {
+            list::Part::Query(part) => Hit::Editor(query_id, part),
+            part => Hit::List(list_id, part),
+        });
+        // Configured dimensions and the expression editor.
+        let mut column = Column::new(right, 8.0);
+        let header = column.next(button_height(font));
+        let mut header_row = Row::new(header, 8.0);
+        let close = header_row.right(button_width("Close", font));
+        button(canvas, close, "Close", font, ButtonStyle::Outline, true, Hit::Button(Button::PanelClose));
+        canvas.text(header_row.rest(), &format!("{title} order"), &font.semibold(), colors::FOREGROUND, Align::Left);
+        let list_area = column.next(list_height);
+        canvas.stroke_rounded(list_area, 5.0, colors::BORDER, 1.0);
+        let configured_id = self.list.id;
+        self.list.paint(canvas, list_area.inset(2.0), font, focus == Some(configured_id), |part| {
+            Hit::List(configured_id, part)
+        });
+        canvas.text(column.next(line), "Alt+↑/↓ move · Delete remove", &fonts.small, colors::MUTED, Align::Left);
+        let separator = column.next(1.0);
+        canvas.fill(separator, colors::BORDER);
+        if !self.editing() {
+            canvas.text(
+                column.next(line),
+                "Add a column or a custom expression to edit its SQL.",
+                font,
+                colors::MUTED,
+                Align::Left,
+            );
+            return;
+        }
+        canvas.text(column.next(line), "SQL expression", font, colors::FOREGROUND, Align::Left);
+        canvas.text(
+            column.next(line),
+            "Use AS to name a column, or keep DuckDB’s default name.",
+            &fonts.small,
+            colors::MUTED,
+            Align::Left,
+        );
+        let editor = column.next(editor_height);
+        let sql_id = self.sql.id;
+        self.sql
+            .paint(canvas, editor, &fonts.mono, focus == Some(sql_id), |part| Hit::Editor(sql_id, part));
+        if let Some(error) = self.error.clone() {
+            let area = column.rest();
+            let error_rect = rect(area.x, area.y, area.w, 70.0_f32.min(area.h - button_height(font) - 8.0).max(line));
+            canvas.push_clip(error_rect);
+            let height = canvas.paragraph(error_rect, &error, &fonts.small, colors::DANGER);
+            canvas.pop_clip();
+            column.skip(height.min(error_rect.h) + 8.0);
+        }
+        let buttons = column.next(button_height(font));
+        let mut buttons = Row::new(buttons, 8.0);
+        let revert = buttons.left(button_width("Revert", font));
+        button(canvas, revert, "Revert", font, ButtonStyle::Outline, true, Hit::Button(Button::PanelRevert));
+        let label = if self.checking { "Checking…" } else { "Apply · Ctrl+Enter" };
+        let apply = buttons.right(button_width(label, font));
+        button(canvas, apply, label, font, ButtonStyle::Outline, !self.checking, Hit::Button(Button::PanelApply));
+    }
+
+    /// The SQL editor's completion menu, drawn above the dialog.
+    pub fn paint_overlay(&mut self, canvas: &mut Canvas<Hit>, focus: Option<WidgetId>) {
+        let id = self.sql.id;
+        self.sql
+            .paint_completion(canvas, focus == Some(id), |part| Hit::Editor(id, part));
     }
 }

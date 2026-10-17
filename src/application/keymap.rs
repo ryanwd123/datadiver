@@ -11,8 +11,6 @@ pub struct KeymapRuntime {
     pub profiles: HashMap<PathBuf, KeymapFile>,
 }
 
-impl gpui_kit::Global for KeymapRuntime {}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyContext {
@@ -1465,24 +1463,8 @@ pub fn action_id(key: &str) -> Option<ActionId> {
 }
 
 pub fn canonical_keystroke(source: &str) -> Result<String, String> {
-    let parsed = gpui_kit::Keystroke::parse(source.trim()).map_err(|error| error.to_string())?;
-    let key = parsed.key.to_ascii_lowercase();
-    let modifiers = parsed.modifiers;
-    let mut output: Vec<String> = Vec::new();
-    if modifiers.control {
-        output.push("ctrl".into());
-    }
-    if modifiers.alt {
-        output.push("alt".into());
-    }
-    if modifiers.shift {
-        output.push("shift".into());
-    }
-    if modifiers.platform {
-        output.push("cmd".into());
-    }
-    output.push(key);
-    Ok(output.join("-"))
+    let (modifiers, key) = crate::domain::keystroke::parse_keystroke(source)?;
+    Ok(crate::domain::keystroke::stroke(modifiers, &key))
 }
 
 fn protected_keystroke(stroke: &str, context: KeyContext) -> bool {

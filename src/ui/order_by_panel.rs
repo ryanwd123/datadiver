@@ -1,10 +1,9 @@
-use gpui_kit::component::command::{Command, CommandItem, CommandState};
-use gpui_kit::component::input::{Enter, IndentInline, OutdentInline};
-use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
-use gpui_kit::component::{ActiveTheme as _, IndexPath, StyledExt as _};
-use gpui_kit::*;
-
 use crate::domain::documents::SortKey;
+use crate::ui::hit::Hit;
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Point, Rect, rect, text};
+use crate::ui::widgets::list::{self, Item, List, Palette};
+use crate::ui::widgets::{Column, Fonts, Row, WidgetId, colors};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrderByEdit {
@@ -15,251 +14,258 @@ pub enum OrderByEdit {
     SetDirection { column: String, descending: bool },
 }
 
-struct ConfiguredSortKeys {
-    keys: Vec<SortKey>,
-    selected: Option<IndexPath>,
-}
-
-impl ListDelegate for ConfiguredSortKeys {
-    type Item = ListItem;
-
-    fn items_count(&self, _: usize, _: &App) -> usize {
-        self.keys.len()
-    }
-
-    fn render_item(
-        &mut self,
-        index: IndexPath,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        let key = self.keys.get(index.row)?;
-        let direction = if key.descending {
-            "Descending"
-        } else {
-            "Ascending"
-        };
-        Some(
-            ListItem::new(format!("order-by-key-{}", index.row))
-                .h(px(34.))
-                .selected(self.selected == Some(index))
-                .child(format!("{} · {direction}", key.column)),
-        )
-    }
-
-    fn set_selected_index(
-        &mut self,
-        index: Option<IndexPath>,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) {
-        self.selected = index;
-        cx.notify();
-    }
-
-    fn render_empty(
-        &mut self,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) -> impl IntoElement {
-        div().py_3().child("No sort keys configured")
-    }
-}
-
 pub struct OrderByPanel {
     columns: Vec<String>,
     configured: Vec<SortKey>,
-    command: Entity<CommandState>,
-    list: Entity<ListState<ConfiguredSortKeys>>,
+    pub(crate) command: Palette,
+    pub(crate) list: List,
 }
 
-impl EventEmitter<OrderByEdit> for OrderByPanel {}
+fn key_label(key: &SortKey) -> String {
+    let direction = if key.descending {
+        "Descending"
+    } else {
+        "Ascending"
+    };
+    format!("{} · {direction}", key.column)
+}
 
 impl OrderByPanel {
-    pub fn new(
-        columns: Vec<String>,
-        configured: Vec<SortKey>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let command = cx.new(|cx| CommandState::new(window, cx));
-        let list = cx.new(|cx| {
-            ListState::new(
-                ConfiguredSortKeys {
-                    keys: configured.clone(),
-                    selected: None,
-                },
-                window,
-                cx,
-            )
-        });
-        Self {
+    pub fn new(columns: Vec<String>, configured: Vec<SortKey>) -> Self {
+        let mut panel = Self {
             columns,
-            configured,
-            command,
-            list,
-        }
+            configured: Vec::new(),
+            command: Palette::new("Find a column"),
+            list: List::new(),
+        };
+        panel.command.list.empty_text = "No available columns".into();
+        panel.list.empty_text = "No sort keys configured".into();
+        panel.list.select_on_click = true;
+        panel.set_configured(configured);
+        panel.list.select_item(None);
+        panel
     }
 
-    pub fn set_configured(
-        &mut self,
-        keys: Vec<SortKey>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selected = self
-            .list
-            .read(cx)
-            .selected_index()
-            .and_then(|index| self.configured.get(index.row).map(|key| key.column.clone()));
-        self.configured = keys.clone();
-        let next = selected.and_then(|column| keys.iter().position(|key| key.column == column));
-        self.list.update(cx, |list, cx| {
-            list.delegate_mut().keys = keys;
-            list.set_selected_index(next.map(IndexPath::new), window, cx);
-            cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub fn focus_available(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.command
-            .update(cx, |command, cx| command.focus(window, cx));
-    }
-
-    fn selected_key(&self, cx: &App) -> Option<SortKey> {
-        self.list
-            .read(cx)
-            .selected_index()
-            .and_then(|index| self.configured.get(index.row).cloned())
-    }
-
-    fn switch_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list_focus = self.list.read(cx).focus_handle(cx);
-        if window.focused(cx).as_ref() == Some(&list_focus) {
-            self.focus_available(window, cx);
-        } else {
-            self.list.update(cx, |list, cx| {
-                let first = (!self.configured.is_empty()).then(|| IndexPath::new(0));
-                list.set_selected_index(first, window, cx);
-                list.focus(window, cx);
-            });
-        }
-        cx.stop_propagation();
-    }
-
-    fn add_selected(&mut self, cx: &mut Context<Self>) {
-        let selected = self.command.read(cx).selected_index();
-        let available = self
-            .columns
+    fn available(&self) -> Vec<String> {
+        self.columns
             .iter()
             .filter(|column| !self.configured.iter().any(|key| &key.column == *column))
-            .collect::<Vec<_>>();
-        if let Some(column) = selected.and_then(|index| available.get(index.row)) {
-            cx.emit(OrderByEdit::Add((*column).clone()));
+            .cloned()
+            .collect()
+    }
+
+    pub fn set_configured(&mut self, keys: Vec<SortKey>) {
+        let selected = self
+            .list
+            .selected_item()
+            .and_then(|index| self.configured.get(index).map(|key| key.column.clone()));
+        self.configured = keys;
+        self.list
+            .set_items(self.configured.iter().map(|key| Item::new(key_label(key))).collect());
+        let next = selected.and_then(|column| self.configured.iter().position(|key| key.column == column));
+        self.list.select_item(next);
+        let available = self.available().into_iter().map(Item::new).collect();
+        self.command.set_items(available);
+    }
+
+    pub fn focus_available(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.command.query.id);
+    }
+
+    fn selected_key(&self) -> Option<SortKey> {
+        self.list
+            .selected_item()
+            .and_then(|index| self.configured.get(index).cloned())
+    }
+
+    fn switch_pane(&mut self, focus: &mut Option<WidgetId>) {
+        if *focus == Some(self.list.id) {
+            self.focus_available(focus);
+        } else {
+            let first = (!self.configured.is_empty()).then_some(0);
+            self.list.select_item(first);
+            *focus = Some(self.list.id);
         }
-        cx.stop_propagation();
+    }
+
+    fn add(&self, index: Option<usize>) -> Option<OrderByEdit> {
+        let available = self.available();
+        index
+            .and_then(|index| available.get(index))
+            .map(|column| OrderByEdit::Add(column.clone()))
+    }
+
+    pub fn contains(&self, id: WidgetId) -> bool {
+        id == self.command.query.id || id == self.list.id
+    }
+
+    /// Returns whether the key was used, and an edit it asks for.
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> (bool, Option<OrderByEdit>) {
+        let key = event.key.as_str();
+        if key == "tab" && !event.modifiers.control && !event.modifiers.alt {
+            self.switch_pane(focus);
+            return (true, None);
+        }
+        if *focus == Some(self.list.id) {
+            if let Some(sort_key) = self.selected_key() {
+                let edit = match key {
+                    "enter" if !event.modifiers.modified() => Some(OrderByEdit::ToggleDirection(sort_key.column)),
+                    "delete" if !event.modifiers.modified() => Some(OrderByEdit::Remove(sort_key.column)),
+                    "left" | "right" if !event.modifiers.modified() => Some(OrderByEdit::SetDirection {
+                        column: sort_key.column,
+                        descending: key == "right",
+                    }),
+                    "[" | "]" if !event.modifiers.modified() => Some(OrderByEdit::SetDirection {
+                        column: sort_key.column,
+                        descending: key == "]",
+                    }),
+                    "up" | "down" if event.modifiers.alt => Some(OrderByEdit::Move {
+                        column: sort_key.column,
+                        direction: if key == "up" { -1 } else { 1 },
+                    }),
+                    _ => None,
+                };
+                if edit.is_some() {
+                    return (true, edit);
+                }
+            }
+            let outcome = self.list.key(event, true);
+            return (outcome.handled, None);
+        }
+        let outcome = self.command.key(event);
+        if outcome.confirmed.is_some() {
+            return (true, self.add(outcome.confirmed));
+        }
+        (outcome.handled, None)
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        if focus == Some(self.command.query.id) {
+            self.command.type_text(typed);
+            return true;
+        }
+        false
+    }
+
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, focus: &mut Option<WidgetId>) -> Option<OrderByEdit> {
+        match hit {
+            Hit::List(id, part) if *id == self.command.list.id || *id == self.command.query.id => {
+                let part = *part;
+                let outcome = self.command.mouse_down(part, pos, clicks, false);
+                self.focus_available(focus);
+                self.add(outcome.confirmed)
+            }
+            Hit::Editor(id, part) if *id == self.command.query.id => {
+                self.command.query.mouse_down(*part, pos, clicks, false);
+                self.focus_available(focus);
+                None
+            }
+            Hit::List(id, part) if *id == self.list.id => {
+                let outcome = self.list.mouse_down(*part, pos, clicks);
+                *focus = Some(self.list.id);
+                outcome
+                    .confirmed
+                    .and_then(|index| self.configured.get(index))
+                    .map(|key| OrderByEdit::ToggleDirection(key.column.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        self.command.mouse_drag(pos);
+        self.list.mouse_drag(pos);
+    }
+
+    pub fn mouse_up(&mut self) {
+        self.command.mouse_up();
+        self.list.mouse_up();
+    }
+
+    pub fn wheel(&mut self, hit: &Hit, delta: Point) -> bool {
+        match hit {
+            Hit::List(id, _) if *id == self.command.list.id => self.command.list.wheel(delta),
+            Hit::List(id, _) if *id == self.list.id => self.list.wheel(delta),
+            _ => false,
+        }
+    }
+
+    pub fn height(&self, fonts: &Fonts, window_height: f32) -> f32 {
+        let line = text::line_height(&fonts.ui);
+        let list_height = (window_height - 230.0).clamp(100.0, 300.0);
+        line + 8.0 + list_height + 8.0 + line * 2.0 + 8.0
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>, window_height: f32) {
+        let mut row = Row::new(r, 12.0);
+        let half = (r.w - 12.0) / 2.0;
+        let left = row.left(half);
+        let right = row.left(half);
+        let line = text::line_height(&fonts.ui);
+        let list_height = (window_height - 230.0).clamp(100.0, 300.0);
+        let title_font = fonts.ui.semibold();
+        let mut column = Column::new(left, 8.0);
+        canvas.text(column.next(line), "Available columns", &title_font, colors::FOREGROUND, Align::Left);
+        let command_area = column.rest();
+        let command_focused = focus == Some(self.command.query.id);
+        let query_id = self.command.query.id;
+        let list_id = self.command.list.id;
+        self.command.paint(canvas, command_area, &fonts.ui, command_focused, |part| match part {
+            list::Part::Query(part) => Hit::Editor(query_id, part),
+            part => Hit::List(list_id, part),
+        });
+        let mut column = Column::new(right, 8.0);
+        canvas.text(column.next(line), "Sort priority", &title_font, colors::FOREGROUND, Align::Left);
+        let list_area = column.next(list_height);
+        canvas.stroke_rounded(list_area, 5.0, colors::BORDER, 1.0);
+        let list_id = self.list.id;
+        let focused = focus == Some(self.list.id);
+        self.list
+            .paint(canvas, list_area.inset(2.0), &fonts.ui, focused, |part| Hit::List(list_id, part));
+        let hint = column.rest();
+        canvas.paragraph(
+            rect(hint.x, hint.y, hint.w, hint.h),
+            "[ / ← ascending · ] / → descending · Alt+↑/↓ changes priority · Delete removes",
+            &fonts.small,
+            colors::MUTED,
+        );
     }
 }
 
-impl Render for OrderByPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let columns = self.columns.clone();
-        let configured = self.configured.clone();
-        let panel = cx.entity();
-        let list_height = (window.bounds().size.height.as_f32() - 230.0).clamp(100.0, 300.0);
-        div()
-            .flex()
-            .gap_3()
-            .w_full()
-            .on_action(
-                cx.listener(|panel, _: &IndentInline, window, cx| panel.switch_pane(window, cx)),
-            )
-            .on_action(
-                cx.listener(|panel, _: &OutdentInline, window, cx| panel.switch_pane(window, cx)),
-            )
-            .on_action(cx.listener(|panel, _: &Enter, window, cx| {
-                let command_focus = panel.command.read(cx).focus_handle(cx);
-                if window.focused(cx).as_ref() == Some(&command_focus) {
-                    panel.add_selected(cx);
-                } else if let Some(key) = panel.selected_key(cx) {
-                    cx.emit(OrderByEdit::ToggleDirection(key.column));
-                    cx.stop_propagation();
-                }
-            }))
-            .on_key_down(cx.listener(|panel, event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.to_ascii_lowercase();
-                let list_focus = panel.list.read(cx).focus_handle(cx);
-                if window.focused(cx).as_ref() != Some(&list_focus) {
-                    return;
-                }
-                let Some(sort_key) = panel.selected_key(cx) else {
-                    return;
-                };
-                if key == "delete" {
-                    cx.emit(OrderByEdit::Remove(sort_key.column));
-                    cx.stop_propagation();
-                } else if matches!(key.as_str(), "left" | "right") {
-                    cx.emit(OrderByEdit::SetDirection {
-                        column: sort_key.column,
-                        descending: key == "right",
-                    });
-                    cx.stop_propagation();
-                } else if matches!(key.as_str(), "[" | "]") {
-                    cx.emit(OrderByEdit::SetDirection {
-                        column: sort_key.column,
-                        descending: key == "]",
-                    });
-                    cx.stop_propagation();
-                } else if event.keystroke.modifiers.alt && matches!(key.as_str(), "up" | "down") {
-                    cx.emit(OrderByEdit::Move {
-                        column: sort_key.column,
-                        direction: if key == "up" { -1 } else { 1 },
-                    });
-                    cx.stop_propagation();
-                }
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(div().font_semibold().child("Available columns"))
-                    .child(
-                        Command::new(&self.command)
-                            .items(
-                                columns
-                                    .iter()
-                                    .filter(|column| {
-                                        !configured.iter().any(|key| key.column == **column)
-                                    })
-                                    .map(|column| CommandItem::new().label(column.clone())),
-                            )
-                            .placeholder("Find a column")
-                            .empty(|_, _, _| div().child("No available columns"))
-                            .on_confirm(move |index, _, cx| {
-                                let available = columns
-                                    .iter()
-                                    .filter(|column| {
-                                        !configured.iter().any(|key| key.column == **column)
-                                    })
-                                    .collect::<Vec<_>>();
-                                if let Some(column) = available.get(index.row) {
-                                    panel.update(cx, |_, cx| {
-                                        cx.emit(OrderByEdit::Add((*column).clone()))
-                                    });
-                                }
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(div().font_semibold().child("Sort priority"))
-                    .child(div().h(px(list_height)).child(List::new(&self.list)))
-                    .child(div().text_color(cx.theme().muted_foreground).child(
-                        "[ / ← ascending · ] / → descending · Alt+↑/↓ changes priority · Delete removes",
-                    )),
-            )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_edit_the_selected_sort_key() {
+        let mut panel = OrderByPanel::new(
+            vec!["a".into(), "b".into(), "c".into()],
+            vec![SortKey {
+                column: "b".into(),
+                descending: false,
+            }],
+        );
+        let mut focus = None;
+        panel.focus_available(&mut focus);
+        assert_eq!(
+            panel.key(&KeyEvent::parse("enter").unwrap(), &mut focus).1,
+            Some(OrderByEdit::Add("a".into()))
+        );
+        panel.key(&KeyEvent::parse("tab").unwrap(), &mut focus);
+        assert_eq!(focus, Some(panel.list.id));
+        assert_eq!(
+            panel.key(&KeyEvent::parse("]").unwrap(), &mut focus).1,
+            Some(OrderByEdit::SetDirection {
+                column: "b".into(),
+                descending: true
+            })
+        );
+        assert_eq!(
+            panel.key(&KeyEvent::parse("alt-up").unwrap(), &mut focus).1,
+            Some(OrderByEdit::Move {
+                column: "b".into(),
+                direction: -1
+            })
+        );
     }
 }

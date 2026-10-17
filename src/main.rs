@@ -151,7 +151,7 @@ fn main() {
             }
             "--help" | "-h" => {
                 println!(
-                    "DataDiver\n  --rows N       open synthetic data\n  --file PATH    open a CSV (including .csv.gz), TSV, XLSX, or Parquet source\n  --view PATH    open a saved JSON view\n  --search TEXT  filter displayed rows\n  --slicer COLUMN  add a source-column slicer\n  --window WxH   set window size\n  --exit-after MS  close on a timer\n  --capture PATH  save a PNG (snapshots feature)"
+                    "DataDiver\n  --rows N       open synthetic data\n  --file PATH    open a CSV (including .csv.gz), TSV, XLSX, or Parquet source\n  --view PATH    open a saved JSON view\n  --search TEXT  filter displayed rows\n  --slicer COLUMN  add a source-column slicer\n  --window WxH   set window size\n  --exit-after MS  close on a timer\n  --capture PATH  save a PNG of the window"
                 );
                 return;
             }
@@ -263,45 +263,9 @@ fn main() {
     viewer_options.load_path = source_path.clone();
     let snapshot = FrameSnapshot::new(store, 1);
     let source_path = source_path.map(|path| path.to_string_lossy().into_owned());
-    if viewer_options.capture.is_some() && !cfg!(feature = "snapshots") {
-        eprintln!("--capture requires --features snapshots");
-        std::process::exit(2);
-    }
-    gpui_kit::application()
-        .with_assets(datadiver::ui::AppIcons)
-        .run(move |cx| {
-            cx.set_app_identity("DataDiver", "DataDiver");
-            gpui_kit::init(cx);
-            // Always show scrollbars, as the grid does, so long lists and
-            // tables show there is more to scroll to.
-            gpui_kit::component::Theme::set_scrollbar_mode(
-                gpui_kit::component::scroll::ScrollbarMode::Always,
-                cx,
-            );
-            cx.bind_keys([
-                gpui_kit::KeyBinding::new(
-                    "ctrl-enter",
-                    gpui_kit::base::actions::Confirm { secondary: false },
-                    Some("Command"),
-                ),
-                gpui_kit::KeyBinding::new(
-                    "shift-enter",
-                    gpui_kit::base::actions::Confirm { secondary: false },
-                    Some("Command"),
-                ),
-                gpui_kit::KeyBinding::new(
-                    "ctrl-shift-enter",
-                    gpui_kit::base::actions::Confirm { secondary: false },
-                    Some("Command"),
-                ),
-                gpui_kit::KeyBinding::new(
-                    "ctrl-delete",
-                    datadiver::ui::dataframe_view::ArchiveSelectedView,
-                    Some("Command"),
-                ),
-            ]);
-            DataFrameView::open(snapshot, source_path, viewer_options, cx);
-        });
+    datadiver::ui::platform::window::run::<DataFrameView>(move |runtime| {
+        DataFrameView::open(runtime, snapshot, source_path, viewer_options);
+    });
     datadiver::application::history::HistoryWriter::flush_profiles();
     datadiver::application::table_preferences::TablePreferencesWriter::flush_profiles();
     if let Err(error) =

@@ -22,20 +22,45 @@ embed-resource = "3"
 
 [features]
 default = []
-snapshots = ["gpui-kit/test-support"]
+snapshots = []
 
 [dependencies]
-anyhow = "1"
 chrono = "0.4"
 duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "appender-arrow"] }
-gpui-kit = { version = "=0.6.4", features = ["tree-sitter-sql"] }
-lsp-types = "=0.97.0"
-ropey = "=2.0.0-beta.1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["arbitrary_precision"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 tempfile = "3"
 # Already built for DuckDB; the platform verifier trusts the Windows store.
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+windows-numerics = "0.3"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
 
 # Used by the release workflow; slower to build than `--release`, so local
 # builds keep the default profile.

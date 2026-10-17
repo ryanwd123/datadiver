@@ -1,79 +1,48 @@
-use super::{DataFrameView, FileEntry};
+use super::FileEntry;
+use super::test_support::{Viewer, empty_frame, repository, set_clipboard};
 use crate::application::commands::CommandId;
 use crate::application::session::SessionIdentity;
 use crate::domain::documents::{
-    Aggregation, AggregationOp, Dimension, DocumentDefinition, QueryConfig, ScalarKey,
-    SlicerDefinition, SortKey, ViewKind,
+    Aggregation, AggregationOp, Dimension, DocumentDefinition, QueryConfig, ScalarKey, SlicerDefinition, SortKey,
+    ViewKind,
 };
-use crate::domain::frame::FrameSnapshot;
-use crate::infrastructure::duckdb_store::DuckDbStore;
-use crate::infrastructure::json_store::{StorePaths, ViewRepository};
-use gpui_kit::component::Root;
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, Entity, Focusable, TestAppContext, WindowHandle, px, size};
+use crate::infrastructure::json_store::ViewRepository;
+use crate::ui::hit::{Button, Hit};
 
-fn viewer(
-    cx: &mut TestAppContext,
-    repository: ViewRepository,
-) -> (WindowHandle<Root>, Entity<DataFrameView>) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        cx.set_reduce_motion(true);
-    });
-    let mut entity = None;
-    let handle = cx.open_window(size(px(900.), px(600.)), |window, cx| {
-        let source = FrameSnapshot::new(DuckDbStore::empty().unwrap(), 1);
-        let view = cx.new(|cx| {
-            DataFrameView::new(source, None, String::new(), None, repository, window, cx)
-        });
-        entity = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    cx.run_until_parked();
-    (handle, entity.unwrap())
+fn viewer(repository: ViewRepository) -> Viewer {
+    Viewer::open(empty_frame(), None, None, repository)
 }
 
-fn open(
-    cx: &mut TestAppContext,
-    handle: WindowHandle<Root>,
-    entity: &Entity<DataFrameView>,
-    entry: FileEntry,
-) {
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.navigate_to_file(entry, false, false, false, handle.into(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+fn open(viewer: &Viewer, entry: FileEntry) {
+    viewer.update(|view, cx| view.navigate_to_file(entry, false, false, false, cx));
+    viewer.run_until_parked();
 }
 
-fn travel(
-    cx: &mut TestAppContext,
-    handle: WindowHandle<Root>,
-    entity: &Entity<DataFrameView>,
-    forward: bool,
-) {
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| view.navigate_history(forward, window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
+fn travel(viewer: &Viewer, forward: bool) {
+    viewer.update(|view, cx| view.navigate_history(forward, cx));
+    viewer.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn database_tables_open_in_table_mode_sort_and_refresh(cx: &mut TestAppContext) {
+/// Presses each key in turn, painting first like a window would.
+fn press_each(viewer: &Viewer, keys: &[&str]) {
+    for key in keys {
+        viewer.render();
+        viewer.press(key);
+        viewer.run_until_parked();
+    }
+}
+
+#[test]
+fn database_tables_open_in_table_mode_sort_and_refresh() {
     use crate::domain::documents::{DatabaseView, RelationKind};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let mut settings = repository.load_settings().unwrap();
     settings.query_limit = 3;
     repository.save_settings(&settings).unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    cx.update(|cx| {
-        entity
-            .read(cx)
-            .database
+    let viewer = viewer(repository);
+    viewer.read(|view| {
+        view.database
             .connect()
             .unwrap()
             .execute_batch("CREATE TABLE main.sales AS SELECT range AS n FROM range(100)")
@@ -83,301 +52,211 @@ fn database_tables_open_in_table_mode_sort_and_refresh(cx: &mut TestAppContext) 
         kind: RelationKind::Table,
         ..DatabaseView::view("main", "sales")
     };
-    assert!(
-        cx.update(|cx| entity.read(cx).database.relations().unwrap())
-            .contains(&table)
-    );
-    open(
-        cx,
-        handle,
-        &entity,
-        FileEntry::View(DocumentDefinition::draft_database_view(table)),
-    );
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    assert!(viewer.read(|view| view.database.relations().unwrap()).contains(&table));
+    open(&viewer, FileEntry::View(DocumentDefinition::draft_database_view(table)));
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.is_table());
         assert_eq!(view.session.identity, SessionIdentity::DraftTable);
         // Table mode reads every row; the query limit does not apply.
         assert_eq!(view.session.result.row_count(), 100);
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session.set_sort_direction("n".into(), true);
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
-        assert_eq!(
-            view.session.result.fetch_rows(0, 1).unwrap()[0].values[0],
-            Some("99".into())
-        );
+    viewer.update(|view, cx| {
+        view.session.set_sort_direction("n".into(), true);
+        view.schedule_search(String::new(), cx);
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.database
-                .connect()
-                .unwrap()
-                .execute_batch("INSERT INTO main.sales VALUES (500)")
-                .unwrap();
-            view.database.invalidate();
-            view.check_source(cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert_eq!(view.session.result.fetch_rows(0, 1).unwrap()[0].values[0], Some("99".into()));
+    });
+    viewer.update(|view, cx| {
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch("INSERT INTO main.sales VALUES (500)")
+            .unwrap();
+        view.database.invalidate();
+        view.check_source(cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.result.row_count(), 101);
-        assert_eq!(
-            view.session.result.fetch_rows(0, 1).unwrap()[0].values[0],
-            Some("500".into())
-        );
+        assert_eq!(view.session.result.fetch_rows(0, 1).unwrap()[0].values[0], Some("500".into()));
     });
     // A query on the table uses the limit, and clearing it returns to table mode.
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session.start_query_draft("sales".into()).unwrap();
-            view.session
-                .set_query_config(
-                    QueryConfig {
-                        group_by: vec!["n".into()],
-                        ..Default::default()
-                    },
-                    "sales".into(),
-                )
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.update(|view, cx| {
+        view.session.start_query_draft("sales".into()).unwrap();
+        view.session
+            .set_query_config(
+                QueryConfig {
+                    group_by: vec!["n".into()],
+                    ..Default::default()
+                },
+                "sales".into(),
+            )
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(!view.is_table());
         assert_eq!(view.session.result.row_count(), 3);
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session
-                .set_query_config(QueryConfig::default(), "sales".into())
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(QueryConfig::default(), "sales".into())
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.is_table());
         assert_eq!(view.session.result.row_count(), 101);
     });
 }
 
-#[gpui_kit::test]
-fn database_views_use_query_mode_limits_full_aggregations_and_persist(cx: &mut TestAppContext) {
+#[test]
+fn database_views_use_query_mode_limits_full_aggregations_and_persist() {
     use crate::domain::documents::DatabaseView;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let mut settings = repository.load_settings().unwrap();
     settings.query_limit = 3;
     repository.save_settings(&settings).unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    cx.update(|cx| {
-        entity.read(cx).database.connect().unwrap().execute_batch(
-        "CREATE VIEW main.sales AS SELECT range AS n, range % 2 AS category FROM range(100)"
-    ).unwrap()
+    let viewer = viewer(repository.clone());
+    viewer.read(|view| {
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch("CREATE VIEW main.sales AS SELECT range AS n, range % 2 AS category FROM range(100)")
+            .unwrap()
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| view.open_file_palette(window, cx));
-        window.render_frame(cx);
-        window.input("main.sales", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(entity.read(cx).file_groups[4].len(), 1);
-        assert!(!entity.read(cx).file_groups[4][0].is_saved_view());
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let view = entity.read(cx);
+    viewer.update(|view, cx| view.open_file_palette(cx));
+    viewer.render();
+    viewer.input("main.sales");
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert_eq!(view.file_groups[4].len(), 1);
+        assert!(!view.file_groups[4][0].is_saved_view());
+    });
+    viewer.render();
+    viewer.press("enter");
+    viewer.run_until_parked();
+    viewer.render();
+    let limit = viewer.read(|view| view.limit_input.id);
+    assert!(viewer.find(|hit| matches!(hit, Hit::Editor(id, _) if *id == limit)).is_some());
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(!view.is_table());
         assert_eq!(view.session.identity, SessionIdentity::DraftQuery);
-        assert!(window.try_find("query-limit").is_some());
         assert_eq!(view.session.result.row_count(), 3);
         assert_eq!(view.session.result.row_ids.to_vec(), [0, 1, 2]);
-        assert_eq!(
-            view.session.result.fetch_rows(0, 3).unwrap()[2].values[0],
-            Some("2".into())
-        );
+        assert_eq!(view.session.result.fetch_rows(0, 3).unwrap()[2].values[0], Some("2".into()));
         assert!(view.session.source_path.is_none());
-    })
-    .unwrap();
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session
-                .set_query_config(
-                    QueryConfig {
-                        group_by: vec!["category".into()],
-                        aggregations: vec![Aggregation::sql_expression(
-                            "count(*)".into(),
-                            Some("Rows".into()),
-                        )],
-                        ..Default::default()
-                    },
-                    "sales".into(),
-                )
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    });
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(
+                QueryConfig {
+                    group_by: vec!["category".into()],
+                    aggregations: vec![Aggregation::sql_expression("count(*)".into(), Some("Rows".into()))],
+                    ..Default::default()
+                },
+                "sales".into(),
+            )
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.result.row_count(), 2);
-        assert_eq!(
-            view.session.result.fetch_rows(0, 2).unwrap()[0].values[1],
-            Some("50".into())
-        );
+        assert_eq!(view.session.result.fetch_rows(0, 2).unwrap()[0].values[1], Some("50".into()));
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session
-                .set_query_config(QueryConfig::default(), "sales".into())
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let saved = cx.update(|cx| {
-        entity.update(cx, |view, _| {
-            assert!(!view.is_table());
-            assert_eq!(view.session.result.row_count(), 3);
-            view.session
-                .save_as("Saved database view".into(), &view.repository)
-                .unwrap();
-            view.session.working.clone().unwrap()
-        })
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(QueryConfig::default(), "sales".into())
+            .unwrap();
+        view.schedule_search(String::new(), cx);
     });
-    assert_eq!(
-        saved.database_view,
-        Some(DatabaseView::view("main", "sales"))
-    );
+    viewer.run_until_parked();
+    let saved = viewer.update(|view, _| {
+        assert!(!view.is_table());
+        assert_eq!(view.session.result.row_count(), 3);
+        view.session
+            .save_as("Saved database view".into(), &view.repository)
+            .unwrap();
+        view.session.working.clone().unwrap()
+    });
+    assert_eq!(saved.database_view, Some(DatabaseView::view("main", "sales")));
     assert_eq!(repository.load_views().0, [saved.clone()]);
     let path = home.path().join("file.csv");
     std::fs::write(&path, "n\n1\n2\n3\n4\n").unwrap();
-    open(cx, handle, &entity, FileEntry::Source(path.clone()));
-    cx.update(|cx| assert!(entity.read(cx).is_table()));
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert!(viewer.read(|view| view.is_table()));
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert!(!view.is_table());
         assert_eq!(view.session.result.row_count(), 3);
-        assert_eq!(
-            view.session.working.as_ref().unwrap().database_view,
-            saved.database_view
-        );
+        assert_eq!(view.session.working.as_ref().unwrap().database_view, saved.database_view);
     });
-    open(cx, handle, &entity, FileEntry::View(saved.clone()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.query_limit = 5;
-            view.reload(false, window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| assert_eq!(entity.read(cx).session.result.row_count(), 5));
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.database
-                .connect()
-                .unwrap()
-                .execute_batch(
-                    "CREATE OR REPLACE VIEW main.sales AS SELECT 999 AS n, 1 AS category",
-                )
-                .unwrap();
-            view.database.invalidate();
-            view.check_source(cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    open(&viewer, FileEntry::View(saved.clone()));
+    viewer.update(|view, cx| {
+        view.query_limit = 5;
+        view.reload(false, cx);
+    });
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 5);
+    viewer.update(|view, cx| {
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch("CREATE OR REPLACE VIEW main.sales AS SELECT 999 AS n, 1 AS category")
+            .unwrap();
+        view.database.invalidate();
+        view.check_source(cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(
-            view.session.result.fetch_rows(0, 1).unwrap()[0].values[0],
-            Some("999".into())
-        );
+        assert_eq!(view.session.result.fetch_rows(0, 1).unwrap()[0].values[0], Some("999".into()));
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| view.archive_view(&saved, window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.update(|view, cx| view.archive_view(&saved, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(!view.is_table());
         assert_eq!(view.session.identity, SessionIdentity::DraftQuery);
         assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(
-            view.database.views().unwrap(),
-            [saved.database_view.clone().unwrap()]
-        );
+        assert_eq!(view.database.views().unwrap(), [saved.database_view.clone().unwrap()]);
     });
-    open(cx, handle, &entity, FileEntry::Source(path));
-    let previous = cx.update(|cx| entity.read(cx).session.navigation_entry().unwrap());
-    cx.update(|cx| {
-        entity
-            .read(cx)
-            .database
+    open(&viewer, FileEntry::Source(path));
+    let previous = viewer.read(|view| view.session.navigation_entry().unwrap());
+    viewer.read(|view| {
+        view.database
             .connect()
             .unwrap()
             .execute_batch("DROP VIEW main.sales")
             .unwrap()
     });
-    open(cx, handle, &entity, FileEntry::View(saved));
-    cx.update(|cx| {
-        assert_eq!(
-            entity.read(cx).session.navigation_entry().unwrap(),
-            previous
-        );
-        assert!(
-            entity
-                .read(cx)
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("no longer exists")
-        );
+    open(&viewer, FileEntry::View(saved));
+    viewer.read(|view| {
+        assert_eq!(view.session.navigation_entry().unwrap(), previous);
+        assert!(view.error.as_ref().unwrap().contains("no longer exists"));
     });
 }
 
-#[gpui_kit::test]
-fn favorites_reopen_saved_tables_queries_and_sql_by_id(cx: &mut TestAppContext) {
+#[test]
+fn favorites_reopen_saved_tables_queries_and_sql_by_id() {
     use crate::infrastructure::json_store::FavoriteTarget;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let path = home.path().join("data.csv");
     std::fs::write(&path, "region,n\nNorth,10\nSouth,20\n").unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
+    let viewer = viewer(repository.clone());
     for kind in [
         ViewKind::Table(Default::default()),
         ViewKind::Query(QueryConfig {
@@ -389,15 +268,11 @@ fn favorites_reopen_saved_tables_queries_and_sql_by_id(cx: &mut TestAppContext) 
             ..Default::default()
         }),
     ] {
-        let mut saved =
-            DocumentDefinition::draft_table("Favorite view".into(), path.to_string_lossy().into());
+        let mut saved = DocumentDefinition::draft_table("Favorite view".into(), path.to_string_lossy().into());
         saved.view = kind;
         repository.save_view(&mut saved).unwrap();
-        open(cx, handle, &entity, FileEntry::View(saved.clone()));
-        cx.update_window(handle.into(), |_, window, cx| {
-            entity.update(cx, |view, cx| view.favorite(0, true, window, cx));
-        })
-        .unwrap();
+        open(&viewer, FileEntry::View(saved.clone()));
+        viewer.update(|view, cx| view.favorite(0, true, cx));
         assert_eq!(
             repository.load_settings().unwrap().favorites[0],
             Some(FavoriteTarget::View {
@@ -406,22 +281,15 @@ fn favorites_reopen_saved_tables_queries_and_sql_by_id(cx: &mut TestAppContext) 
         );
         saved.name = "Renamed favorite".into();
         repository.save_view(&mut saved).unwrap();
-        open(cx, handle, &entity, FileEntry::Source(path.clone()));
-        cx.update_window(handle.into(), |_, window, cx| {
-            entity.update(cx, |view, cx| view.favorite(0, false, window, cx));
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let view = entity.read(cx);
+        open(&viewer, FileEntry::Source(path.clone()));
+        viewer.update(|view, cx| view.favorite(0, false, cx));
+        viewer.run_until_parked();
+        viewer.read(|view| {
             assert!(view.error.is_none(), "{:?}", view.error);
             let reopened = view.session.working.as_ref().unwrap();
             assert_eq!(reopened.id, saved.id);
             assert_eq!(reopened.name, saved.name);
-            assert_eq!(
-                std::mem::discriminant(&reopened.view),
-                std::mem::discriminant(&saved.view)
-            );
+            assert_eq!(std::mem::discriminant(&reopened.view), std::mem::discriminant(&saved.view));
             if !matches!(saved.view, ViewKind::Table(_)) {
                 assert_eq!(reopened.view, saved.view);
             }
@@ -430,105 +298,86 @@ fn favorites_reopen_saved_tables_queries_and_sql_by_id(cx: &mut TestAppContext) 
             }
         });
     }
-    let saved = cx.update(|cx| entity.read(cx).session.working.clone().unwrap());
+    let saved = viewer.read(|view| view.session.working.clone().unwrap());
     repository.archive(&saved.id).unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| view.favorite(0, false, window, cx));
-    })
-    .unwrap();
-    cx.update(|cx| {
-        assert!(
-            entity
-                .read(cx)
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("no longer saved")
-        )
-    });
+    viewer.update(|view, cx| view.favorite(0, false, cx));
+    assert!(viewer.read(|view| view.error.as_ref().unwrap().contains("no longer saved")));
 }
 
-#[gpui_kit::test]
-fn history_restores_unsaved_definition_search_and_layout_without_saving(cx: &mut TestAppContext) {
+#[test]
+fn history_restores_unsaved_definition_search_and_layout_without_saving() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let path = home.path().join("data.csv");
     std::fs::write(&path, "region,n\nNorth,10\nNorth,30\nSouth,20\n").unwrap();
     let mut saved = DocumentDefinition::draft_table("Saved".into(), path.to_string_lossy().into());
     repository.save_view(&mut saved).unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    open(cx, handle, &entity, FileEntry::View(saved.clone()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.session.rename_working("Unsaved name".into()).unwrap();
-            view.session
-                .edit_definition(|definition| {
-                    definition.slicers = vec![SlicerDefinition {
-                        sql: false,
-                        condition: None,
-                        column: "region".into(),
-                        selected: vec![ScalarKey::String("North".into())],
-                    }];
-                    let ViewKind::Table(table) = &mut definition.view else {
-                        unreachable!()
-                    };
-                    table.column_order = vec!["n".into(), "region".into()];
-                    table.frozen_count = 1;
-                })
-                .unwrap();
-            view.session.set_column_width("n".into(), 123.);
-            view.session.toggle_sort("n".into());
-            view.set_search_text("North".into(), window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let expected = cx.update(|cx| entity.read(cx).session.navigation_entry().unwrap());
-    open(cx, handle, &entity, FileEntry::Source(path.clone()));
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::View(saved.clone()));
+    viewer.update(|view, cx| {
+        view.session.rename_working("Unsaved name".into()).unwrap();
+        view.session
+            .edit_definition(|definition| {
+                definition.slicers = vec![SlicerDefinition {
+                    sql: false,
+                    condition: None,
+                    column: "region".into(),
+                    selected: vec![ScalarKey::String("North".into())],
+                }];
+                let ViewKind::Table(table) = &mut definition.view else {
+                    unreachable!()
+                };
+                table.column_order = vec!["n".into(), "region".into()];
+                table.frozen_count = 1;
+            })
+            .unwrap();
+        view.session.set_column_width("n".into(), 123.);
+        view.session.toggle_sort("n".into());
+        view.set_search_text("North".into(), cx);
+    });
+    viewer.run_until_parked();
+    let expected = viewer.read(|view| view.session.navigation_entry().unwrap());
+    open(&viewer, FileEntry::Source(path.clone()));
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert_eq!(view.session.navigation_entry().unwrap(), expected);
-        assert_eq!(view.search_input.read(cx).value().as_ref(), "North");
+        assert_eq!(view.search_input.text(), "North");
         assert_eq!(view.session.result.row_count(), 2);
         assert_eq!(view.session.result.columns[0].0, "n");
-        assert_eq!(view.grid.read(cx).column_width("n"), 123.);
-        assert_eq!(view.grid.read(cx).selection().unwrap().active.row, 0);
+        assert_eq!(view.grid.column_width("n"), 123.);
+        assert_eq!(view.grid.selection().unwrap().active.row, 0);
         assert!(!view.loading && !view.busy);
         assert!(view.navigation_backup.is_none());
         assert!(view.navigation_history.target(true).is_some());
         view.history_writer.flush();
     });
     assert_eq!(repository.load_views().0, vec![saved]);
-    travel(cx, handle, &entity, true);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, true);
+    viewer.read(|view| {
         assert_eq!(view.session.identity, SessionIdentity::DraftTable);
         assert!(view.session.search_text.is_empty());
     });
 }
 
-#[gpui_kit::test]
-fn history_restores_direct_preferences_and_draft_pivot(cx: &mut TestAppContext) {
+#[test]
+fn history_restores_direct_preferences_and_draft_pivot() {
     use crate::domain::table_preferences::TablePreferencesPatch;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let path = home.path().join("data.csv");
     std::fs::write(&path, "region,n\nNorth,10\nNorth,30\nSouth,20\n").unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    open(cx, handle, &entity, FileEntry::Source(path.clone()));
-    cx.update(|cx| {
-        entity.update(cx, |view, cx| {
-            view.session.set_column_width("n".into(), 177.);
-            let mut config = view.session.effective_table_config();
-            config.column_order = vec!["n".into(), "region".into()];
-            config.frozen_count = 1;
-            view.session.set_table_layout(config).unwrap();
-            view.autosave_table_preferences(cx);
-            view.table_writer.flush().unwrap();
-        })
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    viewer.update(|view, cx| {
+        view.session.set_column_width("n".into(), 177.);
+        let mut config = view.session.effective_table_config();
+        config.column_order = vec!["n".into(), "region".into()];
+        config.frozen_count = 1;
+        view.session.set_table_layout(config).unwrap();
+        view.autosave_table_preferences(cx);
+        view.table_writer.flush().unwrap();
     });
-    let direct = cx.update(|cx| entity.read(cx).session.navigation_entry().unwrap());
+    let direct = viewer.read(|view| view.session.navigation_entry().unwrap());
     let mut pivot = DocumentDefinition::draft_table("Pivot".into(), path.to_string_lossy().into());
     pivot.view = ViewKind::Query(QueryConfig {
         group_by: vec![Dimension::Column("region".into())],
@@ -544,14 +393,12 @@ fn history_restores_direct_preferences_and_draft_pivot(cx: &mut TestAppContext) 
         }],
         ..Default::default()
     });
-    open(cx, handle, &entity, FileEntry::View(pivot));
-    cx.update(|cx| {
-        entity.update(cx, |view, _| {
-            view.session.identity = SessionIdentity::DraftQuery;
-            view.session.rename_working("Draft pivot".into()).unwrap();
-        })
+    open(&viewer, FileEntry::View(pivot));
+    viewer.update(|view, _| {
+        view.session.identity = SessionIdentity::DraftQuery;
+        view.session.rename_working("Draft pivot".into()).unwrap();
     });
-    let query = cx.update(|cx| entity.read(cx).session.navigation_entry().unwrap());
+    let query = viewer.read(|view| view.session.navigation_entry().unwrap());
     repository
         .update_table_preferences(
             &path,
@@ -561,25 +408,22 @@ fn history_restores_direct_preferences_and_draft_pivot(cx: &mut TestAppContext) 
             },
         )
         .unwrap();
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert_eq!(view.session.navigation_entry().unwrap(), direct);
-        assert_eq!(view.grid.read(cx).column_width("n"), 177.);
+        assert_eq!(view.grid.column_width("n"), 177.);
         assert!(view.session.is_direct_table());
     });
-    travel(cx, handle, &entity, true);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, true);
+    viewer.read(|view| {
         assert_eq!(view.session.navigation_entry().unwrap(), query);
         assert_eq!(view.session.result.row_count(), 2);
     });
 }
 
-#[gpui_kit::test]
-fn history_missing_source_and_failed_recomputation_preserve_cursor(cx: &mut TestAppContext) {
+#[test]
+fn history_missing_source_and_failed_recomputation_preserve_cursor() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
     let b = home.path().join("b.csv");
     std::fs::write(&a, "region,n\nNorth,10\nSouth,20\n").unwrap();
@@ -591,11 +435,10 @@ fn history_missing_source_and_failed_recomputation_preserve_cursor(cx: &mut Test
         column: "region".into(),
         selected: vec![ScalarKey::String("North".into())],
     }];
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::View(definition));
-    open(cx, handle, &entity, FileEntry::Source(b));
-    let (current, target, result) = cx.update(|cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::View(definition));
+    open(&viewer, FileEntry::Source(b));
+    let (current, target, result) = viewer.read(|view| {
         (
             view.session.navigation_entry(),
             view.navigation_history.target(false),
@@ -603,38 +446,29 @@ fn history_missing_source_and_failed_recomputation_preserve_cursor(cx: &mut Test
         )
     });
     std::fs::remove_file(&a).unwrap();
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert!(view.error.is_some());
         assert_eq!(view.session.navigation_entry(), current);
         assert_eq!(view.navigation_history.target(false), target);
         assert!(view.navigation_history.target(true).is_none());
     });
     std::fs::write(&a, "different\nchanged schema\n").unwrap();
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert!(view.error.as_ref().unwrap().contains("region"));
         assert_eq!(view.session.navigation_entry(), current);
         assert_eq!(view.navigation_history.target(false), target);
-        assert!(std::sync::Arc::ptr_eq(
-            &view.session.result.store,
-            &result.store
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &view.grid.read(cx).result().store,
-            &result.store
-        ));
+        assert!(std::sync::Arc::ptr_eq(&view.session.result.store, &result.store));
+        assert!(std::sync::Arc::ptr_eq(&view.grid.result().store, &result.store));
         assert!(!view.loading && !view.busy);
         assert!(view.navigation_backup.is_none());
     });
 }
 
-#[gpui_kit::test]
-fn history_branches_and_rejects_superseded_loads(cx: &mut TestAppContext) {
+#[test]
+fn history_branches_and_rejects_superseded_loads() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let paths: Vec<_> = ["a", "b", "c"]
         .into_iter()
         .map(|name| {
@@ -643,49 +477,28 @@ fn history_branches_and_rejects_superseded_loads(cx: &mut TestAppContext) {
             path
         })
         .collect();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(paths[0].clone()));
-    open(cx, handle, &entity, FileEntry::Source(paths[1].clone()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.navigate_history(false, window, cx);
-            // There is no forward target until Back commits. This must be a no-op.
-            view.navigate_history(true, window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
-        assert_eq!(
-            view.session.source_path.as_deref(),
-            Some(paths[0].to_str().unwrap())
-        );
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(paths[0].clone()));
+    open(&viewer, FileEntry::Source(paths[1].clone()));
+    viewer.update(|view, cx| {
+        view.navigate_history(false, cx);
+        // There is no forward target until Back commits. This must be a no-op.
+        view.navigate_history(true, cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert_eq!(view.session.source_path.as_deref(), Some(paths[0].to_str().unwrap()));
         assert!(view.navigation_history.target(false).is_none());
         assert!(view.navigation_history.target(true).is_some());
     });
-    travel(cx, handle, &entity, true);
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.navigate_history(false, window, cx);
-            view.navigate_to_file(
-                FileEntry::Source(paths[2].clone()),
-                false,
-                false,
-                false,
-                handle.into(),
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
-        assert_eq!(
-            view.session.source_path.as_deref(),
-            Some(paths[2].to_str().unwrap())
-        );
+    travel(&viewer, true);
+    viewer.update(|view, cx| {
+        view.navigate_history(false, cx);
+        view.navigate_to_file(FileEntry::Source(paths[2].clone()), false, false, false, cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert_eq!(view.session.source_path.as_deref(), Some(paths[2].to_str().unwrap()));
         assert_eq!(
             view.navigation_history
                 .target(false)
@@ -696,10 +509,9 @@ fn history_branches_and_rejects_superseded_loads(cx: &mut TestAppContext) {
             Some(paths[1].to_str().unwrap())
         );
     });
-    travel(cx, handle, &entity, false);
-    open(cx, handle, &entity, FileEntry::Source(paths[0].clone()));
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, false);
+    open(&viewer, FileEntry::Source(paths[0].clone()));
+    viewer.read(|view| {
         assert!(view.navigation_history.target(true).is_none());
         assert_eq!(
             view.navigation_history
@@ -713,174 +525,108 @@ fn history_branches_and_rejects_superseded_loads(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn history_sql_restores_text_and_search_without_results_or_execution(cx: &mut TestAppContext) {
+#[test]
+fn history_sql_restores_text_and_search_without_results_or_execution() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let path = home.path().join("data.csv");
     std::fs::write(&path, "n\n1\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(path.clone()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| view.open_sql_editor(window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path.clone()));
+    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.run_until_parked();
     let text = "CREATE TABLE history_marker AS SELECT 42 AS n; SELECT n FROM history_marker;";
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            let editor = view
-                .sql_panel
-                .as_ref()
-                .unwrap()
-                .read(cx)
-                .editor
-                .read(cx)
-                .state()
-                .clone();
-            editor.update(cx, |input, cx| input.set_value(text, window, cx));
-            view.session.set_sql_text(text.into());
-            view.run_sql(true, window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            assert_eq!(view.session.result.row_count(), 1);
-            view.set_search_text("42".into(), window, cx);
-            view.session.sort = vec![SortKey {
-                column: "n".into(),
-                descending: true,
-            }];
-            if let Some(definition) = &mut view.session.working {
-                let ViewKind::Sql(sql) = &mut definition.view else {
-                    unreachable!()
-                };
-                sql.result_sort = view.session.sort.clone();
-            }
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let expected = cx.update(|cx| entity.read(cx).session.navigation_entry().unwrap());
-    open(cx, handle, &entity, FileEntry::Source(path));
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.update(|view, cx| {
+        view.sql_panel.as_mut().unwrap().editor.set_text(text);
+        view.session.set_sql_text(text.into());
+        view.run_sql(true, cx);
+    });
+    viewer.run_until_parked();
+    viewer.update(|view, cx| {
+        assert_eq!(view.session.result.row_count(), 1);
+        view.set_search_text("42".into(), cx);
+        view.session.sort = vec![SortKey {
+            column: "n".into(),
+            descending: true,
+        }];
+        if let Some(definition) = &mut view.session.working {
+            let ViewKind::Sql(sql) = &mut definition.view else {
+                unreachable!()
+            };
+            sql.result_sort = view.session.sort.clone();
+        }
+    });
+    viewer.run_until_parked();
+    let expected = viewer.read(|view| view.session.navigation_entry().unwrap());
+    open(&viewer, FileEntry::Source(path));
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert_eq!(view.session.navigation_entry().unwrap(), expected);
         assert_eq!(view.session.identity, SessionIdentity::DraftSql);
         assert_eq!(view.session.result.row_count(), 0);
         assert_eq!(view.session.source.row_count(), 0);
         assert!(!view.sql_running && !view.busy && !view.loading);
-        assert!(view.sql_panel.as_ref().unwrap().read(cx).error.is_none());
+        assert!(view.sql_panel.as_ref().unwrap().error.is_none());
         assert!(view.query_cache.is_none() && view.table_query.is_none());
         assert!(view.navigation_backup.is_none());
         assert!(view.navigation_history.target(true).is_some());
     });
 }
 
-#[gpui_kit::test]
-fn history_return_reloads_changed_source_data(cx: &mut TestAppContext) {
+#[test]
+fn history_return_reloads_changed_source_data() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
     let b = home.path().join("b.csv");
     std::fs::write(&a, "n\n1\n").unwrap();
     std::fs::write(&b, "n\n9\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(a.clone()));
-    open(cx, handle, &entity, FileEntry::Source(b));
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(a.clone()));
+    open(&viewer, FileEntry::Source(b));
     std::fs::write(&a, "n\n1\n2\n3\n").unwrap();
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    travel(&viewer, false);
+    viewer.read(|view| {
         assert_eq!(view.session.result.row_count(), 3);
         assert_eq!(view.session.source.row_count(), 3);
         assert!(view.navigation_backup.is_none());
     });
 }
 
-#[gpui_kit::test]
-fn history_keys_only_navigate_from_grid_and_commands_are_available(cx: &mut TestAppContext) {
+#[test]
+fn history_keys_only_navigate_from_grid_and_commands_are_available() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
     let b = home.path().join("b.csv");
     std::fs::write(&a, "word\nur\n").unwrap();
     std::fs::write(&b, "word\nur\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(a.clone()));
-    open(cx, handle, &entity, FileEntry::Source(b.clone()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        let input = entity.read(cx).search_input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.render_frame(cx);
-        window.input("ur", cx);
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(b.to_str().unwrap())
-        );
-        assert_eq!(input.read(cx).value().as_ref(), "ur");
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let grid = entity.read(cx).grid.clone();
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.render_frame(cx);
-        window.press("u", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(a.to_str().unwrap())
-        );
-        window.render_frame(cx);
-        window.press("r", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(b.to_str().unwrap())
-        );
-        assert_eq!(entity.read(cx).session.search_text, "ur");
-        entity.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("Back", cx);
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(a.to_str().unwrap())
-        )
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.dispatch_command(CommandId::Forward, window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(b.to_str().unwrap())
-        )
-    });
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(a.clone()));
+    open(&viewer, FileEntry::Source(b.clone()));
+    let source = |viewer: &Viewer| viewer.read(|view| view.session.source_path.clone());
+    viewer.focus_search();
+    viewer.render();
+    viewer.input("ur");
+    assert_eq!(source(&viewer).as_deref(), Some(b.to_str().unwrap()));
+    assert_eq!(viewer.read(|view| view.search_input.text().to_owned()), "ur");
+    viewer.run_until_parked();
+    viewer.focus_grid();
+    press_each(&viewer, &["u"]);
+    assert_eq!(source(&viewer).as_deref(), Some(a.to_str().unwrap()));
+    press_each(&viewer, &["r"]);
+    assert_eq!(source(&viewer).as_deref(), Some(b.to_str().unwrap()));
+    assert_eq!(viewer.read(|view| view.session.search_text.clone()), "ur");
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("Back");
+    press_each(&viewer, &["enter"]);
+    assert_eq!(source(&viewer).as_deref(), Some(a.to_str().unwrap()));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::Forward, cx));
+    viewer.run_until_parked();
+    assert_eq!(source(&viewer).as_deref(), Some(b.to_str().unwrap()));
 }
 
-fn column_names(entity: &Entity<DataFrameView>, cx: &mut TestAppContext) -> Vec<String> {
-    cx.update(|cx| {
-        let result = &entity.read(cx).session.result;
+fn column_names(viewer: &Viewer) -> Vec<String> {
+    viewer.read(|view| {
+        let result = &view.session.result;
         result
             .column_indices
             .iter()
@@ -889,27 +635,17 @@ fn column_names(entity: &Entity<DataFrameView>, cx: &mut TestAppContext) -> Vec<
     })
 }
 
-#[gpui_kit::test]
-fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns(cx: &mut TestAppContext) {
+#[test]
+fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
     std::fs::write(&a, "word\nur\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(a.clone()));
-    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-        "city\tsales\r\nOslo\t10\r\n\"Rome, IT\"\t20\r\n".into(),
-    ));
-    cx.update_window(handle.into(), |_, window, cx| {
-        let grid = entity.read(cx).grid.clone();
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.render_frame(cx);
-        window.press("ctrl-v", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let pasted = cx.update(|cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(a.clone()));
+    set_clipboard("city\tsales\r\nOslo\t10\r\n\"Rome, IT\"\t20\r\n");
+    viewer.focus_grid();
+    press_each(&viewer, &["ctrl-v"]);
+    let pasted = viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.result.row_count(), 2);
         assert!(
@@ -919,14 +655,13 @@ fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns(cx: &mut Tes
         );
         std::path::PathBuf::from(view.query_file().unwrap())
     });
-    let pasted_folder =
-        crate::infrastructure::source_database::absolute_source_path(&home.path().join("pasted"));
+    let pasted_folder = crate::infrastructure::source_database::absolute_source_path(&home.path().join("pasted"));
     assert_eq!(pasted.parent().unwrap(), pasted_folder);
     assert_eq!(pasted.extension().unwrap(), "tsv");
-    assert_eq!(column_names(&entity, cx), ["city", "sales"]);
-    let rows = cx.update(|cx| {
-        let result = &entity.read(cx).session.result;
-        result
+    assert_eq!(column_names(&viewer), ["city", "sales"]);
+    let rows = viewer.read(|view| {
+        view.session
+            .result
             .fetch_rows(0, 2)
             .unwrap()
             .into_iter()
@@ -940,76 +675,43 @@ fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns(cx: &mut Tes
             vec![Some("Rome, IT".to_string()), Some("20".to_string())],
         ]
     );
-    travel(cx, handle, &entity, false);
-    cx.update(|cx| {
-        assert_eq!(
-            entity.read(cx).session.source_path.as_deref(),
-            Some(a.to_str().unwrap())
-        )
-    });
+    travel(&viewer, false);
+    assert_eq!(
+        viewer.read(|view| view.session.source_path.clone()).as_deref(),
+        Some(a.to_str().unwrap())
+    );
 }
 
-#[gpui_kit::test]
-fn pasting_without_text_reports_an_error_and_keeps_the_table(cx: &mut TestAppContext) {
+#[test]
+fn pasting_without_text_reports_an_error_and_keeps_the_table() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
     std::fs::write(&a, "word\nur\n").unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(a.clone()));
-    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("  \r\n".into()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.dispatch_command(CommandId::PasteTable, window, cx)
-        })
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
-        assert_eq!(
-            view.error.as_deref(),
-            Some("The clipboard has no text to open as a table")
-        );
-        assert_eq!(
-            view.session.source_path.as_deref(),
-            Some(a.to_str().unwrap())
-        );
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(a.clone()));
+    set_clipboard("  \r\n");
+    viewer.update(|view, cx| view.dispatch_command(CommandId::PasteTable, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert_eq!(view.error.as_deref(), Some("The clipboard has no text to open as a table"));
+        assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
     });
     assert!(!home.path().join("pasted").exists());
 }
 
-#[gpui_kit::test]
-fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
+#[test]
+fn dropped_files_open_in_query_mode_unless_watched() {
     use crate::application::state::ApplicationState;
-    use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let a = home.path().join("a.csv");
     let b = home.path().join("b.tsv");
     std::fs::write(&a, "word\nur\n").unwrap();
     std::fs::write(&b, "x\ty\n1\t2\n").unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    let windows = cx.update(|cx| cx.windows().len());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let position = point(px(400.), px(300.));
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Entered {
-                position,
-                paths: ExternalPaths([a.clone(), b.clone()].into_iter().collect()),
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
-            cx,
-        );
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let database = cx.update(|cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository.clone());
+    let windows = viewer.app.windows().len();
+    viewer.drop_files(vec![a.clone(), b.clone()]);
+    let database = viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         // Dropped files open in query mode, read in place without importing.
         assert_eq!(view.session.source_path, None);
@@ -1023,9 +725,9 @@ fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
         );
         assert!(!view.is_table());
         assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(cx.windows().len(), windows + 1);
         view.database.clone()
     });
+    assert_eq!(viewer.app.windows().len(), windows + 1);
     assert!(
         !database
             .relations()
@@ -1045,98 +747,45 @@ fn dropped_files_open_in_query_mode_unless_watched(cx: &mut TestAppContext) {
 
     // A watched file opens from the cache instead.
     state.add_watched_files(std::slice::from_ref(&a)).unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let position = point(px(400.), px(300.));
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Entered {
-                position,
-                paths: ExternalPaths([a.clone()].into_iter().collect()),
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
-            cx,
-        );
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.drop_files(vec![a.clone()]);
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.query_file(), None);
-        assert_eq!(
-            view.session.source_path.as_deref(),
-            Some(a.to_str().unwrap())
-        );
+        assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
         assert!(view.is_table());
     });
 }
 
-#[gpui_kit::test]
-fn n_opens_an_overlay_that_caches_dropped_files_as_watched(cx: &mut TestAppContext) {
+#[test]
+fn n_opens_an_overlay_that_caches_dropped_files_as_watched() {
     use crate::application::state::ApplicationState;
-    use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let a = home.path().join("a.csv");
     std::fs::write(&a, "word\nur\n").unwrap();
     let folder = home.path().join("folder");
     std::fs::create_dir(&folder).unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    let drop_paths = |cx: &mut TestAppContext, paths: Vec<std::path::PathBuf>| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let position = point(px(400.), px(300.));
-            window.dispatch_event(
-                PlatformInput::FileDrop(FileDropEvent::Entered {
-                    position,
-                    paths: ExternalPaths(paths.into_iter().collect()),
-                }),
-                cx,
-            );
-            window.render_frame(cx);
-            window.dispatch_event(
-                PlatformInput::FileDrop(FileDropEvent::Submit { position }),
-                cx,
-            );
-        })
-        .unwrap();
-        cx.run_until_parked();
+    let viewer = viewer(repository.clone());
+    let press = |key: &str| {
+        viewer.focus_grid();
+        press_each(&viewer, &[key]);
     };
-    let press = |cx: &mut TestAppContext, key: &str| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let grid = entity.read(cx).grid.clone();
-            window.focus(&grid.read(cx).focus_handle(cx), cx);
-            window.render_frame(cx);
-            window.press(key, cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-    };
-    let open_overlay = |cx: &mut TestAppContext| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            entity.update(cx, |view, cx| {
-                view.dispatch_command(CommandId::CacheFiles, window, cx)
-            })
-        })
-        .unwrap();
-        cx.update(|cx| assert!(entity.read(cx).cache_drop_open));
+    let open_overlay = || {
+        viewer.update(|view, cx| view.dispatch_command(CommandId::CacheFiles, cx));
+        assert!(viewer.read(|view| view.cache_drop_open));
     };
 
     // Folders are rejected; only files can be added.
-    open_overlay(cx);
-    drop_paths(cx, vec![folder.clone()]);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    open_overlay();
+    viewer.drop_files(vec![folder.clone()]);
+    viewer.read(|view| {
         assert!(!view.cache_drop_open);
         assert!(view.error.as_deref().unwrap().contains("is a folder"));
     });
 
-    open_overlay(cx);
-    drop_paths(cx, vec![a.clone()]);
-    let database = cx.update(|cx| {
-        let view = entity.read(cx);
+    open_overlay();
+    viewer.drop_files(vec![a.clone()]);
+    let database = viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.copy_status.as_deref(), Some("Cached a.csv"));
         // The overlay caches the file without opening it.
@@ -1153,59 +802,41 @@ fn n_opens_an_overlay_that_caches_dropped_files_as_watched(cx: &mut TestAppConte
     );
 
     // N opens the overlay from the grid and Escape closes it.
-    press(cx, "n");
-    cx.update(|cx| assert!(entity.read(cx).cache_drop_open));
-    press(cx, "escape");
-    cx.update(|cx| assert!(!entity.read(cx).cache_drop_open));
+    press("n");
+    assert!(viewer.read(|view| view.cache_drop_open));
+    press("escape");
+    assert!(!viewer.read(|view| view.cache_drop_open));
 }
 
-#[gpui_kit::test]
-fn dropped_databases_attach_read_only_and_show_in_the_tree(cx: &mut TestAppContext) {
-    use gpui_kit::{ExternalPaths, FileDropEvent, PlatformInput, point};
+#[test]
+fn dropped_databases_attach_read_only_and_show_in_the_tree() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let a = home.path().join("a.csv");
-    std::fs::write(&a, "word
-ur
-").unwrap();
+    std::fs::write(&a, "word\nur\n").unwrap();
     // A DuckDB file with a `.db` extension is recognized by its header.
     let shop = home.path().join("shop.db");
     duckdb::Connection::open(&shop)
         .unwrap()
         .execute_batch("CREATE TABLE orders AS SELECT 1 AS id")
         .unwrap();
-    let (handle, entity) = viewer(cx, repository);
-    open(cx, handle, &entity, FileEntry::Source(a.clone()));
-    let windows = cx.update(|cx| cx.windows().len());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let position = point(px(400.), px(300.));
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Entered {
-                position,
-                paths: ExternalPaths([shop.clone()].into_iter().collect()),
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
-            cx,
-        );
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(a.clone()));
+    let windows = viewer.app.windows().len();
+    viewer.drop_files(vec![shop.clone()]);
+    assert_eq!(viewer.app.windows().len(), windows);
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(cx.windows().len(), windows);
         assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
         let status = view.copy_status.as_deref().unwrap();
         assert!(status.starts_with("Attached shop read-only."), "{status}");
         assert!(status.contains("DETACH shop; ATTACH '"), "{status}");
         assert!(view.database_tree_open);
-        let tree = view.database_tree.read(cx);
-        assert_eq!(tree.selected_id(cx).as_deref(), Some("db:shop"));
-        assert!(tree.relation_labels().contains(&"shop.main.orders".to_string()));
+        assert_eq!(view.database_tree.selected_id().as_deref(), Some("db:shop"));
+        assert!(
+            view.database_tree
+                .relation_labels()
+                .contains(&"shop.main.orders".to_string())
+        );
         let written = view
             .database
             .connect()
@@ -1215,44 +846,27 @@ ur
     });
 }
 
-#[gpui_kit::test]
-fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &mut TestAppContext) {
+#[test]
+fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata() {
     use crate::domain::documents::RelationKind;
     let home = tempfile::tempdir().unwrap();
     let folder = home.path().join("data");
     std::fs::create_dir_all(folder.join("2024")).unwrap();
-    std::fs::write(
-        folder.join("2024").join("q1.csv"),
-        "region,n\nNorth,1\nSouth,2\n",
-    )
-    .unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    std::fs::write(folder.join("2024").join("q1.csv"), "region,n\nNorth,1\nSouth,2\n").unwrap();
+    let repository = repository(home.path());
     let mut settings = repository.load_settings().unwrap();
     settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
     repository.save_settings(&settings).unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    let press = |cx: &mut TestAppContext, keys: &[&str]| {
-        for key in keys {
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.render_frame(cx);
-                window.press(key, cx);
-            })
-            .unwrap();
-            cx.run_until_parked();
-        }
-    };
-    press(cx, &["ctrl-b"]);
-    cx.update_window(handle.into(), |_, window, cx| {
-        let view = entity.read(cx);
+    let viewer = viewer(repository.clone());
+    press_each(&viewer, &["ctrl-b"]);
+    viewer.read(|view| {
         assert!(view.database_tree_open);
-        assert!(view.database_tree.read(cx).contains_focus(window, cx));
-    })
-    .unwrap();
+        assert!(view.focus.is_some_and(|id| view.database_tree.contains(id)));
+    });
     assert!(repository.load_settings().unwrap().database_tree_open);
     // Typing in the tree starts the filter; Enter opens the first match here.
-    press(cx, &["q", "1", "enter"]);
-    cx.update_window(handle.into(), |_, window, cx| {
-        let view = entity.read(cx);
+    press_each(&viewer, &["q", "1", "enter"]);
+    viewer.read(|view| {
         assert!(
             view.session
                 .source_path
@@ -1262,25 +876,20 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &m
             view.session.source_path
         );
         assert_eq!(view.session.result.row_count(), 2);
-        assert!(view.grid.read(cx).focus_handle(cx).is_focused(window));
-    })
-    .unwrap();
+    });
+    assert!(viewer.grid_focused());
     // A metadata function opens as a read-only database relation. Typing in
     // the tree replaces the old filter and moves to the box; Enter there opens.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let tree = entity.read(cx).database_tree.clone();
-        tree.update(cx, |tree, cx| tree.focus(window, cx));
-    })
-    .unwrap();
-    press(cx, &["d"]);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.input("uckdb_settings", cx)
-    })
-    .unwrap();
-    cx.run_until_parked();
-    press(cx, &["enter"]);
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.update(|view, _| {
+        let mut focus = view.focus;
+        view.database_tree.focus(&mut focus);
+        view.focus = focus;
+    });
+    press_each(&viewer, &["d"]);
+    viewer.input("uckdb_settings");
+    viewer.run_until_parked();
+    press_each(&viewer, &["enter"]);
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         let relation = view
             .session
@@ -1290,14 +899,9 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &m
             .unwrap_or_else(|| {
                 panic!(
                     "no relation: {:?} {:?} selected={:?}",
-                    view.session.working.as_ref().map(|d| &d.name),
+                    view.session.working.as_ref().map(|definition| &definition.name),
                     view.session.source_path,
-                    view.database_tree
-                        .read(cx)
-                        .tree
-                        .read(cx)
-                        .selected_item()
-                        .map(|i| i.id.clone())
+                    view.database_tree.selected_id()
                 )
             });
         assert_eq!(relation.kind, RelationKind::Function);
@@ -1305,16 +909,15 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata(cx: &m
         assert!(view.session.result.row_count() > 0);
     });
     // Ctrl+B from the grid hides the tree and remembers that.
-    press(cx, &["ctrl-b"]);
-    cx.update(|cx| assert!(!entity.read(cx).database_tree_open));
+    press_each(&viewer, &["ctrl-b"]);
+    assert!(!viewer.read(|view| view.database_tree_open));
     assert!(!repository.load_settings().unwrap().database_tree_open);
 }
 
-#[gpui_kit::test]
-fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAppContext) {
+#[test]
+fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
     use crate::application::state::ApplicationState;
-    use gpui_kit::component::WindowExt as _;
-    use crate::infrastructure::source_database::LoadMode;
+    use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
     let home = tempfile::tempdir().unwrap();
     let folder = home.path().join("data");
     std::fs::create_dir_all(folder.join("2024")).unwrap();
@@ -1324,7 +927,7 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAp
     std::fs::write(&single, "n\n1\n").unwrap();
     let recent = home.path().join("recent.csv");
     std::fs::write(&recent, "n\n1\n").unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let mut state = ApplicationState::load(repository.clone()).unwrap();
     let mut settings = state.settings.clone();
     settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
@@ -1334,8 +937,8 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAp
     state.record_source(&recent).unwrap();
     let mut saved = DocumentDefinition::draft_table("Old view".into(), recent.to_string_lossy().into());
     repository.save_view(&mut saved).unwrap();
-    let (handle, entity) = viewer(cx, repository.clone());
-    let database = cx.update(|cx| entity.read(cx).database.clone());
+    let viewer = viewer(repository.clone());
+    let database = viewer.read(|view| view.database.clone());
     database.load(&q1, LoadMode::Check).unwrap();
     database.load(&single, LoadMode::Check).unwrap();
     database
@@ -1343,7 +946,7 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAp
         .unwrap()
         .execute_batch("CREATE TABLE main.notes AS SELECT 1 AS n")
         .unwrap();
-    let tables = |database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>| {
+    let tables = |database: &std::sync::Arc<SourceDatabase>| {
         database
             .relations()
             .unwrap()
@@ -1352,57 +955,42 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAp
             .collect::<Vec<_>>()
     };
     assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-b", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let delete = |cx: &mut TestAppContext, id: &str| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let tree = entity.read(cx).database_tree.clone();
-            tree.update(cx, |tree, cx| {
-                tree.select(id, cx);
-                tree.focus(window, cx);
-            });
-            window.render_frame(cx);
-            window.press("delete", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
+    press_each(&viewer, &["ctrl-b"]);
+    let delete = |id: &str| {
+        viewer.update(|view, _| {
+            view.database_tree.select(id);
+            let mut focus = view.focus;
+            view.database_tree.focus(&mut focus);
+            view.focus = focus;
+        });
+        press_each(&viewer, &["delete"]);
     };
-    let confirm = |cx: &mut TestAppContext| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            assert!(window.has_active_dialog(cx));
-            window.render_frame(cx);
-            window.click("tree-delete-confirm", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
+    let confirm = || {
+        assert!(viewer.has_dialog());
+        viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+        viewer.run_until_parked();
     };
-    let status = |cx: &mut TestAppContext| {
-        cx.update(|cx| {
-            let view = entity.read(cx);
+    let status = || {
+        viewer.read(|view| {
             assert!(view.error.is_none(), "{:?}", view.error);
             view.copy_status.clone().unwrap_or_default()
         })
     };
 
     // Groups, schema folders and metadata functions have nothing to delete.
-    delete(cx, "group:sources");
-    delete(cx, "db:profile.main");
-    cx.update_window(handle.into(), |_, window, cx| assert!(!window.has_active_dialog(cx)))
-        .unwrap();
+    delete("group:sources");
+    delete("db:profile.main");
+    assert!(!viewer.has_dialog());
 
     // The profile database and cached tables explain where to manage them.
-    delete(cx, "db:profile");
-    assert!(status(cx).contains("cannot be detached"));
-    delete(cx, "db:files.q1_csv");
-    assert!(status(cx).contains("remove its watched file or folder"));
+    delete("db:profile");
+    assert!(status().contains("cannot be detached"));
+    delete("db:files.q1_csv");
+    assert!(status().contains("remove its watched file or folder"));
 
     // A recent file is forgotten.
     let recorded = state.history.recent_sources[0].clone();
-    delete(cx, &format!("recent:{recorded}"));
+    delete(&format!("recent:{recorded}"));
     let state = ApplicationState::load(repository.clone()).unwrap();
     assert!(
         !state
@@ -1413,99 +1001,82 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for(cx: &mut TestAp
     );
 
     // A watched file stops being watched and its cached table is dropped.
-    delete(cx, &format!("watched:{}", state.settings.watched_files[0]));
-    status(cx);
+    delete(&format!("watched:{}", state.settings.watched_files[0]));
+    status();
     assert!(!ApplicationState::load(repository.clone()).unwrap().is_watched(&single));
     assert!(!tables(&database).contains(&"files.single_csv".to_owned()));
 
     // A file in a watched folder asks before removing the whole folder.
-    delete(cx, &format!("src:{}", q1.display()));
+    delete(&format!("src:{}", q1.display()));
     assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
-    confirm(cx);
-    status(cx);
+    confirm();
+    status();
     let state = ApplicationState::load(repository.clone()).unwrap();
     assert!(state.settings.watched_folders.is_empty());
     assert!(!tables(&database).contains(&"files.q1_csv".to_owned()));
 
     // A table of the profile database is dropped once confirmed.
-    delete(cx, "db:main.notes");
+    delete("db:main.notes");
     assert!(tables(&database).contains(&"main.notes".to_owned()));
-    confirm(cx);
-    status(cx);
+    confirm();
+    status();
     assert!(!tables(&database).contains(&"main.notes".to_owned()));
 
     // A saved view is archived.
-    delete(cx, &format!("view:{}", saved.id));
-    assert!(status(cx).starts_with("Archived Old view"));
+    delete(&format!("view:{}", saved.id));
+    assert!(status().starts_with("Archived Old view"));
     assert!(repository.load_views().0.is_empty());
 }
 
-#[gpui_kit::test]
-fn database_tree_refresh_button_lists_new_tables(cx: &mut TestAppContext) {
+#[test]
+fn database_tree_refresh_button_lists_new_tables() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, entity) = viewer(cx, repository);
-    let labels = |cx: &mut TestAppContext| {
-        cx.update(|cx| entity.read(cx).database_tree.read(cx).relation_labels())
-    };
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-b", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert!(!labels(cx).contains(&"main.added_later".to_owned()));
-    cx.update(|cx| {
-        entity
-            .read(cx)
-            .database
+    let viewer = viewer(repository(home.path()));
+    let labels = || viewer.read(|view| view.database_tree.relation_labels());
+    press_each(&viewer, &["ctrl-b"]);
+    assert!(!labels().contains(&"main.added_later".to_owned()));
+    viewer.read(|view| {
+        view.database
             .connect()
             .unwrap()
             .execute_batch("CREATE TABLE main.added_later AS SELECT 1 AS n")
             .unwrap();
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("database-tree-refresh", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert!(labels(cx).contains(&"main.added_later".to_owned()));
+    viewer.click(|hit| *hit == Hit::Button(Button::TreeRefresh));
+    viewer.run_until_parked();
+    assert!(labels().contains(&"main.added_later".to_owned()));
 }
 
-#[gpui_kit::test]
-fn source_checks_skip_unchanged_files_but_still_see_edits(cx: &mut TestAppContext) {
+#[test]
+fn source_checks_skip_unchanged_files_but_still_see_edits() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, entity) = viewer(cx, repository);
+    let viewer = viewer(repository(home.path()));
     let path = home.path().join("watched.csv");
     std::fs::write(&path, "n\n1\n2\n").unwrap();
-    open(cx, handle, &entity, FileEntry::Source(path.clone()));
-    let check = |cx: &mut TestAppContext| {
-        cx.update(|cx| entity.update(cx, |view, cx| view.check_source(cx)));
-        cx.run_until_parked();
+    open(&viewer, FileEntry::Source(path.clone()));
+    let check = || {
+        viewer.update(|view, cx| view.check_source(cx));
+        viewer.run_until_parked();
     };
-    let rows = |cx: &mut TestAppContext| {
-        cx.update(|cx| {
-            let view = entity.read(cx);
+    let rows = || {
+        viewer.read(|view| {
             assert!(view.error.is_none(), "{:?}", view.error);
             view.session.result.row_count()
         })
     };
-    check(cx);
-    cx.update(|cx| assert!(entity.read(cx).source_probe.is_some()));
-    check(cx);
-    assert_eq!(rows(cx), 2);
+    check();
+    assert!(viewer.read(|view| view.source_probe.is_some()));
+    check();
+    assert_eq!(rows(), 2);
 
     std::fs::write(&path, "n\n1\n2\n3\n").unwrap();
-    check(cx);
-    assert_eq!(rows(cx), 3);
-    check(cx);
-    cx.update(|cx| assert!(entity.read(cx).source_probe.is_some()));
+    check();
+    assert_eq!(rows(), 3);
+    check();
+    assert!(viewer.read(|view| view.source_probe.is_some()));
 
     // A database change, such as SQL dropping the table, forces the full check.
-    cx.update(|cx| {
-        let view = entity.read(cx);
+    viewer.read(|view| {
         view.database
             .connect()
             .unwrap()
@@ -1513,17 +1084,13 @@ fn source_checks_skip_unchanged_files_but_still_see_edits(cx: &mut TestAppContex
             .unwrap();
         view.database.invalidate();
     });
-    check(cx);
-    assert_eq!(rows(cx), 3);
-    let restored: i64 = cx.update(|cx| {
-        entity
-            .read(cx)
-            .database
+    check();
+    assert_eq!(rows(), 3);
+    let restored: i64 = viewer.read(|view| {
+        view.database
             .connect()
             .unwrap()
-            .query_row("SELECT count(*) FROM files.watched_csv", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT count(*) FROM files.watched_csv", [], |row| row.get(0))
             .unwrap()
     });
     assert_eq!(restored, 3);

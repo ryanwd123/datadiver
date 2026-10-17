@@ -1,20 +1,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState, MoveDown};
-use gpui_kit::component::list::ListItem;
-use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
-use gpui_kit::component::{ActiveTheme, Sizable as _};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::*;
 
 use crate::application::state::ApplicationState;
 use crate::domain::documents::{DatabaseView, DocumentDefinition, RelationKind, ViewKind};
 use crate::infrastructure::catalog::scan_sources;
 use crate::infrastructure::json_store::ViewRepository;
 use crate::infrastructure::source_database::SourceDatabase;
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Modifiers, Point, Rect, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::tree::{Tree, TreeItem};
+use crate::ui::widgets::{ButtonStyle, Fonts, Row, WidgetId, button, colors};
+
 
 /// What a leaf of the tree opens.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,8 +179,8 @@ impl Folder {
 struct Builder<'a> {
     terms: Vec<String>,
     expanded: &'a HashSet<String>,
-    targets: HashMap<SharedString, TreeTarget>,
-    deletable: HashMap<SharedString, DeleteTarget>,
+    targets: HashMap<String, TreeTarget>,
+    deletable: HashMap<String, DeleteTarget>,
 }
 
 impl Builder<'_> {
@@ -229,7 +227,7 @@ pub fn build_items(
     data: &TreeData,
     filter: &str,
     expanded: &HashSet<String>,
-) -> (Vec<TreeItem>, HashMap<SharedString, TreeTarget>) {
+) -> (Vec<TreeItem>, HashMap<String, TreeTarget>) {
     let (items, targets, _) = build_tree(data, filter, expanded);
     (items, targets)
 }
@@ -242,8 +240,8 @@ fn build_tree(
     expanded: &HashSet<String>,
 ) -> (
     Vec<TreeItem>,
-    HashMap<SharedString, TreeTarget>,
-    HashMap<SharedString, DeleteTarget>,
+    HashMap<String, TreeTarget>,
+    HashMap<String, DeleteTarget>,
 ) {
     let mut builder = Builder {
         terms: filter
@@ -403,45 +401,32 @@ fn build_tree(
 /// A left pane listing saved views, database relations, watched source
 /// folders, and DuckDB's metadata functions.
 pub struct DatabaseTree {
-    focus_handle: FocusHandle,
-    pub(crate) tree: Entity<TreeState>,
-    pub(crate) filter: Entity<InputState>,
+    pub(crate) tree: Tree,
+    pub(crate) filter: Editor,
     data: TreeData,
-    targets: HashMap<SharedString, TreeTarget>,
-    deletable: HashMap<SharedString, DeleteTarget>,
+    targets: HashMap<String, TreeTarget>,
+    deletable: HashMap<String, DeleteTarget>,
     expanded: HashSet<String>,
     loading: bool,
     error: Option<String>,
     revision: u64,
     /// A database to select once the next refresh lands.
     reveal: Option<String>,
-    _subscriptions: Vec<Subscription>,
+    events: Vec<DatabaseTreeEvent>,
 }
 
-impl EventEmitter<DatabaseTreeEvent> for DatabaseTree {}
+impl Default for DatabaseTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl DatabaseTree {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let tree = cx.new(|cx| TreeState::new(cx));
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
-        let subscriptions = vec![
-            cx.subscribe(&tree, |this, _, event: &TreeEvent, _| match event {
-                TreeEvent::Expanded(id) => {
-                    this.expanded.insert(id.to_string());
-                }
-                TreeEvent::Collapsed(id) => {
-                    this.expanded.remove(id.as_ref());
-                }
-            }),
-            cx.subscribe(&filter, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.rebuild(cx);
-                }
-            }),
-        ];
+    pub fn new() -> Self {
+        let mut filter = Editor::single_line().with_placeholder("Filter");
+        filter.framed = true;
         Self {
-            focus_handle: cx.focus_handle(),
-            tree,
+            tree: Tree::new(),
             filter,
             data: TreeData::default(),
             targets: HashMap::new(),
@@ -451,51 +436,42 @@ impl DatabaseTree {
             error: None,
             revision: 0,
             reveal: None,
-            _subscriptions: subscriptions,
+            events: Vec::new(),
         }
     }
 
-    /// Reads the tree's contents again, keeping folders open and the selection.
-    pub fn refresh(
-        &mut self,
-        repository: ViewRepository,
-        database: Arc<SourceDatabase>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn take_events(&mut self) -> Vec<DatabaseTreeEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Starts reading the tree's contents again; the host runs the read and
+    /// hands the result to [`DatabaseTree::finish_refresh`].
+    pub fn begin_refresh(&mut self) -> u64 {
         self.revision += 1;
-        let revision = self.revision;
         self.loading = true;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let data = cx
-                .background_executor()
-                .spawn(async move { TreeData::load(repository, &database) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.revision != revision {
-                    return;
-                }
-                this.loading = false;
-                match data {
-                    Ok(data) => {
-                        this.error = None;
-                        this.data = data;
-                        this.rebuild(cx);
-                        if let Some(catalog) = this.reveal.take() {
-                            let id = SharedString::from(format!("db:{catalog}"));
-                            this.tree.update(cx, |tree, cx| {
-                                if let Some(index) = tree.index_of(&id) {
-                                    tree.set_selected_index(Some(index), cx);
-                                }
-                            });
-                        }
+        self.revision
+    }
+
+    /// Shows a read, keeping folders open and the selection.
+    pub fn finish_refresh(&mut self, revision: u64, data: Result<TreeData, String>) {
+        if self.revision != revision {
+            return;
+        }
+        self.loading = false;
+        match data {
+            Ok(data) => {
+                self.error = None;
+                self.data = data;
+                self.rebuild();
+                if let Some(catalog) = self.reveal.take() {
+                    let id = format!("db:{catalog}");
+                    if let Some(index) = self.tree.index_of(&id) {
+                        self.tree.set_selected_index(Some(index));
                     }
-                    Err(error) => this.error = Some(error),
                 }
-                cx.notify();
-            });
-        })
-        .detach();
+            }
+            Err(error) => self.error = Some(error),
+        }
     }
 
     /// Opens the folder of an attached database and selects it after the
@@ -506,35 +482,29 @@ impl DatabaseTree {
         self.reveal = Some(catalog.to_owned());
     }
 
-    #[cfg(all(test, feature = "snapshots"))]
-    pub(crate) fn selected_id(&self, cx: &App) -> Option<String> {
-        self.tree
-            .read(cx)
-            .selected_item()
-            .map(|item| item.id.to_string())
+    #[cfg(test)]
+    pub(crate) fn selected_id(&self) -> Option<String> {
+        self.tree.selected_entry().map(|entry| entry.id.clone())
     }
 
     /// Opens every folder and selects the item `id`.
-    #[cfg(all(test, feature = "snapshots"))]
-    pub(crate) fn select(&mut self, id: &str, cx: &mut Context<Self>) {
+    #[cfg(test)]
+    pub(crate) fn select(&mut self, id: &str) {
         fn folders(items: &[TreeItem], ids: &mut HashSet<String>) {
             for item in items.iter().filter(|item| item.is_folder()) {
-                ids.insert(item.id.to_string());
+                ids.insert(item.id.clone());
                 folders(&item.children, ids);
             }
         }
         let (items, _, _) = build_tree(&self.data, "", &self.expanded);
         folders(&items, &mut self.expanded);
-        self.rebuild(cx);
-        let id = SharedString::from(id.to_owned());
-        self.tree.update(cx, |tree, cx| {
-            let index = tree.index_of(&id);
-            assert!(index.is_some(), "no tree item {id}");
-            tree.set_selected_index(index, cx);
-        });
+        self.rebuild();
+        let index = self.tree.index_of(id);
+        assert!(index.is_some(), "no tree item {id}");
+        self.tree.set_selected_index(index);
     }
 
-    #[cfg(all(test, feature = "snapshots"))]
+    #[cfg(test)]
     pub(crate) fn relation_labels(&self) -> Vec<String> {
         let mut labels = self
             .targets
@@ -548,8 +518,8 @@ impl DatabaseTree {
         labels
     }
 
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let filter = self.filter.read(cx).value().to_string();
+    fn rebuild(&mut self) {
+        let filter = self.filter.text().to_owned();
         let (items, targets, deletable) = build_tree(&self.data, &filter, &self.expanded);
         self.targets = targets;
         self.deletable = deletable;
@@ -557,45 +527,38 @@ impl DatabaseTree {
         // Enter opens it.
         let selected = self
             .tree
-            .read(cx)
-            .selected_item()
-            .map(|item| item.id.clone())
+            .selected_entry()
+            .map(|entry| entry.id.clone())
             .filter(|id| filter.is_empty() || self.targets.contains_key(id));
-        self.tree.update(cx, |tree, cx| {
-            tree.set_items(items, cx);
-            let index = selected
-                .and_then(|id| tree.index_of(&id))
-                .or_else(|| (!filter.is_empty()).then(|| first_leaf(tree)).flatten())
-                .or_else(|| tree.entry(0).map(|_| 0));
-            tree.set_selected_index(index, cx);
-        });
-        cx.notify();
+        self.tree.set_items(items);
+        let index = selected
+            .and_then(|id| self.tree.index_of(&id))
+            .or_else(|| (!filter.is_empty()).then(|| first_leaf(&self.tree)).flatten())
+            .or_else(|| self.tree.entry(0).map(|_| 0));
+        self.tree.set_selected_index(index);
     }
 
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.tree.update(cx, |tree, cx| {
-            if tree.selected_index().is_none() && tree.entry(0).is_some() {
-                tree.set_selected_index(Some(0), cx);
-            }
-            tree.focus(window, cx);
-        });
+    pub fn focus(&mut self, focus: &mut Option<WidgetId>) {
+        if self.tree.selected_index().is_none() && self.tree.entry(0).is_some() {
+            self.tree.set_selected_index(Some(0));
+        }
+        *focus = Some(self.tree.id);
     }
 
-    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.focus_handle.contains_focused(window, cx)
+    pub fn contains(&self, id: WidgetId) -> bool {
+        id == self.tree.id || id == self.filter.id
     }
 
-    fn open_selected(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+    fn open_selected(&mut self, modifiers: Modifiers) -> bool {
         let Some(target) = self
             .tree
-            .read(cx)
-            .selected_item()
-            .and_then(|item| self.targets.get(&item.id))
+            .selected_entry()
+            .and_then(|entry| self.targets.get(&entry.id))
             .cloned()
         else {
             return false;
         };
-        cx.emit(DatabaseTreeEvent::Open {
+        self.events.push(DatabaseTreeEvent::Open {
             target,
             new_window: modifiers.shift,
             pivot_draft: modifiers.control,
@@ -603,245 +566,218 @@ impl DatabaseTree {
         true
     }
 
-    /// Enter opens a leaf or toggles a folder; Left on a closed entry moves to
-    /// its parent, as in VS Code's explorer; typing starts a filter.
-    fn tree_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
-        let selected = self.tree.read(cx).selected_entry().cloned();
-        match key {
-            "enter" => {
-                if !self.open_selected(modifiers, cx)
-                    && let Some(entry) = selected.filter(|entry| entry.is_folder())
-                {
-                    self.toggle(entry.item().id.to_string(), !entry.is_expanded(), cx);
-                }
-                cx.stop_propagation();
-            }
-            "left" if !modifiers.modified() => {
-                if let Some(entry) = selected.filter(|e| !(e.is_folder() && e.is_expanded())) {
-                    let tree = self.tree.read(cx);
-                    let index = tree.selected_index().unwrap_or(0);
-                    let parent = (0..index)
-                        .rev()
-                        .find(|ix| tree.entry(*ix).is_some_and(|e| e.depth() < entry.depth()));
-                    if let Some(parent) = parent {
-                        self.tree.update(cx, |tree, cx| {
-                            tree.set_selected_index(Some(parent), cx);
-                            tree.scroll_to_item(parent, ScrollStrategy::Top);
-                        });
-                    }
-                    cx.stop_propagation();
-                }
-            }
-            "escape" => {
-                cx.emit(DatabaseTreeEvent::FocusGrid);
-                cx.stop_propagation();
-            }
-            "delete" if !modifiers.modified() => {
-                if let Some(target) = selected
-                    .and_then(|entry| self.deletable.get(&entry.item().id))
-                    .cloned()
-                {
-                    cx.emit(DatabaseTreeEvent::Delete(target));
-                }
-                cx.stop_propagation();
-            }
-            _ => {
-                let typed = event.keystroke.key_char.as_deref().filter(|text| {
-                    !modifiers.control
-                        && !modifiers.alt
-                        && !modifiers.platform
-                        && !text.trim().is_empty()
-                });
-                if let Some(text) = typed {
-                    // Typing in the tree starts a new filter; keep typing in the box to refine it.
-                    let text = text.to_owned();
-                    self.filter.update(cx, |filter, cx| {
-                        filter.set_value(text, window, cx);
-                        filter.focus(window, cx);
-                    });
-                    self.rebuild(cx);
-                    cx.stop_propagation();
-                }
-            }
-        }
-    }
-
-    fn toggle(&mut self, id: String, expand: bool, cx: &mut Context<Self>) {
+    fn toggle(&mut self, id: String, expand: bool) {
         if expand {
             self.expanded.insert(id);
         } else {
             self.expanded.remove(&id);
         }
-        self.rebuild(cx);
+        self.rebuild();
     }
 
-    fn filter_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event.keystroke.key.as_str() {
-            "escape" => {
-                if self.filter.read(cx).value().is_empty() {
-                    self.focus(window, cx);
-                } else {
-                    self.filter
-                        .update(cx, |filter, cx| filter.set_value("", window, cx));
-                    self.rebuild(cx);
-                }
-                cx.stop_propagation();
-            }
+    /// Enter opens a leaf or toggles a folder; Left on a closed entry moves to
+    /// its parent, as in VS Code's explorer; typing starts a filter.
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        if *focus == Some(self.filter.id) {
+            return self.filter_key(event, focus);
+        }
+        if *focus != Some(self.tree.id) {
+            return false;
+        }
+        let modifiers = event.modifiers;
+        let selected = self.tree.selected_entry().cloned();
+        match event.key.as_str() {
             "enter" => {
-                self.open_selected(event.keystroke.modifiers, cx);
-                cx.stop_propagation();
+                if !self.open_selected(modifiers)
+                    && let Some(entry) = selected.filter(|entry| entry.folder)
+                {
+                    self.toggle(entry.id, !entry.expanded);
+                }
+                true
             }
-            _ => {}
+            "left" if !modifiers.modified() => {
+                if let Some(entry) = selected.filter(|entry| !(entry.folder && entry.expanded)) {
+                    let index = self.tree.selected_index().unwrap_or(0);
+                    let parent = (0..index)
+                        .rev()
+                        .find(|ix| self.tree.entry(*ix).is_some_and(|e| e.depth < entry.depth));
+                    if let Some(parent) = parent {
+                        self.tree.set_selected_index(Some(parent));
+                    }
+                    return true;
+                }
+                let outcome = self.tree.key(event);
+                if let Some((id, expand)) = outcome.toggle {
+                    self.toggle(id, expand);
+                }
+                outcome.handled
+            }
+            "escape" => {
+                self.events.push(DatabaseTreeEvent::FocusGrid);
+                true
+            }
+            "delete" if !modifiers.modified() => {
+                if let Some(target) = selected.and_then(|entry| self.deletable.get(&entry.id)).cloned() {
+                    self.events.push(DatabaseTreeEvent::Delete(target));
+                }
+                true
+            }
+            _ => {
+                let outcome = self.tree.key(event);
+                if let Some((id, expand)) = outcome.toggle {
+                    self.toggle(id, expand);
+                }
+                outcome.handled
+            }
         }
     }
-}
 
-fn first_leaf(tree: &TreeState) -> Option<usize> {
-    (0..)
-        .map_while(|ix| tree.entry(ix).map(|entry| (ix, entry.is_folder())))
-        .find(|(_, folder)| !folder)
-        .map(|(ix, _)| ix)
-}
+    /// Typing in the tree starts a new filter; typing in the box refines it.
+    pub fn type_text(&mut self, typed: &str, focus: &mut Option<WidgetId>) -> bool {
+        if *focus == Some(self.tree.id) {
+            if typed.trim().is_empty() {
+                return false;
+            }
+            self.filter.set_text(typed);
+            *focus = Some(self.filter.id);
+            self.rebuild();
+            return true;
+        }
+        if *focus == Some(self.filter.id) {
+            self.filter.type_text(typed);
+            self.rebuild();
+            return true;
+        }
+        false
+    }
 
-impl Render for DatabaseTree {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
+    fn filter_key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        match event.key.as_str() {
+            "escape" => {
+                if self.filter.text().is_empty() {
+                    self.focus(focus);
+                } else {
+                    self.filter.set_text("");
+                    self.rebuild();
+                }
+                true
+            }
+            "enter" => {
+                self.open_selected(event.modifiers);
+                true
+            }
+            "down" if !event.modifiers.modified() => {
+                self.focus(focus);
+                true
+            }
+            _ => {
+                let outcome = self.filter.key(event);
+                if outcome.changed {
+                    self.rebuild();
+                }
+                outcome.handled
+            }
+        }
+    }
+
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) -> bool {
+        match hit {
+            Hit::Button(Button::TreeRefresh) => self.events.push(DatabaseTreeEvent::Refresh),
+            Hit::Button(Button::TreeClose) => self.events.push(DatabaseTreeEvent::Close),
+            Hit::Editor(id, part) if *id == self.filter.id => {
+                self.filter.mouse_down(*part, pos, clicks, modifiers.shift);
+                *focus = Some(self.filter.id);
+            }
+            Hit::Tree(id, part) if *id == self.tree.id => {
+                let outcome = self.tree.mouse_down(*part, pos);
+                *focus = Some(self.tree.id);
+                if let Some((id, expand)) = outcome.toggle {
+                    self.toggle(id, expand);
+                }
+                if outcome.clicked {
+                    self.open_selected(modifiers);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        if self.filter.is_dragging() {
+            self.filter.mouse_drag(pos);
+        }
+        self.tree.mouse_drag(pos);
+    }
+
+    pub fn mouse_up(&mut self) {
+        self.filter.mouse_up();
+        self.tree.mouse_up();
+    }
+
+    pub fn wheel(&mut self, delta: Point) -> bool {
+        self.tree.wheel(delta)
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        canvas.fill(r, colors::SIDEBAR);
+        canvas.fill(rect(r.right() - 1.0, r.y, 1.0, r.h), colors::BORDER);
+        let small = &fonts.small;
+        let header_height = Editor::line_box_height(small);
+        let header = rect(r.x + 4.0, r.y + 4.0, r.w - 9.0, header_height);
+        let mut items = Row::new(header, 4.0);
+        let close = items.right(header_height);
+        button(canvas, close, "×", small, ButtonStyle::Ghost, true, Hit::Button(Button::TreeClose));
+        canvas.hit_with(close, Hit::Button(Button::TreeClose), crate::ui::platform::Cursor::Arrow, Some("Hide · Ctrl+B"));
+        let refresh = items.right(header_height);
+        button(
+            canvas,
+            refresh,
+            if self.loading { "…" } else { "⟳" },
+            small,
+            ButtonStyle::Ghost,
+            true,
+            Hit::Button(Button::TreeRefresh),
+        );
+        canvas.hit_with(refresh, Hit::Button(Button::TreeRefresh), crate::ui::platform::Cursor::Arrow, Some("Refresh"));
+        let filter = items.rest();
+        let filter_id = self.filter.id;
+        self.filter
+            .paint(canvas, filter, small, focus == Some(filter_id), |part| Hit::Editor(filter_id, part));
+        let mut top = header.bottom() + 4.0;
         let empty = self.targets.is_empty();
         let status = if self.loading && empty {
             Some("Loading…".to_owned())
         } else if let Some(error) = &self.error {
             Some(error.clone())
-        } else if empty && !self.filter.read(cx).value().is_empty() {
+        } else if empty && !self.filter.text().is_empty() {
             Some("No matches".to_owned())
         } else {
             None
         };
-        div()
-            .id("database-tree")
-            .key_context("DatabaseTree")
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .p_1()
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .capture_key_down(cx.listener(Self::filter_key_down))
-                            .on_action(cx.listener(|this, _: &MoveDown, window, cx| {
-                                this.focus(window, cx);
-                            }))
-                            .child(Input::new(&self.filter).small().cleanable(true)),
-                    )
-                    .child(
-                        Button::new("database-tree-refresh")
-                            .ghost()
-                            .small()
-                            .label("⟳")
-                            .tooltip("Refresh")
-                            .loading(self.loading)
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(DatabaseTreeEvent::Refresh);
-                            })),
-                    )
-                    .child(
-                        Button::new("database-tree-close")
-                            .ghost()
-                            .small()
-                            .label("×")
-                            .tooltip("Hide · Ctrl+B")
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(DatabaseTreeEvent::Close);
-                            })),
-                    ),
-            )
-            .when_some(status, |pane, status| {
-                pane.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(status),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .capture_key_down(cx.listener(Self::tree_key_down))
-                    .child(tree(&self.tree, {
-                        let entity = cx.entity();
-                        move |ix, entry, _, _, cx| {
-                            let folder = entry.is_folder();
-                            let chevron = match (folder, entry.is_expanded()) {
-                                (true, true) => "▾",
-                                (true, false) => "▸",
-                                (false, _) => "",
-                            };
-                            let id = entry.item().id.clone();
-                            let entity = entity.clone();
-                            ListItem::new(ix)
-                                .py(px(1.))
-                                .pl(px(6. + entry.depth() as f32 * 12.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .min_w_0()
-                                        .child(div().w(px(10.)).flex_shrink_0().child(chevron))
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .when(entry.depth() == 0, |label| {
-                                                    label.font_weight(FontWeight::SEMIBOLD)
-                                                })
-                                                .child(entry.item().label.clone()),
-                                        ),
-                                )
-                                .when(!folder, |item| {
-                                    item.on_click(move |event, window, cx| {
-                                        let modifiers = event.modifiers();
-                                        entity.update(cx, |this, cx| {
-                                            let index = this.tree.read(cx).index_of(&id);
-                                            this.tree.update(cx, |tree, cx| {
-                                                tree.set_selected_index(index, cx)
-                                            });
-                                            this.open_selected(modifiers, cx);
-                                        });
-                                        let _ = window;
-                                    })
-                                })
-                                .when(folder, |item| item.text_color(cx.theme().foreground))
-                        }
-                    })),
-            )
+        if let Some(status) = status {
+            let line = text::line_height(small);
+            canvas.text(rect(r.x + 8.0, top, r.w - 16.0, line + 4.0), &status, small, colors::MUTED, Align::Left);
+            top += line + 8.0;
+        }
+        let body = rect(r.x, top, r.w - 1.0, (r.bottom() - top).max(0.0));
+        let tree_id = self.tree.id;
+        self.tree
+            .paint(canvas, body, &fonts.ui, focus == Some(tree_id), |part| Hit::Tree(tree_id, part));
     }
+}
+
+fn first_leaf(tree: &Tree) -> Option<usize> {
+    (0..)
+        .map_while(|ix| tree.entry(ix).map(|entry| (ix, entry.folder)))
+        .find(|(_, folder)| !folder)
+        .map(|(ix, _)| ix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DatabaseView, DocumentDefinition, HashMap, OPEN_GROUPS, PathBuf, SharedString, TreeData,
+        DatabaseView, DocumentDefinition, HashMap, OPEN_GROUPS, PathBuf, TreeData,
         TreeItem, TreeTarget, ViewKind, build_items,
     };
     use crate::domain::documents::{QueryConfig, RelationKind};
@@ -890,7 +826,7 @@ mod tests {
         }
     }
 
-    fn render(filter: &str, expanded: &[&str]) -> (Vec<String>, HashMap<SharedString, TreeTarget>) {
+    fn render(filter: &str, expanded: &[&str]) -> (Vec<String>, HashMap<String, TreeTarget>) {
         let expanded = expanded.iter().map(|id| (*id).to_owned()).collect();
         let (items, targets) = build_items(&data(), filter, &expanded);
         let mut lines = Vec::new();

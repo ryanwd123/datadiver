@@ -1,22 +1,19 @@
-use gpui_kit::{Bounds, Pixels, WindowBounds, point, px, size};
-
 use crate::infrastructure::json_store::WindowGeometry;
+use crate::ui::platform::{Placement, Rect, rect};
 
-pub(super) fn geometry(bounds: WindowBounds) -> WindowGeometry {
-    let rectangle = bounds.get_bounds();
+pub(super) fn geometry(placement: Placement) -> WindowGeometry {
     WindowGeometry {
-        x: rectangle.origin.x.into(),
-        y: rectangle.origin.y.into(),
-        width: rectangle.size.width.into(),
-        height: rectangle.size.height.into(),
-        maximized: matches!(bounds, WindowBounds::Maximized(_)),
+        x: placement.x,
+        y: placement.y,
+        width: placement.width,
+        height: placement.height,
+        maximized: placement.maximized,
     }
 }
 
-pub(super) fn restored_bounds(
-    saved: &WindowGeometry,
-    displays: &[Bounds<Pixels>],
-) -> Option<WindowBounds> {
+/// Where a window saved as `saved` opens, kept on one of `displays` (work
+/// areas in screen pixels).
+pub(super) fn restored_bounds(saved: &WindowGeometry, displays: &[Rect]) -> Option<Placement> {
     if ![saved.x, saved.y, saved.width, saved.height]
         .iter()
         .all(|value| value.is_finite())
@@ -25,29 +22,23 @@ pub(super) fn restored_bounds(
     {
         return None;
     }
-    let mut rectangle = Bounds::new(
-        point(px(saved.x), px(saved.y)),
-        size(px(saved.width), px(saved.height)),
-    );
+    let mut window = rect(saved.x, saved.y, saved.width, saved.height);
     if let Some(display) = displays
         .iter()
-        .find(|display| display.contains(&rectangle.origin))
+        .find(|display| display.contains(window.origin()))
         .or_else(|| displays.first())
     {
-        rectangle.size = rectangle.size.min(&display.size);
-        rectangle.origin.x = rectangle.origin.x.clamp(
-            display.origin.x,
-            display.origin.x + display.size.width - rectangle.size.width,
-        );
-        rectangle.origin.y = rectangle.origin.y.clamp(
-            display.origin.y,
-            display.origin.y + display.size.height - rectangle.size.height,
-        );
+        window.w = window.w.min(display.w);
+        window.h = window.h.min(display.h);
+        window.x = window.x.clamp(display.x, display.x + display.w - window.w);
+        window.y = window.y.clamp(display.y, display.y + display.h - window.h);
     }
-    Some(if saved.maximized {
-        WindowBounds::Maximized(rectangle)
-    } else {
-        WindowBounds::Windowed(rectangle)
+    Some(Placement {
+        x: window.x,
+        y: window.y,
+        width: window.w,
+        height: window.h,
+        maximized: saved.maximized,
     })
 }
 
@@ -57,30 +48,51 @@ mod tests {
 
     #[test]
     fn placement_round_trips_on_a_secondary_display() {
-        let bounds = WindowBounds::Maximized(Bounds::new(
-            point(px(-1200.), px(80.)),
-            size(px(900.), px(600.)),
-        ));
-        let display = Bounds::new(point(px(-1600.), px(0.)), size(px(1600.), px(900.)));
-        assert_eq!(restored_bounds(&geometry(bounds), &[display]), Some(bounds));
+        let placement = Placement {
+            x: -1200.,
+            y: 80.,
+            width: 900.,
+            height: 600.,
+            maximized: true,
+        };
+        let display = rect(-1600., 0., 1600., 900.);
+        assert_eq!(
+            restored_bounds(&geometry(placement), &[display]),
+            Some(placement)
+        );
     }
 
     #[test]
     fn removed_display_and_oversized_window_are_kept_on_screen() {
-        let bounds = WindowBounds::Windowed(Bounds::new(
-            point(px(-2500.), px(2000.)),
-            size(px(2000.), px(1200.)),
-        ));
-        let display = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(720.)));
+        let placement = Placement {
+            x: -2500.,
+            y: 2000.,
+            width: 2000.,
+            height: 1200.,
+            maximized: false,
+        };
+        let display = rect(0., 0., 1280., 720.);
         assert_eq!(
-            restored_bounds(&geometry(bounds), &[display]),
-            Some(WindowBounds::Windowed(display))
+            restored_bounds(&geometry(placement), &[display]),
+            Some(Placement {
+                x: 0.,
+                y: 0.,
+                width: 1280.,
+                height: 720.,
+                maximized: false
+            })
         );
     }
 
     #[test]
     fn invalid_size_is_ignored() {
-        let mut saved = geometry(WindowBounds::default());
+        let mut saved = WindowGeometry {
+            x: 0.,
+            y: 0.,
+            width: 0.,
+            height: 0.,
+            maximized: false,
+        };
         assert!(restored_bounds(&saved, &[]).is_none());
         saved.width = f32::NAN;
         assert!(restored_bounds(&saved, &[]).is_none());

@@ -1,279 +1,214 @@
-use super::DataFrameView;
-use crate::domain::documents::ViewKind;
+use super::FileEntry;
+use super::dialogs::Dialog;
+use super::test_support::{Viewer, clipboard_text, repository, sales_frame};
+use crate::application::commands::CommandId;
+use crate::domain::documents::{DocumentDefinition, ViewKind};
+use crate::domain::formatting::NumericFormat;
 use crate::domain::frame::FrameSnapshot;
 use crate::infrastructure::duckdb_store::DuckDbStore;
-use crate::infrastructure::json_store::{StorePaths, ViewRepository};
+use crate::infrastructure::json_store::ViewRepository;
+use crate::ui::hit::{Button, Hit, SlicerHit};
+use crate::ui::platform::{Rect, point};
 use duckdb::types::Value;
-use gpui_kit::component::{Root, WindowExt};
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, Focusable, TestAppContext, px, size};
+use std::time::Duration;
 
-#[gpui_kit::test]
-fn numeric_shortcuts_follow_active_columns_and_restore_from_settings(cx: &mut TestAppContext) {
-    use crate::domain::formatting::NumericFormat;
-    let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let source = home
-        .path()
-        .join("source.csv")
-        .to_string_lossy()
-        .into_owned();
-    let (handle, view) = viewer_with_document(cx, repository.clone(), Some(source.clone()), None);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid = view.read(cx).grid.clone();
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.press(",", cx);
-        window.press(">", cx);
-        assert!(
-            repository
-                .load_settings()
-                .unwrap()
-                .column_formats
-                .is_empty()
-        );
-        window.press("right", cx);
-        window.press(",", cx);
-        window.press("shift-.", cx);
-        window.press(">", cx);
-        window.press("shift-,", cx);
-        assert_eq!(
-            grid.read(cx).numeric_format("sales"),
-            Some(NumericFormat {
-                precision: 1,
-                grouping: false
-            })
-        );
-        window.press("alt-left", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid = view.read(cx).grid.clone();
-        assert_eq!(view.read(cx).session.result.columns[0].0, "sales");
-        assert_eq!(
-            grid.read(cx).numeric_format("sales"),
-            Some(NumericFormat {
-                precision: 1,
-                grouping: false
-            })
-        );
-        assert_eq!(grid.read(cx).numeric_format("region"), None);
-        assert!(!view.read(cx).session.dirty);
-        let input = view.read(cx).search_input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.input(",<>", cx);
-        assert_eq!(
-            grid.read(cx).numeric_format("sales"),
-            Some(NumericFormat {
-                precision: 1,
-                grouping: false
-            })
-        );
-    })
-    .unwrap();
-    let persisted = repository.load_settings().unwrap();
-    assert_eq!(
-        persisted.column_formats[&format!("table:{source}")]["sales"],
-        NumericFormat {
-            precision: 1,
-            grouping: false
-        }
-    );
-    cx.update(|cx| {
-        cx.global_mut::<super::ColumnFormatRuntime>()
-            .profiles
-            .remove(&repository.paths.config);
-    });
-    let (handle, reopened) = viewer_with_document(cx, repository, Some(source), None);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(
-            reopened.read(cx).grid.read(cx).numeric_format("sales"),
-            Some(NumericFormat {
-                precision: 1,
-                grouping: false
-            })
-        );
-    })
-    .unwrap();
+/// The sales viewer on `source_path`, with settings in `repository`.
+fn viewer_with_document(
+    repository: ViewRepository,
+    source_path: Option<String>,
+    document: Option<DocumentDefinition>,
+) -> Viewer {
+    Viewer::open(sales_frame(), source_path, document, repository)
 }
 
-#[gpui_kit::test]
-fn saved_queries_autosave_formats_without_saving_query_edits(cx: &mut TestAppContext) {
-    use crate::domain::documents::{Aggregation, DocumentDefinition, QueryConfig};
-    use crate::domain::formatting::NumericFormat;
+fn viewer_with_repository(repository: ViewRepository) -> Viewer {
+    viewer_with_document(repository, None, None)
+}
+
+/// Presses `keys` with the grid focused.
+fn press_in_grid(viewer: &Viewer, keys: &str) {
+    viewer.focus_grid();
+    viewer.render();
+    viewer.press(keys);
+    viewer.run_until_parked();
+}
+
+fn press(viewer: &Viewer, keys: &str) {
+    viewer.render();
+    viewer.press(keys);
+    viewer.run_until_parked();
+}
+
+fn numeric_format(viewer: &Viewer, column: &str) -> Option<NumericFormat> {
+    viewer.read(|view| view.grid.numeric_format(column))
+}
+
+fn column_width(viewer: &Viewer, column: &str) -> f32 {
+    viewer.read(|view| view.grid.column_width(column))
+}
+
+fn sampling_calls(viewer: &Viewer) -> usize {
+    viewer.read(|view| view.session.source.store.lock().unwrap().width_sampling_calls())
+}
+
+fn first_value(viewer: &Viewer) -> Option<String> {
+    viewer.read(|view| {
+        view.session
+            .result
+            .store
+            .lock()
+            .unwrap()
+            .fetch_row_ids(&[0])
+            .unwrap()[0]
+            .values[0]
+            .clone()
+    })
+}
+
+fn slicer_value(viewer: &Viewer, column: &str, index: usize) -> Rect {
+    viewer.render();
+    viewer
+        .find(|hit| {
+            *hit == Hit::Slicer(SlicerHit::Value {
+                column: column.into(),
+                index,
+            })
+        })
+        .unwrap_or_else(|| panic!("no slicer value {column}:{index}"))
+}
+
+const ONE_DECIMAL: NumericFormat = NumericFormat {
+    precision: 1,
+    grouping: false,
+};
+
+#[test]
+fn numeric_shortcuts_follow_active_columns_and_restore_from_settings() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let source = home
-        .path()
-        .join("source.csv")
-        .to_string_lossy()
-        .into_owned();
+    let repository = repository(home.path());
+    let source = home.path().join("source.csv").to_string_lossy().into_owned();
+    let viewer = viewer_with_document(repository.clone(), Some(source.clone()), None);
+    press_in_grid(&viewer, ", >");
+    assert!(repository.load_settings().unwrap().column_formats.is_empty());
+    viewer.press("right , shift-. > shift-,");
+    assert_eq!(numeric_format(&viewer, "sales"), Some(ONE_DECIMAL));
+    viewer.press("alt-left");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(viewer.read(|view| view.session.result.columns[0].0.clone()), "sales");
+    assert_eq!(numeric_format(&viewer, "sales"), Some(ONE_DECIMAL));
+    assert_eq!(numeric_format(&viewer, "region"), None);
+    assert!(!viewer.read(|view| view.session.dirty));
+    viewer.focus_search();
+    viewer.input(",<>");
+    assert_eq!(numeric_format(&viewer, "sales"), Some(ONE_DECIMAL));
+    let persisted = repository.load_settings().unwrap();
+    assert_eq!(persisted.column_formats[&format!("table:{source}")]["sales"], ONE_DECIMAL);
+    super::profiles::with(|profiles| profiles.column_formats.remove(&repository.paths.config));
+    let reopened = viewer_with_document(repository, Some(source), None);
+    reopened.render();
+    assert_eq!(numeric_format(&reopened, "sales"), Some(ONE_DECIMAL));
+}
+
+#[test]
+fn saved_queries_autosave_formats_without_saving_query_edits() {
+    use crate::domain::documents::{Aggregation, QueryConfig};
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let source = home.path().join("source.csv").to_string_lossy().into_owned();
     let mut definition = DocumentDefinition::draft_table("Totals".into(), source.clone());
     definition.view = ViewKind::Query(QueryConfig {
         group_by: vec!["region".into()],
-        aggregations: vec![Aggregation::sql_expression(
-            "sum(sales)".into(),
-            Some("Total".into()),
-        )],
+        aggregations: vec![Aggregation::sql_expression("sum(sales)".into(), Some("Total".into()))],
         ..Default::default()
     });
     repository.save_view(&mut definition).unwrap();
-    let (handle, view) = viewer_with_document(
-        cx,
-        repository.clone(),
-        Some(source.clone()),
-        Some(definition.clone()),
-    );
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid = view.read(cx).grid.clone();
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.press("right", cx);
-        assert_eq!(grid.read(cx).numeric_format("Total").unwrap().precision, 2);
-        window.press(",", cx);
-        window.press(">", cx);
-        assert_eq!(grid.read(cx).numeric_format("Total").unwrap().precision, 3);
-        window.press("<", cx);
-        assert_eq!(grid.read(cx).numeric_format("Total").unwrap().precision, 2);
-        window.press("<", cx);
-        window.press("<", cx);
-        window.press("<", cx);
-        assert_eq!(
-            grid.read(cx).numeric_format("Total"),
-            Some(NumericFormat {
-                precision: 0,
-                grouping: false
-            })
-        );
-        assert!(!view.read(cx).session.dirty);
-        view.update(cx, |view, _| {
-            view.session.dirty = true;
-        });
-        window.press(">", cx);
-        assert!(view.read(cx).session.dirty);
-    })
-    .unwrap();
-    let settings = repository.load_settings().unwrap();
-    let format = NumericFormat {
-        precision: 1,
-        grouping: false,
-    };
+    let viewer = viewer_with_document(repository.clone(), Some(source.clone()), Some(definition.clone()));
+    press_in_grid(&viewer, "right");
+    assert_eq!(numeric_format(&viewer, "Total").unwrap().precision, 2);
+    viewer.press(", >");
+    assert_eq!(numeric_format(&viewer, "Total").unwrap().precision, 3);
+    viewer.press("<");
+    assert_eq!(numeric_format(&viewer, "Total").unwrap().precision, 2);
+    viewer.press("< < <");
     assert_eq!(
-        settings.column_formats[&format!("view:{}", definition.id)]["Total"],
-        format
+        numeric_format(&viewer, "Total"),
+        Some(NumericFormat {
+            precision: 0,
+            grouping: false
+        })
     );
+    assert!(!viewer.read(|view| view.session.dirty));
+    viewer.update(|view, _| view.session.dirty = true);
+    viewer.press(">");
+    assert!(viewer.read(|view| view.session.dirty));
+    let settings = repository.load_settings().unwrap();
+    assert_eq!(settings.column_formats[&format!("view:{}", definition.id)]["Total"], ONE_DECIMAL);
     assert_eq!(repository.load_views().0, vec![definition.clone()]);
-    let (handle, reopened) = viewer_with_document(cx, repository, Some(source), Some(definition));
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(
-            reopened.read(cx).grid.read(cx).numeric_format("Total"),
-            Some(format)
-        );
-    })
-    .unwrap();
+    let reopened = viewer_with_document(repository, Some(source), Some(definition));
+    reopened.render();
+    assert_eq!(numeric_format(&reopened, "Total"), Some(ONE_DECIMAL));
 }
 
-#[gpui_kit::test]
-fn query_configuration_changes_refit_existing_columns(cx: &mut TestAppContext) {
+#[test]
+fn query_configuration_changes_refit_existing_columns() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository);
-    cx.run_until_parked();
+    let viewer = viewer_with_repository(repository(home.path()));
     for (shortcut, field) in [("g", "region"), ("p", "sales"), ("a", "sales")] {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let grid = view.read(cx).grid.clone();
-            window.focus(&grid.read(cx).focus_handle(cx), cx);
-            for _ in 0..25 {
-                window.press(")", cx);
-            }
-            assert!(grid.read(cx).column_width("region") > 250.);
-            window.press(shortcut, cx);
-            window.render_frame(cx);
-            window.input(field, cx);
-            window.press("enter", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let viewer = view.read(cx);
-            assert!(viewer.error.is_none(), "{:?}", viewer.error);
-            assert!(viewer.grid.read(cx).widths_ready());
-            assert!(viewer.grid.read(cx).column_width("region") < 250.);
-            window.close_dialog(cx);
-        })
-        .unwrap();
+        viewer.focus_grid();
+        viewer.render();
+        for _ in 0..25 {
+            viewer.press(")");
+        }
+        assert!(column_width(&viewer, "region") > 250.);
+        viewer.press(shortcut);
+        viewer.render();
+        viewer.input(field);
+        viewer.press("enter");
+        viewer.run_until_parked();
+        viewer.render();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.grid.widths_ready());
+        });
+        assert!(column_width(&viewer, "region") < 250.);
+        viewer.close_dialog();
     }
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid = view.read(cx).grid.clone();
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.press(")", cx);
-        let manual = grid.read(cx).column_width("region");
-        view.update(cx, |view, cx| view.schedule_search("North".into(), cx));
-        assert_eq!(grid.read(cx).column_width("region"), manual);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    press_in_grid(&viewer, ")");
+    let manual = column_width(&viewer, "region");
+    viewer.update(|view, cx| view.schedule_search("North".into(), cx));
+    assert_eq!(column_width(&viewer, "region"), manual);
+    viewer.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn copy_as_search_is_focused_from_shortcut_and_command(cx: &mut TestAppContext) {
+#[test]
+fn copy_as_search_is_focused_from_shortcut_and_command() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, entity) = viewer_with_repository(cx, repository);
-    cx.run_until_parked();
+    let viewer = viewer_with_repository(repository(home.path()));
     for shortcut in [true, false] {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.focus(&entity.read(cx).grid.read(cx).focus_handle(cx), cx);
-            if shortcut {
-                window.press("ctrl-shift-c", cx);
-            } else {
-                entity.update(cx, |view, cx| {
-                    view.dispatch_command(
-                        crate::application::commands::CommandId::CopyAs,
-                        window,
-                        cx,
-                    )
-                });
-            }
-            window.render_frame(cx);
-            assert!(window.has_active_dialog(cx));
-            window.input("json records", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.press("enter", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            assert!(!window.has_active_dialog(cx));
-            let text = cx.read_from_clipboard().unwrap().text().unwrap();
-            let copied: serde_json::Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(copied[0]["region"], "North");
-        })
-        .unwrap();
+        viewer.focus_grid();
+        viewer.render();
+        if shortcut {
+            viewer.press("ctrl-shift-c");
+        } else {
+            viewer.update(|view, cx| view.dispatch_command(CommandId::CopyAs, cx));
+        }
+        viewer.render();
+        assert!(viewer.has_dialog());
+        viewer.input("json records");
+        viewer.run_until_parked();
+        press(&viewer, "enter");
+        assert!(!viewer.has_dialog());
+        let copied: serde_json::Value = serde_json::from_str(&clipboard_text().unwrap()).unwrap();
+        assert_eq!(copied[0]["region"], "North");
     }
 }
 
-#[gpui_kit::test]
-fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus(cx: &mut TestAppContext) {
+#[test]
+fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus() {
     use crate::domain::table_preferences::TablePreferencesPatch;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let source = home.path().join("source.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
     repository
@@ -290,84 +225,48 @@ fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus(cx: &mut TestA
             },
         )
         .unwrap();
-    let (handle, entity) = viewer_with_document(
-        cx,
-        repository.clone(),
-        Some(source.to_string_lossy().into_owned()),
-        None,
-    );
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let grid = entity.read(cx).grid.clone();
-        window.render_frame(cx);
-        let view = entity.read(cx);
-        assert_eq!(grid.read(cx).column_width("region"), 150.);
-        assert_eq!(
-            view.session
-                .source
-                .store
-                .lock()
-                .unwrap()
-                .width_sampling_calls(),
-            0
-        );
+    let viewer = viewer_with_document(repository.clone(), Some(source.to_string_lossy().into_owned()), None);
+    viewer.render();
+    assert_eq!(column_width(&viewer, "region"), 150.);
+    assert_eq!(sampling_calls(&viewer), 0);
+    viewer.read(|view| {
         assert_eq!(view.session.result.columns[0].0, "sales");
         assert_eq!(view.session.effective_table_config().frozen_count, 1);
-        assert!(
-            view.session.working.as_ref().unwrap().slicers[0]
-                .selected
-                .is_empty()
-        );
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.press("shift-0", cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 100.);
-        assert_eq!(grid.read(cx).column_width("region"), 150.);
-        window.press("shift-9", cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 90.);
-        window.press(")", cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 100.);
-        entity.update(cx, |view, cx| view.change_font_size(1, cx));
-        window.render_frame(cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 100.);
-        assert_eq!(grid.read(cx).column_width("region"), 150.);
-        assert_eq!(
-            entity
-                .read(cx)
-                .session
-                .source
-                .store
-                .lock()
-                .unwrap()
-                .width_sampling_calls(),
-            0
-        );
-        let input = entity.read(cx).search_input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.input("()", cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 100.);
-        entity.update(cx, |view, cx| view.open_information(window, cx));
-        window.press(")", cx);
-        assert_eq!(grid.read(cx).column_width("sales"), 100.);
-        window.close_dialog(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
+        assert!(view.session.working.as_ref().unwrap().slicers[0].selected.is_empty());
+    });
+    viewer.focus_grid();
+    viewer.press("shift-0");
+    assert_eq!(column_width(&viewer, "sales"), 100.);
+    assert_eq!(column_width(&viewer, "region"), 150.);
+    viewer.press("shift-9");
+    assert_eq!(column_width(&viewer, "sales"), 90.);
+    viewer.press(")");
+    assert_eq!(column_width(&viewer, "sales"), 100.);
+    viewer.update(|view, cx| view.change_font_size(1, cx));
+    viewer.render();
+    assert_eq!(column_width(&viewer, "sales"), 100.);
+    assert_eq!(column_width(&viewer, "region"), 150.);
+    assert_eq!(sampling_calls(&viewer), 0);
+    viewer.focus_search();
+    viewer.input("()");
+    assert_eq!(column_width(&viewer, "sales"), 100.);
+    viewer.update(|view, cx| view.open_information(cx));
+    viewer.press(")");
+    assert_eq!(column_width(&viewer, "sales"), 100.);
+    viewer.close_dialog();
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(!view.session.dirty);
         view.table_writer.flush().unwrap();
     });
-    assert_eq!(
-        repository.load_table_preferences(&source).unwrap().widths["sales"],
-        100.
-    );
+    assert_eq!(repository.load_table_preferences(&source).unwrap().widths["sales"], 100.);
 }
 
-#[gpui_kit::test]
-fn missing_widths_infer_once_and_manual_widths_survive_pending_inference(cx: &mut TestAppContext) {
+#[test]
+fn missing_widths_infer_once_and_manual_widths_survive_pending_inference() {
     use crate::domain::table_preferences::TablePreferencesPatch;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let source = home.path().join("source.csv");
     repository
         .update_table_preferences(
@@ -378,153 +277,75 @@ fn missing_widths_infer_once_and_manual_widths_survive_pending_inference(cx: &mu
             },
         )
         .unwrap();
-    let (handle, entity) = viewer_with_document(
-        cx,
-        repository.clone(),
-        Some(source.to_string_lossy().into_owned()),
-        None,
-    );
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let grid = entity.read(cx).grid.clone();
-        // Sampling has returned candidates, but they have not been measured yet.
-        window.focus(&grid.read(cx).focus_handle(cx), cx);
-        window.press(")", cx);
-        let manual = grid.read(cx).column_width("region");
-        window.render_frame(cx);
-        assert_eq!(grid.read(cx).column_width("region"), manual);
-        assert_eq!(grid.read(cx).column_width("sales"), 175.);
-        assert!(grid.read(cx).widths_ready());
-        assert_eq!(
-            entity
-                .read(cx)
-                .session
-                .source
-                .store
-                .lock()
-                .unwrap()
-                .width_sampling_calls(),
-            1
-        );
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.schedule_search("North".into(), cx);
-        });
-        window.render_frame(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = entity.read(cx);
-        assert_eq!(
-            view.session
-                .source
-                .store
-                .lock()
-                .unwrap()
-                .width_sampling_calls(),
-            1
-        );
-        view.table_writer.flush().unwrap();
-    });
-    assert_eq!(
-        repository.load_table_preferences(&source).unwrap().widths["sales"],
-        175.
-    );
+    let viewer = viewer_with_document(repository.clone(), Some(source.to_string_lossy().into_owned()), None);
+    // Sampling has returned candidates; a manual change must survive measuring them.
+    viewer.focus_grid();
+    viewer.press(")");
+    let manual = column_width(&viewer, "region");
+    viewer.render();
+    assert_eq!(column_width(&viewer, "region"), manual);
+    assert_eq!(column_width(&viewer, "sales"), 175.);
+    assert!(viewer.read(|view| view.grid.widths_ready()));
+    assert_eq!(sampling_calls(&viewer), 1);
+    viewer.update(|view, cx| view.schedule_search("North".into(), cx));
+    viewer.render();
+    viewer.run_until_parked();
+    assert_eq!(sampling_calls(&viewer), 1);
+    viewer.read(|view| view.table_writer.flush().unwrap());
+    assert_eq!(repository.load_table_preferences(&source).unwrap().widths["sales"], 175.);
 }
 
-#[gpui_kit::test]
-fn programmatic_updates_submit_once_and_supersede_a_typing_debounce(cx: &mut TestAppContext) {
+#[test]
+fn programmatic_updates_submit_once_and_supersede_a_typing_debounce() {
     let home = tempfile::tempdir().unwrap();
-    let (handle, view) =
-        viewer_with_repository(cx, ViewRepository::new(StorePaths::for_home(home.path())));
-    cx.run_until_parked();
-    let before = cx.update(|cx| view.read(cx).session.token());
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.set_search_text("north".into(), window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = view.read(cx);
+    let viewer = viewer_with_repository(repository(home.path()));
+    let before = viewer.read(|view| view.session.token());
+    viewer.update(|view, cx| view.set_search_text("north".into(), cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert!(!view.busy);
         assert!(!view.debouncing);
         assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(
-            view.session.token().request_revision,
-            before.request_revision + 1
-        );
+        assert_eq!(view.session.token().request_revision, before.request_revision + 1);
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        let input = view.read(cx).search_input.clone();
-        window.render_frame(cx);
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.press("ctrl-a", cx);
-        window.input("south", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| assert!(view.read(cx).debouncing));
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.set_search_text(String::new(), window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let immediate = cx.update(|cx| {
-        assert_eq!(view.read(cx).session.result.row_count(), 2);
-        assert!(!view.read(cx).busy);
-        view.read(cx).session.token()
+    viewer.render();
+    viewer.focus_search();
+    viewer.press("ctrl-a");
+    viewer.input("south");
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.debouncing));
+    viewer.update(|view, cx| view.set_search_text(String::new(), cx));
+    viewer.run_until_parked();
+    let immediate = viewer.read(|view| {
+        assert_eq!(view.session.result.row_count(), 2);
+        assert!(!view.busy);
+        view.session.token()
     });
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(50));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).session.token(), immediate);
-        assert_eq!(view.read(cx).session.result.row_count(), 2);
+    viewer.advance_clock(Duration::from_millis(50));
+    viewer.read(|view| {
+        assert_eq!(view.session.token(), immediate);
+        assert_eq!(view.session.result.row_count(), 2);
     });
 }
 
-#[gpui_kit::test]
-fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
-    cx: &mut TestAppContext,
-) {
-    use super::FileEntry;
-    use crate::domain::documents::{DocumentDefinition, ScalarKey, SlicerDefinition, SortKey};
+fn navigate(viewer: &Viewer, definition: DocumentDefinition, carry_search: bool) {
+    viewer.update(|view, cx| view.navigate_to_file(FileEntry::View(definition), carry_search, false, false, cx));
+    viewer.run_until_parked();
+}
+
+#[test]
+fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter() {
+    use crate::domain::documents::{ScalarKey, SlicerDefinition, SortKey};
     use std::sync::Arc;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let path = home.path().join("source.csv");
     std::fs::write(&path, "region,n\nNorth,10\nSouth,20\n").unwrap();
-    let mut base =
-        DocumentDefinition::draft_table("Base".into(), path.to_string_lossy().into_owned());
+    let mut base = DocumentDefinition::draft_table("Base".into(), path.to_string_lossy().into_owned());
     repository.save_view(&mut base).unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    let navigate = |cx: &mut TestAppContext, definition| {
-        cx.update_window(handle.into(), |_, _, cx| {
-            view.update(cx, |view, cx| {
-                view.navigate_to_file(
-                    FileEntry::View(definition),
-                    false,
-                    false,
-                    false,
-                    handle.into(),
-                    cx,
-                )
-            });
-        })
-        .unwrap();
-        cx.run_until_parked();
-    };
-    navigate(cx, base.clone());
-    let (source, first) = cx.update(|cx| {
-        let view = view.read(cx);
+    let viewer = viewer_with_repository(repository);
+    navigate(&viewer, base.clone(), false);
+    let (source, first) = viewer.read(|view| {
         assert!(!view.busy);
         (view.session.source.clone(), view.session.result.clone())
     });
@@ -533,9 +354,8 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
         table.column_order = vec!["n".into(), "region".into()];
         table.frozen_count = 1;
     }
-    navigate(cx, reordered);
-    cx.update(|cx| {
-        let view = view.read(cx);
+    navigate(&viewer, reordered, false);
+    viewer.read(|view| {
         assert!(Arc::ptr_eq(&source.store, &view.session.source.store));
         assert_eq!(source.source_revision, view.session.source.source_revision);
         let result = &view.session.result;
@@ -554,9 +374,9 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
             descending: true,
         }];
     }
-    navigate(cx, sorted);
-    cx.update(|cx| {
-        let result = &view.read(cx).session.result;
+    navigate(&viewer, sorted, false);
+    viewer.read(|view| {
+        let result = &view.session.result;
         assert!(!first.row_ids.same(&result.row_ids));
         assert_eq!(result.row_ids.to_vec(), [1, 0]);
     });
@@ -567,74 +387,48 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter(
         column: "region".into(),
         selected: vec![ScalarKey::String("North".into())],
     }];
-    navigate(cx, sliced);
-    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_ids.to_vec(), [0]));
-    let writer = cx.update(|cx| view.read(cx).history_writer.clone());
-    writer.flush();
+    navigate(&viewer, sliced, false);
+    assert_eq!(viewer.read(|view| view.session.result.row_ids.to_vec()), [0]);
+    viewer.read(|view| view.history_writer.flush());
 }
 
-#[gpui_kit::test]
-fn failed_destination_query_restores_the_unsaved_document(cx: &mut TestAppContext) {
-    use super::FileEntry;
-    use crate::domain::documents::{DocumentDefinition, ScalarKey, SlicerDefinition};
+#[test]
+fn failed_destination_query_restores_the_unsaved_document() {
+    use crate::domain::documents::{ScalarKey, SlicerDefinition};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let path = home.path().join("source.csv");
     std::fs::write(&path, "region,n\nNorth,10\nSouth,20\n").unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.session.start_table_draft("Draft".into()).unwrap();
-            view.session.rename_working("Unsaved".into()).unwrap();
-            view.set_search_text("north".into(), window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            let mut definition = DocumentDefinition::draft_table(
-                "Invalid".into(),
-                path.to_string_lossy().into_owned(),
-            );
-            definition.slicers = vec![SlicerDefinition {
-                sql: false,
-                condition: None,
-                column: "missing".into(),
-                selected: vec![ScalarKey::String("North".into())],
-            }];
-            view.navigate_to_file(
-                FileEntry::View(definition),
-                false,
-                false,
-                false,
-                handle.into(),
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = view.read(cx);
+    let viewer = viewer_with_repository(repository(home.path()));
+    viewer.update(|view, cx| {
+        view.session.start_table_draft("Draft".into()).unwrap();
+        view.session.rename_working("Unsaved".into()).unwrap();
+        view.set_search_text("north".into(), cx);
+    });
+    viewer.run_until_parked();
+    let mut definition = DocumentDefinition::draft_table("Invalid".into(), path.to_string_lossy().into_owned());
+    definition.slicers = vec![SlicerDefinition {
+        sql: false,
+        condition: None,
+        column: "missing".into(),
+        selected: vec![ScalarKey::String("North".into())],
+    }];
+    navigate(&viewer, definition, false);
+    viewer.read(|view| {
         assert!(view.error.as_ref().unwrap().contains("missing"));
         assert_eq!(view.session.working.as_ref().unwrap().name, "Unsaved");
         assert!(view.session.dirty);
         assert_eq!(view.session.result.row_count(), 1);
         assert_eq!(view.session.search_text, "north");
-        assert_eq!(view.search_input.read(cx).value().as_ref(), "north");
+        assert_eq!(view.search_input.text(), "north");
         assert!(!view.busy);
         assert!(view.navigation_backup.is_none());
     });
 }
 
-#[gpui_kit::test]
-fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search(cx: &mut TestAppContext) {
-    use super::FileEntry;
-    use crate::domain::documents::{DocumentDefinition, SortKey};
+#[test]
+fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search() {
+    use crate::domain::documents::SortKey;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let path = home.path().join("source.csv");
     std::fs::write(&path, "region,n\nNorth,10\nSouth,20\n").unwrap();
     let base = DocumentDefinition::draft_table("Base".into(), path.to_string_lossy().into_owned());
@@ -646,140 +440,63 @@ fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search(cx: &mut Test
             descending: true,
         }];
     }
-    let (handle, view) = viewer_with_repository(cx, repository);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.set_search_text("north".into(), window, cx);
-            view.navigate_to_file(
-                FileEntry::View(base.clone()),
-                true,
-                false,
-                false,
-                handle.into(),
-                cx,
-            );
-            view.navigate_to_file(
-                FileEntry::View(sorted.clone()),
-                true,
-                false,
-                false,
-                handle.into(),
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = view.read(cx);
+    let viewer = viewer_with_repository(repository(home.path()));
+    viewer.update(|view, cx| {
+        view.set_search_text("north".into(), cx);
+        view.navigate_to_file(FileEntry::View(base.clone()), true, false, false, cx);
+        view.navigate_to_file(FileEntry::View(sorted.clone()), true, false, false, cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
         assert_eq!(view.session.working.as_ref().unwrap().name, "Latest");
         assert_eq!(view.session.search_text, "north");
         assert_eq!(view.session.sort[0].column, "n");
         assert_eq!(view.session.result.row_ids.to_vec(), [0]);
         assert!(!view.loading && !view.busy);
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            view.navigate_to_file(
-                FileEntry::View(sorted),
-                false,
-                false,
-                false,
-                handle.into(),
-                cx,
-            )
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = view.read(cx);
+    navigate(&viewer, sorted, false);
+    viewer.read(|view| {
         assert!(view.session.search_text.is_empty());
         assert_eq!(view.session.result.row_ids.to_vec(), [1, 0]);
+        view.history_writer.flush();
     });
-    let writer = cx.update(|cx| view.read(cx).history_writer.clone());
-    writer.flush();
 }
 
-#[gpui_kit::test]
-fn two_windows_follow_reloads_and_report_missing_sources(cx: &mut TestAppContext) {
+#[test]
+fn two_windows_follow_reloads_and_report_missing_sources() {
     use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let source = home.path().join("shared.csv");
     std::fs::write(&source, "n\n1\n2\n").unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let first = database.load(&source, LoadMode::Check).unwrap();
-    let second = database.load(&source, LoadMode::Check).unwrap();
-    let (first_window, first_view) = viewer_with_repository(cx, repository.clone());
-    let (second_window, second_view) = viewer_with_repository(cx, repository);
-    cx.update_window(first_window.into(), |_, _, cx| {
-        first_view.update(cx, |view, cx| {
+    let first_store = database.load(&source, LoadMode::Check).unwrap();
+    let second_store = database.load(&source, LoadMode::Check).unwrap();
+    let first = viewer_with_repository(repository.clone());
+    let second = Viewer::open_in(&first.app, sales_frame(), None, None, repository);
+    for (viewer, store) in [(&first, first_store), (&second, second_store)] {
+        viewer.update(|view, cx| {
             view.session.source_path = Some(source.to_string_lossy().into_owned());
-            view.replace_dataframe(FrameSnapshot::new(first, 2), cx);
+            view.replace_dataframe(FrameSnapshot::new(store, 2), cx);
         });
-    })
-    .unwrap();
-    cx.update_window(second_window.into(), |_, _, cx| {
-        second_view.update(cx, |view, cx| {
-            view.session.source_path = Some(source.to_string_lossy().into_owned());
-            view.replace_dataframe(FrameSnapshot::new(second, 2), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(50));
-    cx.run_until_parked();
+    }
+    first.settle();
     std::fs::write(&source, "n\n300\n").unwrap();
-    cx.update_window(first_window.into(), |_, window, cx| {
-        first_view.update(cx, |view, cx| view.reload(false, window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(50));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(std::sync::Arc::ptr_eq(
-            &first_view.read(cx).database,
-            &second_view.read(cx).database
-        ));
-        assert_eq!(first_view.read(cx).session.result.row_count(), 1);
-    });
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = second_view.read(cx);
-        assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(
-            view.session
-                .result
-                .store
-                .lock()
-                .unwrap()
-                .fetch_row_ids(&[0])
-                .unwrap()[0]
-                .values[0],
-            Some("300".into())
-        );
-    });
+    first.update(|view, cx| view.reload(false, cx));
+    first.settle();
+    assert!(std::sync::Arc::ptr_eq(
+        &first.read(|view| view.database.clone()),
+        &second.read(|view| view.database.clone())
+    ));
+    assert_eq!(first.read(|view| view.session.result.row_count()), 1);
+    second.advance_clock(Duration::from_secs(1));
+    assert_eq!(second.read(|view| view.session.result.row_count()), 1);
+    assert_eq!(first_value(&second), Some("300".into()));
     std::fs::remove_file(&source).unwrap();
-    cx.update_window(second_window.into(), |_, window, cx| {
-        second_view.update(cx, |view, cx| view.reload(false, window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = second_view.read(cx);
-        assert!(
-            view.error
-                .as_ref()
-                .unwrap()
-                .contains("cannot access source")
-        );
+    second.update(|view, cx| view.reload(false, cx));
+    second.run_until_parked();
+    second.read(|view| {
+        assert!(view.error.as_ref().unwrap().contains("cannot access source"));
         assert!(
             view.session
                 .result
@@ -792,70 +509,38 @@ fn two_windows_follow_reloads_and_report_missing_sources(cx: &mut TestAppContext
     });
 }
 
-#[gpui_kit::test]
-fn source_monitor_reports_missing_files_and_recovers_when_recreated(cx: &mut TestAppContext) {
+#[test]
+fn source_monitor_reports_missing_files_and_recovers_when_recreated() {
     use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
     let home = tempfile::tempdir().unwrap();
     let source = home.path().join("source.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let mut state = crate::application::state::ApplicationState::load(repository.clone()).unwrap();
     state.add_watched_files(std::slice::from_ref(&source)).unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let frame = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
-    let (_, view) = viewer_with_document(
-        cx,
-        repository,
-        Some(source.to_string_lossy().into_owned()),
-        None,
-    );
-    cx.update(|cx| view.update(cx, |view, cx| view.replace_dataframe(frame, cx)));
-    cx.run_until_parked();
+    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
+    let viewer = viewer_with_document(repository, Some(source.to_string_lossy().into_owned()), None);
+    viewer.update(|view, cx| view.replace_dataframe(loaded, cx));
+    viewer.run_until_parked();
     std::fs::remove_file(&source).unwrap();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(
-            view.read(cx)
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("Cannot refresh source")
-        )
-    });
+    viewer.advance_clock(Duration::from_secs(1));
+    assert!(viewer.read(|view| view.error.as_ref().unwrap().contains("Cannot refresh source")));
     std::fs::write(&source, "region,sales\nEast,300\n").unwrap();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = view.read(cx);
+    viewer.advance_clock(Duration::from_secs(1));
+    viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.result.row_count(), 1);
-        assert_eq!(
-            view.session
-                .result
-                .store
-                .lock()
-                .unwrap()
-                .fetch_row_ids(&[0])
-                .unwrap()[0]
-                .values[0],
-            Some("East".into())
-        );
     });
+    assert_eq!(first_value(&viewer), Some("East".into()));
 
     // Removing the file from the cache does not let the window import it again.
     let watched = state.settings.watched_files[0].clone();
     state.remove_watched_file(&watched).unwrap();
     database.forget_sources(&source, |_| false).unwrap();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let error = view.read(cx).error.clone().unwrap();
-        assert!(error.contains("was removed from the cache"), "{error}");
-    });
+    viewer.advance_clock(Duration::from_secs(1));
+    let error = viewer.read(|view| view.error.clone()).unwrap();
+    assert!(error.contains("was removed from the cache"), "{error}");
     assert!(
         !database
             .relations()
@@ -865,148 +550,96 @@ fn source_monitor_reports_missing_files_and_recovers_when_recreated(cx: &mut Tes
     );
 }
 
-fn viewer(
-    cx: &mut TestAppContext,
-) -> (
-    gpui_kit::WindowHandle<Root>,
-    gpui_kit::Entity<DataFrameView>,
-) {
-    viewer_with_repository(
-        cx,
-        ViewRepository::new(StorePaths::for_home(
-            &std::env::temp_dir().join("quick-pivot-focus-tests"),
-        )),
+fn viewer(home: &tempfile::TempDir) -> Viewer {
+    viewer_with_repository(repository(home.path()))
+}
+
+#[test]
+fn slicers_stay_left_of_the_grid_and_use_two_columns_when_the_window_fits() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.resize(1400., 900.);
+    let source = DuckDbStore::from_rows(
+        &[
+            ("region".into(), "VARCHAR".into()),
+            ("sales".into(), "BIGINT".into()),
+            ("flag".into(), "BOOLEAN".into()),
+        ],
+        [
+            vec![Value::Text("North".into()), Value::BigInt(10), Value::Boolean(true)],
+            vec![Value::Text("South".into()), Value::BigInt(20), Value::Boolean(false)],
+        ],
     )
+    .unwrap();
+    viewer.update(|view, cx| {
+        view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
+        for column in ["region", "sales", "flag"] {
+            view.add_slicer(column.into(), cx);
+        }
+    });
+    viewer.settle();
+    let region = slicer_value(&viewer, "region", 0);
+    let sales = slicer_value(&viewer, "sales", 0);
+    let flag = slicer_value(&viewer, "flag", 0);
+    assert!(sales.x > region.x);
+    assert_eq!(region.y, sales.y);
+    assert_eq!(flag.x, region.x);
+    assert!(flag.y > region.y);
+    assert!(sales.right() <= 480.);
+    viewer.click_at(slicer_value(&viewer, "sales", 1).center());
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    viewer.resize(800., 600.);
+    viewer.run_until_parked();
+    let region = slicer_value(&viewer, "region", 0);
+    let sales = slicer_value(&viewer, "sales", 0);
+    assert_eq!(region.x, sales.x);
+    assert!(sales.y > region.y);
+    assert!(region.right() <= 240.);
+    viewer.click(|hit| *hit == Hit::Button(Button::SlicerClear("sales".into())));
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
 }
 
-fn finish_slicer_work(cx: &mut TestAppContext) {
-    cx.run_until_parked();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(50));
-    cx.run_until_parked();
-}
-
-#[gpui_kit::test]
-fn slicers_stay_left_of_the_grid_and_use_two_columns_when_the_window_fits(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.simulate_window_resize(handle.into(), size(px(1400.), px(900.)));
-    cx.update_window(handle.into(), |_, _, cx| {
-        let source = DuckDbStore::from_rows(
-            &[
-                ("region".into(), "VARCHAR".into()),
-                ("sales".into(), "BIGINT".into()),
-                ("flag".into(), "BOOLEAN".into()),
-            ],
-            [
-                vec![
-                    Value::Text("North".into()),
-                    Value::BigInt(10),
-                    Value::Boolean(true),
-                ],
-                vec![
-                    Value::Text("South".into()),
-                    Value::BigInt(20),
-                    Value::Boolean(false),
-                ],
-            ],
-        )
+#[test]
+fn overflowing_slicer_scrollbar_works_without_hover_and_keeps_other_cards_in_place() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.resize(1200., 600.);
+    let connection = duckdb::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("CREATE TABLE qp_data AS SELECT range AS n, range AS m FROM range(1000)")
         .unwrap();
-        view.update(cx, |view, cx| {
-            view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
-            for column in ["region", "sales", "flag"] {
-                view.add_slicer(column.into(), cx);
-            }
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let region = window.find("slicer-value:region:0").bounds();
-        let sales = window.find("slicer-value:sales:0").bounds();
-        let flag = window.find("slicer-value:flag:0").bounds();
-        assert!(sales.origin.x > region.origin.x);
-        assert_eq!(region.origin.y, sales.origin.y);
-        assert_eq!(flag.origin.x, region.origin.x);
-        assert!(flag.origin.y > region.origin.y);
-        assert!(sales.origin.x + sales.size.width <= px(480.));
-        window.click("slicer-value:sales:1", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_count(), 1));
-    cx.simulate_window_resize(handle.into(), size(px(800.), px(600.)));
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let region = window.find("slicer-value:region:0").bounds();
-        let sales = window.find("slicer-value:sales:0").bounds();
-        assert_eq!(region.origin.x, sales.origin.x);
-        assert!(sales.origin.y > region.origin.y);
-        assert!(region.origin.x + region.size.width <= px(240.));
-        window.click("slicer-clear:sales", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_count(), 2));
-}
-
-#[gpui_kit::test]
-fn overflowing_slicer_scrollbar_works_without_hover_and_keeps_other_cards_in_place(
-    cx: &mut TestAppContext,
-) {
-    use gpui_kit::{InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, point};
-    let (handle, view) = viewer(cx);
-    cx.simulate_window_resize(handle.into(), size(px(1200.), px(600.)));
-    cx.update_window(handle.into(), |_, _, cx| {
-        let connection = duckdb::Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch("CREATE TABLE qp_data AS SELECT range AS n, range AS m FROM range(1000)")
-            .unwrap();
-        let source = DuckDbStore::from_connection(connection).unwrap();
-        view.update(cx, |view, cx| {
-            view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
-            for column in ["n", "m"] {
-                view.add_slicer(column.into(), cx);
-            }
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let first = window.find("slicer-value:n:0").bounds();
-        let first_y = first.origin.y;
-        let other_y = window.find("slicer-value:m:0").bounds().origin.y;
-        let position = point(first.right() + px(9.), first.origin.y + px(200.));
-        window.dispatch_event(
-            MouseDownEvent {
-                position,
-                modifiers: Modifiers::default(),
-                button: MouseButton::Left,
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseUpEvent {
-                position,
-                modifiers: Modifiers::default(),
-                button: MouseButton::Left,
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.render_frame(cx);
-        assert!(window.find("slicer-value:n:0").bounds().origin.y < first_y);
-        assert_eq!(window.find("slicer-value:m:0").bounds().origin.y, other_y);
-        assert_eq!(view.read(cx).session.result.row_count(), 1_000);
+    let source = DuckDbStore::from_connection(connection).unwrap();
+    viewer.update(|view, cx| {
+        view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
+        for column in ["n", "m"] {
+            view.add_slicer(column.into(), cx);
+        }
+    });
+    viewer.settle();
+    let first_y = slicer_value(&viewer, "n", 0).y;
+    let other_y = slicer_value(&viewer, "m", 0).y;
+    let bar = viewer
+        .find(|hit| *hit == Hit::Slicer(SlicerHit::Bar("n".into())))
+        .expect("the n card scrolls");
+    // A press below the thumb, without hovering first, scrolls the values.
+    viewer.click_at(point(bar.center().x, (bar.y + 200.).min(bar.bottom() - 4.)));
+    viewer.render();
+    let moved = viewer
+        .find(|hit| {
+            *hit == Hit::Slicer(SlicerHit::Value {
+                column: "n".into(),
+                index: 0,
+            })
+        })
+        .map(|value| value.y);
+    assert!(moved.is_none_or(|y| y < first_y));
+    assert_eq!(slicer_value(&viewer, "m", 0).y, other_y);
+    viewer.read(|view| {
+        assert_eq!(view.session.result.row_count(), 1_000);
         assert!(
-            view.read(cx)
-                .session
+            view.session
                 .working
                 .as_ref()
                 .unwrap()
@@ -1014,743 +647,424 @@ fn overflowing_slicer_scrollbar_works_without_hover_and_keeps_other_cards_in_pla
                 .iter()
                 .all(|card| card.selected.is_empty())
         );
-    })
-    .unwrap();
+    });
 }
 
-#[gpui_kit::test]
-fn slicer_picker_filters_by_identity_and_cards_filter_clear_remove(cx: &mut TestAppContext) {
+fn picked_slicers(viewer: &Viewer) -> Vec<crate::domain::documents::SlicerDefinition> {
+    viewer.read(|view| view.session.working.as_ref().unwrap().slicers.clone())
+}
+
+fn has_button(viewer: &Viewer, button: Button) -> bool {
+    viewer.render();
+    viewer.find(|hit| *hit == Hit::Button(button.clone())).is_some()
+}
+
+fn click_button(viewer: &Viewer, button: Button) {
+    viewer.click(|hit| *hit == Hit::Button(button.clone()));
+    viewer.settle();
+}
+
+const CONTROL: crate::ui::platform::Modifiers = crate::ui::platform::Modifiers {
+    control: true,
+    alt: false,
+    shift: false,
+    platform: false,
+};
+
+#[test]
+fn slicer_picker_filters_by_identity_and_cards_filter_clear_remove() {
     use crate::domain::documents::ScalarKey;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("space", cx);
-        window.render_frame(cx);
-        window.press("z", cx);
-        window.render_frame(cx);
-        window.input("sales", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-        window.press("enter", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(!window.has_active_dialog(cx));
-        let definition = view.read(cx).session.working.as_ref().unwrap();
-        assert_eq!(definition.slicers[0].column, "sales");
-        assert!(!view.read(cx).session.dirty);
-        assert!(repository.load_views().0.is_empty());
-        assert!(window.try_find("slicer-remove:sales").is_some());
-        window.click("slicer-value:sales:0", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).session.result.row_count(), 1);
-        assert_eq!(
-            view.read(cx).session.working.as_ref().unwrap().slicers[0].selected,
-            [ScalarKey::Signed("10".into())]
-        );
-        window.click("slicer-clear:sales", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).session.result.row_count(), 2);
-        window.drag_to("slicer-value:sales:0", "slicer-value:sales:1", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        use gpui_kit::{InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
-        window.render_frame(cx);
-        assert_eq!(
-            view.read(cx).session.working.as_ref().unwrap().slicers[0]
-                .selected
-                .len(),
-            2
-        );
-        let position = window.find("slicer-value:sales:0").bounds().center();
-        let modifiers = Modifiers {
-            control: true,
-            ..Default::default()
-        };
-        window.dispatch_event(
-            MouseDownEvent {
-                position,
-                modifiers,
-                button: MouseButton::Left,
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.render_frame(cx);
-        window.dispatch_event(
-            MouseUpEvent {
-                position,
-                modifiers,
-                button: MouseButton::Left,
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).session.result.row_count(), 1);
-        assert_eq!(
-            view.read(cx).session.working.as_ref().unwrap().slicers[0].selected,
-            [ScalarKey::Signed("20".into())]
-        );
-        use gpui_kit::{
-            InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        };
-        let from = window.find("slicer-value:sales:1").bounds().center();
-        let to = window.find("slicer-value:sales:0").bounds().center();
-        let modifiers = Modifiers {
-            control: true,
-            ..Default::default()
-        };
-        window.dispatch_event(
-            MouseDownEvent {
-                position: from,
-                modifiers,
-                button: MouseButton::Left,
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.render_frame(cx);
-        window.dispatch_event(
-            MouseMoveEvent {
-                position: to,
-                modifiers,
-                pressed_button: Some(MouseButton::Left),
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.render_frame(cx);
-        window.dispatch_event(
-            MouseUpEvent {
-                position: to,
-                modifiers,
-                button: MouseButton::Left,
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).session.result.row_count(), 2);
-        assert_eq!(
-            view.read(cx).session.working.as_ref().unwrap().slicers[0]
-                .selected
-                .len(),
-            2
-        );
-        window.press("tab", cx);
-        let search_focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&search_focus));
-        window.click("slicer-remove:sales", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("slicer-remove:sales").is_none());
-        assert!(
-            view.read(cx)
-                .session
-                .working
-                .as_ref()
-                .unwrap()
-                .slicers
-                .is_empty()
-        );
-    })
-    .unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    press(&viewer, "space");
+    press(&viewer, "z");
+    viewer.input("sales");
+    viewer.settle();
+    assert!(viewer.has_dialog());
+    press(&viewer, "enter");
+    viewer.settle();
+    assert!(!viewer.has_dialog());
+    assert_eq!(picked_slicers(&viewer)[0].column, "sales");
+    assert!(!viewer.read(|view| view.session.dirty));
+    assert!(repository.load_views().0.is_empty());
+    assert!(has_button(&viewer, Button::SlicerRemove("sales".into())));
+    viewer.click_at(slicer_value(&viewer, "sales", 0).center());
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    assert_eq!(picked_slicers(&viewer)[0].selected, [ScalarKey::Signed("10".into())]);
+    click_button(&viewer, Button::SlicerClear("sales".into()));
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
+    viewer.drag(slicer_value(&viewer, "sales", 0).center(), slicer_value(&viewer, "sales", 1).center());
+    viewer.settle();
+    assert_eq!(picked_slicers(&viewer)[0].selected.len(), 2);
+    // Ctrl+click toggles one value.
+    let first = slicer_value(&viewer, "sales", 0).center();
+    viewer.drag_with(first, first, CONTROL);
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    assert_eq!(picked_slicers(&viewer)[0].selected, [ScalarKey::Signed("20".into())]);
+    // Ctrl+drag adds a range.
+    viewer.drag_with(
+        slicer_value(&viewer, "sales", 1).center(),
+        slicer_value(&viewer, "sales", 0).center(),
+        CONTROL,
+    );
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
+    assert_eq!(picked_slicers(&viewer)[0].selected.len(), 2);
+    viewer.press("tab");
+    assert!(viewer.search_focused());
+    click_button(&viewer, Button::SlicerRemove("sales".into()));
+    assert!(!has_button(&viewer, Button::SlicerRemove("sales".into())));
+    assert!(picked_slicers(&viewer).is_empty());
 }
 
-#[gpui_kit::test]
-fn slicer_availability_ignores_search_and_picker_excludes_existing_cards(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            view.add_slicer("region".into(), cx);
-            view.add_slicer("sales".into(), cx);
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("slicer-value:region:0", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    let catalog = cx.update(|cx| view.read(cx).slicer_stage.as_ref().unwrap().catalog.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.set_search_text("South".into(), window, cx)
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        let stage = view.read(cx).slicer_stage.as_ref().unwrap();
+#[test]
+fn slicer_availability_ignores_search_and_picker_excludes_existing_cards() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| {
+        view.add_slicer("region".into(), cx);
+        view.add_slicer("sales".into(), cx);
+    });
+    viewer.settle();
+    viewer.click_at(slicer_value(&viewer, "region", 0).center());
+    viewer.settle();
+    let catalog = viewer.read(|view| view.slicer_stage.as_ref().unwrap().catalog.clone());
+    viewer.update(|view, cx| view.set_search_text("South".into(), cx));
+    viewer.settle();
+    viewer.read(|view| {
+        let stage = view.slicer_stage.as_ref().unwrap();
         assert!(std::sync::Arc::ptr_eq(&stage.catalog, &catalog));
         assert!(stage.cards[0].values.iter().all(|value| value.available));
         assert!(stage.cards[1].values[0].available);
         assert!(!stage.cards[1].values[1].available);
-        assert_eq!(view.read(cx).session.result.row_count(), 0);
-        view.update(cx, |view, cx| view.open_slicer_picker(window, cx));
-        window.render_frame(cx);
-        window.input("region", cx);
-        window.press("enter", cx);
-        assert!(window.has_active_dialog(cx));
-        assert_eq!(
-            view.read(cx)
-                .session
-                .working
-                .as_ref()
-                .unwrap()
-                .slicers
-                .len(),
-            2
-        );
-        window.press("escape", cx);
-        assert!(window.has_active_dialog(cx));
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
+        assert_eq!(view.session.result.row_count(), 0);
+    });
+    viewer.update(|view, cx| view.open_slicer_picker(cx));
+    viewer.render();
+    viewer.input("region");
+    viewer.press("enter");
+    assert!(viewer.has_dialog());
+    assert_eq!(picked_slicers(&viewer).len(), 2);
+    viewer.press("escape");
+    assert!(viewer.has_dialog());
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
 }
 
-#[gpui_kit::test]
-fn slicer_picker_offers_cards_without_values_before_discovery_finishes(cx: &mut TestAppContext) {
+#[test]
+fn slicer_picker_offers_cards_without_values_before_discovery_finishes() {
     use crate::ui::slicer_sidebar::SlicerKind;
-    let (handle, view) = viewer(cx);
-    let kinds = |cx: &mut TestAppContext| {
-        cx.update(|cx| {
-            let picker = view.read(cx).slicer_picker.clone().unwrap();
-            let picker = picker.read(cx);
-            let kinds = picker
-                .choices()
-                .iter()
-                .map(|choice| choice.kind)
-                .collect::<Vec<_>>();
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let kinds = || {
+        viewer.read(|view| {
+            let Some(Dialog::SlicerPicker(picker)) = &view.dialog else {
+                panic!("the slicer picker is open")
+            };
+            let kinds = picker.choices().iter().map(|choice| choice.kind).collect::<Vec<_>>();
             (picker.loading, kinds)
         })
     };
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| view.open_slicer_picker(window, cx));
-    })
-    .unwrap();
-    // Discovery has not run yet, but SQL and condition cards are listed.
-    let (loading, before) = kinds(cx);
+    viewer.app.update(viewer.id, |view, cx| view.open_slicer_picker(cx));
+    // Discovery has not finished yet, but SQL and condition cards are listed.
+    let (loading, before) = kinds();
     assert!(loading);
     assert_eq!(before[0], SlicerKind::Sql);
     assert!(before.len() > 1);
     assert!(before[1..].iter().all(|kind| *kind == SlicerKind::Condition));
-    finish_slicer_work(cx);
-    let (loading, after) = kinds(cx);
+    viewer.settle();
+    let (loading, after) = kinds();
     assert!(!loading);
     assert!(after.contains(&SlicerKind::Values));
     // Closing the picker stops discovering every column.
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-        let view = view.read(cx);
-        assert!(view.slicer_picker.is_none());
-        assert!(view.slicer_discovery.is_none());
-    })
-    .unwrap();
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
+    assert!(viewer.read(|view| view.slicer_discovery.is_none()));
 }
 
-#[gpui_kit::test]
-fn slicer_reload_errors_keep_last_result_and_missing_selected_values_remain_removable(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn slicer_reload_errors_keep_last_result_and_missing_selected_values_remain_removable() {
     use crate::domain::documents::ScalarKey;
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            view.add_slicer("region".into(), cx);
-            let mut definition = view.session.working.clone().unwrap();
-            definition.id = "named-table".into();
-            view.session.saved(definition);
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("slicer-value:region:0", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert_eq!(view.read(cx).session.result.row_count(), 1);
-        let frame = FrameSnapshot::new(
-            DuckDbStore::from_rows(
-                &[("region".into(), "VARCHAR".into())],
-                [vec![Value::Text("South".into())]],
-            )
-            .unwrap(),
-            2,
-        );
-        view.update(cx, |view, cx| view.replace_dataframe(frame, cx));
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).session.result.row_count(), 0);
-        assert_eq!(
-            view.read(cx).session.working.as_ref().unwrap().slicers[0].selected,
-            [ScalarKey::String("North".into())]
-        );
-        window.click("slicer-value:region:1", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert_eq!(view.read(cx).session.result.row_count(), 1);
-        let frame = FrameSnapshot::new(DuckDbStore::synthetic(100).unwrap(), 3);
-        view.update(cx, |view, cx| view.replace_dataframe(frame, cx));
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let view = view.read(cx);
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| {
+        view.add_slicer("region".into(), cx);
+        let mut definition = view.session.working.clone().unwrap();
+        definition.id = "named-table".into();
+        view.session.saved(definition);
+    });
+    viewer.settle();
+    viewer.click_at(slicer_value(&viewer, "region", 0).center());
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    let south = DuckDbStore::from_rows(&[("region".into(), "VARCHAR".into())], [vec![Value::Text("South".into())]]).unwrap();
+    viewer.update(|view, cx| view.replace_dataframe(FrameSnapshot::new(south, 2), cx));
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 0);
+    assert_eq!(picked_slicers(&viewer)[0].selected, [ScalarKey::String("North".into())]);
+    viewer.click_at(slicer_value(&viewer, "region", 1).center());
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    let synthetic = FrameSnapshot::new(DuckDbStore::synthetic(100).unwrap(), 3);
+    viewer.update(|view, cx| view.replace_dataframe(synthetic, cx));
+    viewer.settle();
+    viewer.read(|view| {
         assert_eq!(view.session.result.row_count(), 1);
         assert!(view.error.as_ref().unwrap().contains("missing"));
         assert!(view.slicer_stage.as_ref().unwrap().cards[0].error.is_some());
-        window.click("slicer-remove:region", cx);
+    });
+    click_button(&viewer, Button::SlicerRemove("region".into()));
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 100);
+}
+
+fn theme_form(viewer: &Viewer) -> Result<crate::application::theme::ThemeSettings, String> {
+    viewer.read(|view| {
+        let Some(Dialog::Theme(form)) = &view.dialog else {
+            panic!("the theme editor is open")
+        };
+        form.build()
     })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_count(), 100));
 }
 
-fn viewer_with_repository(
-    cx: &mut TestAppContext,
-    repository: ViewRepository,
-) -> (
-    gpui_kit::WindowHandle<Root>,
-    gpui_kit::Entity<DataFrameView>,
-) {
-    viewer_with_document(cx, repository, None, None)
-}
-
-fn viewer_with_document(
-    cx: &mut TestAppContext,
-    repository: ViewRepository,
-    source_path: Option<String>,
-    document: Option<crate::domain::documents::DocumentDefinition>,
-) -> (
-    gpui_kit::WindowHandle<Root>,
-    gpui_kit::Entity<DataFrameView>,
-) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        cx.set_reduce_motion(true);
-    });
-    let mut viewer = None;
-    let handle = cx.open_window(size(px(900.), px(600.)), |window, cx| {
-        let frame = DuckDbStore::from_rows(
-            &[
-                ("region".into(), "VARCHAR".into()),
-                ("sales".into(), "BIGINT".into()),
-            ],
-            [
-                vec![Value::Text("North".into()), Value::BigInt(10)],
-                vec![Value::Text("South".into()), Value::BigInt(20)],
-            ],
-        )
-        .unwrap();
-        let view = cx.new(|cx| {
-            DataFrameView::new(
-                FrameSnapshot::new(frame, 1),
-                source_path,
-                String::new(),
-                document,
-                repository,
-                window,
-                cx,
-            )
-        });
-        viewer = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    (handle, viewer.unwrap())
-}
-
-#[gpui_kit::test]
-fn theme_editor_command_saves_colors_across_windows_and_restarts(cx: &mut TestAppContext) {
+#[test]
+fn theme_editor_command_saves_colors_across_windows_and_restarts() {
     use crate::application::theme::{ThemeColor, ThemeSettings};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    let (_, other_view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("editor theme", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("theme-save").is_some());
-        window.press("ctrl-a", cx);
-        window.input("#AABBCC", cx);
-        assert_eq!(view.read(cx).theme, ThemeSettings::default());
-        assert!(!repository.paths.config.join("theme.json").exists());
-        window.render_frame(cx);
-        window.click("theme-save", cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    let other = Viewer::open_in(&viewer.app, sales_frame(), None, None, repository.clone());
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("editor theme");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert!(has_button(&viewer, Button::DialogOk));
+    viewer.press("ctrl-a");
+    viewer.input("#AABBCC");
+    assert_eq!(viewer.read(|view| view.theme.clone()), ThemeSettings::default());
+    assert!(!repository.paths.config.join("theme.json").exists());
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    assert!(!viewer.has_dialog());
+    viewer.run_until_parked();
     let saved = repository.load_theme().unwrap();
     assert_eq!(saved.header_background, ThemeColor::rgb(0xaabbcc));
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).theme, saved);
-        assert_eq!(other_view.read(cx).theme, saved);
-        assert!(!view.read(cx).session.dirty);
-    });
-    // Drop the shared runtime so a new viewer must load the file again.
-    cx.update(|cx| cx.set_global(super::ThemeRuntime::default()));
-    let (_, restarted) = viewer_with_repository(cx, repository);
-    cx.update(|cx| assert_eq!(restarted.read(cx).theme, saved));
+    other.render();
+    assert_eq!(viewer.read(|view| view.theme.clone()), saved);
+    assert_eq!(other.read(|view| view.theme.clone()), saved);
+    assert!(!viewer.read(|view| view.session.dirty));
+    // Drop the shared settings so a new viewer must load the file again.
+    super::profiles::with(|profiles| profiles.themes.clear());
+    let restarted = viewer_with_repository(repository);
+    assert_eq!(restarted.read(|view| view.theme.clone()), saved);
 }
 
-#[gpui_kit::test]
-fn theme_editor_cancel_validation_reset_and_failed_save_keep_the_draft(cx: &mut TestAppContext) {
+#[test]
+fn theme_editor_cancel_validation_reset_and_failed_save_keep_the_draft() {
     use crate::application::theme::{ThemeColor, ThemeSettings};
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let initial = ThemeSettings {
         header_background: ThemeColor::rgb(0xaabbcc),
         ..Default::default()
     };
     repository.save_theme(&initial).unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_theme_editor(window, cx));
-        window.render_frame(cx);
-        window.press("ctrl-a", cx);
-        window.input("#bad", cx);
-        window.click("theme-save", cx);
-        assert!(window.has_active_dialog(cx));
-        assert_eq!(repository.load_theme().unwrap(), initial);
-        assert_eq!(view.read(cx).theme, initial);
-        window.render_frame(cx);
-        window.click("theme-reset", cx);
-        window.render_frame(cx);
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-        assert_eq!(repository.load_theme().unwrap(), initial);
-        assert_eq!(view.read(cx).theme, initial);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let form = view.update(cx, |view, cx| view.open_theme_editor(window, cx));
-        window.render_frame(cx);
-        window.click("theme-reset", cx);
-        window.render_frame(cx);
-        assert_eq!(form.read(cx).build(cx).unwrap(), ThemeSettings::default());
-        // A file in place of the config directory forces a write failure.
-        let blocked = home.path().join("blocked");
-        std::fs::write(&blocked, "blocked").unwrap();
-        view.update(cx, |view, _| view.repository.paths.config = blocked);
-        window.click("theme-save", cx);
-        assert!(window.has_active_dialog(cx));
-        assert_eq!(form.read(cx).build(cx).unwrap(), ThemeSettings::default());
-        assert_eq!(view.read(cx).theme, initial);
-        assert_eq!(repository.load_theme().unwrap(), initial);
-        view.update(cx, |view, _| view.repository = repository.clone());
-        window.render_frame(cx);
-        window.click("theme-save", cx);
-        assert!(!window.has_active_dialog(cx));
-        assert_eq!(repository.load_theme().unwrap(), ThemeSettings::default());
-    })
-    .unwrap();
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.open_theme_editor(cx));
+    viewer.render();
+    viewer.press("ctrl-a");
+    viewer.input("#bad");
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    assert!(viewer.has_dialog());
+    assert_eq!(repository.load_theme().unwrap(), initial);
+    assert_eq!(viewer.read(|view| view.theme.clone()), initial);
+    viewer.click(|hit| *hit == Hit::Button(Button::ThemeReset));
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
+    assert_eq!(repository.load_theme().unwrap(), initial);
+    assert_eq!(viewer.read(|view| view.theme.clone()), initial);
+    viewer.run_until_parked();
+
+    viewer.update(|view, cx| view.open_theme_editor(cx));
+    viewer.click(|hit| *hit == Hit::Button(Button::ThemeReset));
+    assert_eq!(theme_form(&viewer).unwrap(), ThemeSettings::default());
+    // A file in place of the config directory forces a write failure.
+    let blocked = home.path().join("blocked");
+    std::fs::write(&blocked, "blocked").unwrap();
+    viewer.update(|view, _| view.repository.paths.config = blocked);
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    assert!(viewer.has_dialog());
+    assert_eq!(theme_form(&viewer).unwrap(), ThemeSettings::default());
+    assert_eq!(viewer.read(|view| view.theme.clone()), initial);
+    assert_eq!(repository.load_theme().unwrap(), initial);
+    viewer.update(|view, _| view.repository = repository.clone());
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    assert!(!viewer.has_dialog());
+    assert_eq!(repository.load_theme().unwrap(), ThemeSettings::default());
 }
 
-#[gpui_kit::test]
-fn theme_editor_saves_with_enter_and_preserves_typed_alpha(cx: &mut TestAppContext) {
+#[test]
+fn theme_editor_saves_with_enter_and_preserves_typed_alpha() {
     use crate::application::theme::ThemeColor;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_theme_editor(window, cx));
-        window.render_frame(cx);
-        window.press("ctrl-a", cx);
-        window.input("#12345680", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-        assert!(!window.has_active_dialog(cx));
-        assert_eq!(
-            repository.load_theme().unwrap().header_background,
-            ThemeColor::parse("#12345680").unwrap()
-        );
-    })
-    .unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.open_theme_editor(cx));
+    viewer.render();
+    viewer.press("ctrl-a");
+    viewer.input("#12345680");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    assert_eq!(
+        repository.load_theme().unwrap().header_background,
+        ThemeColor::parse("#12345680").unwrap()
+    );
 }
 
-#[gpui_kit::test]
-fn palettes_focus_their_query(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("info", cx);
-        window.press("escape", cx);
-        assert!(
-            window.has_active_dialog(cx),
-            "Escape should clear the query first"
-        );
-        window.close_dialog(cx);
-
-        view.update(cx, |view, cx| view.open_file_palette(window, cx));
-        window.render_frame(cx);
-        window.input("report", cx);
-        window.press("escape", cx);
-        assert!(
-            window.has_active_dialog(cx),
-            "Escape should clear the query first"
-        );
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn font_picker_and_shortcuts_persist_share_and_clamp(cx: &mut TestAppContext) {
-    use super::{CommandId, FontRuntime};
+#[test]
+fn palettes_focus_their_query() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("info");
+    viewer.press("escape");
+    assert!(viewer.has_dialog(), "Escape should clear the query first");
+    viewer.close_dialog();
+
+    viewer.update(|view, cx| view.open_file_palette(cx));
+    viewer.render();
+    viewer.input("report");
+    viewer.press("escape");
+    assert!(viewer.has_dialog(), "Escape should clear the query first");
+}
+
+#[test]
+fn font_picker_and_shortcuts_persist_share_and_clamp() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
     let mut settings = repository.load_settings().unwrap();
     settings.font_family = Some("Existing font".into());
     repository.save_settings(&settings).unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    let (_, other) = viewer_with_repository(cx, repository.clone());
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("ctrl-=", cx);
-        window.render_frame(cx);
-        assert_eq!(view.read(cx).font.size, 14);
-        assert_eq!(window.rem_size(), px(14.));
-        window.press("ctrl--", cx);
-        assert_eq!(view.read(cx).font.size, 13);
-        let search_focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        window.focus(&search_focus, cx);
-        window.press("ctrl-=", cx);
-        assert_eq!(view.read(cx).font.size, 14);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("picker font", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-        window.input("default", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(!window.has_active_dialog(cx));
-        assert!(view.read(cx).font.family.is_none());
-        view.update(cx, |view, cx| {
-            for _ in 0..50 {
-                view.dispatch_command(CommandId::IncreaseFontSize, window, cx);
-            }
-            assert_eq!(view.font.size, 40);
-        });
-        window.render_frame(cx);
-        assert!(window.find("grid-cell:0:0").bounds().size.height > px(40.));
-        view.update(cx, |view, cx| {
-            for _ in 0..50 {
-                view.dispatch_command(CommandId::DecreaseFontSize, window, cx);
-            }
-            assert_eq!(view.font.size, 7);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let viewer = viewer_with_repository(repository.clone());
+    let other = Viewer::open_in(&viewer.app, sales_frame(), None, None, repository.clone());
+    let size = || viewer.read(|view| view.font.size);
+    press_in_grid(&viewer, "ctrl-=");
+    viewer.render();
+    assert_eq!(size(), 14);
+    assert_eq!(viewer.read(|view| view.fonts.ui.size), 14.0);
+    viewer.press("ctrl--");
+    assert_eq!(size(), 13);
+    viewer.focus_search();
+    viewer.press("ctrl-=");
+    assert_eq!(size(), 14);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("picker font");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert!(viewer.has_dialog());
+    viewer.input("default");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    assert!(viewer.read(|view| view.font.family.is_none()));
+    viewer.update(|view, cx| {
+        for _ in 0..50 {
+            view.dispatch_command(CommandId::IncreaseFontSize, cx);
+        }
+    });
+    assert_eq!(size(), 40);
+    viewer.render();
+    let cell = viewer
+        .find(|hit| *hit == Hit::Grid(crate::ui::hit::GridHit::Cell { row: 0, column: 0 }))
+        .unwrap();
+    assert!(cell.h > 40.);
+    viewer.update(|view, cx| {
+        for _ in 0..50 {
+            view.dispatch_command(CommandId::DecreaseFontSize, cx);
+        }
+    });
+    assert_eq!(size(), 7);
+    viewer.run_until_parked();
     let saved = repository.load_settings().unwrap();
     assert_eq!(saved.font_size, 7);
     assert!(saved.font_family.is_none());
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).font, other.read(cx).font);
-        assert!(!view.read(cx).session.dirty);
-        cx.set_global(FontRuntime::default());
-    });
-    let (_, restarted) = viewer_with_repository(cx, repository);
-    cx.update(|cx| assert_eq!(restarted.read(cx).font.size, 7));
+    other.render();
+    assert_eq!(viewer.read(|view| view.font.clone()), other.read(|view| view.font.clone()));
+    assert!(!viewer.read(|view| view.session.dirty));
+    super::profiles::with(|profiles| profiles.fonts.clear());
+    let restarted = viewer_with_repository(repository);
+    assert_eq!(restarted.read(|view| view.font.size), 7);
 }
 
-#[gpui_kit::test]
-fn editor_font_follows_its_picker_and_the_grid_size(cx: &mut TestAppContext) {
-    use super::{FontRuntime, FontTarget};
-    use gpui_kit::component::ActiveTheme;
+#[test]
+fn editor_font_follows_its_picker_and_the_grid_size() {
+    use crate::ui::font_picker::FontTarget;
+    use crate::ui::widgets::DEFAULT_EDITOR_FAMILY;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.run_until_parked();
-    let default_mono = cx.update(|cx| cx.theme().mono_font_family.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| {
-            let mut font = view.font.clone();
-            font.editor_family = Some("Test Mono".into());
-            font.size = 17;
-            view.save_font(font, cx);
-        });
-        // Every code editor reads the theme's monospace font.
-        assert_eq!(cx.theme().mono_font_family.as_ref(), "Test Mono");
-        assert_eq!(cx.theme().mono_font_size, px(17.));
-        assert!(view.read(cx).font.family.is_none());
-        view.update(cx, |view, cx| {
-            view.open_font_picker(FontTarget::Editor, window, cx)
-        });
-        window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-        window.input("default", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(view.read(cx).font.editor_family.is_none());
-        assert_eq!(cx.theme().mono_font_family, default_mono);
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| {
+        let mut font = view.font.clone();
+        font.editor_family = Some("Test Mono".into());
+        font.size = 17;
+        view.save_font(font, cx);
+    });
+    viewer.render();
+    // Every code editor reads the monospace font.
+    viewer.read(|view| {
+        assert_eq!(view.fonts.mono.family.as_ref(), "Test Mono");
+        assert_eq!(view.fonts.mono.size, 17.);
+        assert!(view.font.family.is_none());
+    });
+    viewer.update(|view, cx| view.open_font_picker(FontTarget::Editor, cx));
+    viewer.render();
+    assert!(viewer.has_dialog());
+    viewer.input("default");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    viewer.read(|view| {
+        assert!(view.font.editor_family.is_none());
+        assert_eq!(view.fonts.mono.family.as_ref(), DEFAULT_EDITOR_FAMILY);
     });
     let saved = repository.load_settings().unwrap();
-    assert_eq!(
-        (saved.font_size, saved.editor_font_family.clone()),
-        (17, None)
-    );
+    assert_eq!((saved.font_size, saved.editor_font_family.clone()), (17, None));
 
     let mut settings = saved;
     settings.editor_font_family = Some("Saved Mono".into());
     repository.save_settings(&settings).unwrap();
-    cx.update(|cx| cx.set_global(FontRuntime::default()));
-    let (_, restarted) = viewer_with_repository(cx, repository);
-    cx.update(|cx| {
-        assert_eq!(
-            restarted.read(cx).font.editor_family.as_deref(),
-            Some("Saved Mono")
-        );
-        assert_eq!(cx.theme().mono_font_family.as_ref(), "Saved Mono");
+    super::profiles::with(|profiles| profiles.fonts.clear());
+    let restarted = viewer_with_repository(repository);
+    restarted.read(|view| {
+        assert_eq!(view.font.editor_family.as_deref(), Some("Saved Mono"));
+        assert_eq!(view.fonts.mono.family.as_ref(), "Saved Mono");
     });
 }
 
-#[gpui_kit::test]
-fn clear_filters_button_clears_search_and_all_cards_preserving_sort(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("clear-filters").is_none());
-        view.update(cx, |view, cx| {
-            view.add_slicer("region".into(), cx);
-            view.add_slicer("sales".into(), cx);
-            view.session.set_sort_direction("sales".into(), true);
-            view.set_search_text("north".into(), window, cx);
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("slicer-value:region:0", cx);
-        window.render_frame(cx);
-        window.click("slicer-value:sales:0", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            view.read(cx)
-                .session
-                .working
-                .as_ref()
-                .unwrap()
-                .slicers
-                .iter()
-                .all(|card| !card.selected.is_empty())
-        );
-        window.click("clear-filters", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("clear-filters").is_none());
-        let session = &view.read(cx).session;
+#[test]
+fn clear_filters_button_clears_search_and_all_cards_preserving_sort() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    assert!(!has_button(&viewer, Button::ClearFilters));
+    viewer.update(|view, cx| {
+        view.add_slicer("region".into(), cx);
+        view.add_slicer("sales".into(), cx);
+        view.session.set_sort_direction("sales".into(), true);
+        view.set_search_text("north".into(), cx);
+    });
+    viewer.settle();
+    viewer.click_at(slicer_value(&viewer, "region", 0).center());
+    viewer.click_at(slicer_value(&viewer, "sales", 0).center());
+    viewer.settle();
+    assert!(picked_slicers(&viewer).iter().all(|card| !card.selected.is_empty()));
+    click_button(&viewer, Button::ClearFilters);
+    assert!(!has_button(&viewer, Button::ClearFilters));
+    viewer.read(|view| {
+        let session = &view.session;
         assert_eq!(session.result.row_count(), 2);
         assert!(session.search_text.is_empty());
         assert_eq!(session.sort[0].column, "sales");
@@ -1766,96 +1080,80 @@ fn clear_filters_button_clears_search_and_all_cards_preserving_sort(cx: &mut Tes
         );
         assert!(!session.dirty);
         assert_eq!(session.result.row_ids.to_vec(), [1, 0]);
-    })
-    .unwrap();
+    });
 }
 
-#[gpui_kit::test]
-fn file_picker_matches_terms_across_name_and_path_and_archives_selected_identity(
-    cx: &mut TestAppContext,
-) {
-    use crate::domain::documents::DocumentDefinition;
+/// Labels of the open palette's visible rows, in `section` when given.
+fn palette_rows(viewer: &Viewer, section: Option<usize>) -> Vec<String> {
+    viewer.read(|view| {
+        let Some(Dialog::Palette(dialog)) = &view.dialog else {
+            panic!("a palette is open")
+        };
+        let list = &dialog.palette.list;
+        list.visible_items()
+            .iter()
+            .map(|&index| &list.items()[index])
+            .filter(|item| section.is_none_or(|section| item.section == section))
+            .map(|item| item.label.clone())
+            .collect()
+    })
+}
+
+#[test]
+fn file_picker_matches_terms_across_name_and_path_and_archives_selected_identity() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let mut first = DocumentDefinition::draft_table("First report".into(), "east.csv".into());
     let mut second = DocumentDefinition::draft_table("Second report".into(), "west.csv".into());
     repository.save_view(&mut first).unwrap();
     repository.save_view(&mut second).unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.update(|cx| {
-        cx.bind_keys([gpui_kit::KeyBinding::new(
-            "ctrl-delete",
-            super::ArchiveSelectedView,
-            Some("Command"),
-        )])
-    });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_file_palette(window, cx));
-        window.render_frame(cx);
-        window.input("  WEST\tSECOND  ", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let rows = window.within("command");
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(0))
-                .is_some()
-        );
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(1))
-                .is_none()
-        );
-        window.press("ctrl-delete", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.open_file_palette(cx));
+    viewer.render();
+    viewer.input("  WEST\tSECOND  ");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(palette_rows(&viewer, None).len(), 1);
+    press(&viewer, "ctrl-delete");
     assert_eq!(repository.load_views().0.len(), 1);
     assert_eq!(repository.load_views().0[0].id, first.id);
     assert_eq!(repository.load_archives().0[0].1.view.id, second.id);
 }
 
-#[gpui_kit::test]
-fn file_and_font_pickers_match_command_palette_width(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
+#[test]
+fn file_and_font_pickers_match_command_palette_width() {
+    use crate::ui::font_picker::FontTarget;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let dialog = || {
+        viewer.render();
+        viewer.find(|hit| *hit == Hit::Surface).expect("a dialog")
+    };
     for font in [false, true] {
-        cx.simulate_window_resize(handle.into(), size(px(1400.), px(900.)));
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            view.update(cx, |view, cx| {
-                if font {
-                    view.open_font_picker(super::FontTarget::Grid, window, cx);
-                } else {
-                    view.open_file_palette(window, cx);
-                }
-            });
-            window.render_frame(cx);
-            assert_eq!(
-                window.within("dialog").find(0usize).bounds().size.width,
-                px(896.)
-            );
-        })
-        .unwrap();
-        cx.simulate_window_resize(handle.into(), size(px(700.), px(600.)));
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let bounds = window.within("dialog").find(0usize).bounds();
-            assert!(bounds.size.width < px(700.));
-            assert!(bounds.origin.x >= px(0.));
-            assert!(bounds.right() <= px(700.));
-            window.close_dialog(cx);
-        })
-        .unwrap();
+        viewer.resize(1400., 900.);
+        viewer.update(|view, cx| {
+            if font {
+                view.open_font_picker(FontTarget::Grid, cx);
+            } else {
+                view.open_file_palette(cx);
+            }
+        });
+        assert_eq!(dialog().w, 896.);
+        viewer.resize(700., 600.);
+        let bounds = dialog();
+        assert!(bounds.w < 700.);
+        assert!(bounds.x >= 0.);
+        assert!(bounds.right() <= 700.);
+        viewer.close_dialog();
     }
 }
 
-#[gpui_kit::test]
-fn file_picker_empty_query_escape_and_filtered_source_confirmation(cx: &mut TestAppContext) {
+#[test]
+fn file_picker_empty_query_escape_and_filtered_source_confirmation() {
     use crate::application::state::ApplicationState;
+    use crate::ui::widgets::list::Part;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let path = home.path().join("West report.csv");
     std::fs::write(&path, "region,sales\nNorth,10\nSouth,20\n").unwrap();
     let other_path = home.path().join("East report.csv");
@@ -1863,502 +1161,287 @@ fn file_picker_empty_query_escape_and_filtered_source_confirmation(cx: &mut Test
     let mut app = ApplicationState::load(repository.clone()).unwrap();
     app.record_source(&path).unwrap();
     app.record_source(&other_path).unwrap();
-    let (handle, view) = viewer_with_repository(cx, repository);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_file_palette(window, cx));
-        window.render_frame(cx);
-        window.input("west nonexistent", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .within("command")
-                .try_find(gpui_kit::component::IndexPath::new(0).section(2))
-                .is_none()
-        );
-        window.press("enter", cx);
-        assert!(window.has_active_dialog(cx));
-        window.press("escape", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .within("command")
-                .try_find(gpui_kit::component::IndexPath::new(1).section(2))
-                .is_some()
-        );
-        window.input("SOURCE west REPORT", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let index = gpui_kit::component::IndexPath::new(0).section(2);
-        assert!(window.within("command").try_find(index).is_some());
-        assert!(
-            window
-                .within("command")
-                .try_find(gpui_kit::component::IndexPath::new(1).section(2))
-                .is_none()
-        );
-        window.within("command").click(index, cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(!window.has_active_dialog(cx));
-        // A recent file that is not watched opens in query mode.
-        assert!(
-            view.read(cx)
-                .query_file()
-                .unwrap()
-                .ends_with("West report.csv")
-        );
-        let session = &view.read(cx).session;
-        assert_eq!(session.result.row_count(), 2);
+    let viewer = viewer_with_repository(repository);
+    viewer.update(|view, cx| view.open_file_palette(cx));
+    viewer.render();
+    viewer.input("west nonexistent");
+    viewer.run_until_parked();
+    viewer.render();
+    assert!(palette_rows(&viewer, Some(2)).is_empty());
+    viewer.press("enter");
+    assert!(viewer.has_dialog());
+    press(&viewer, "escape");
+    assert!(palette_rows(&viewer, Some(2)).len() >= 2);
+    viewer.input("SOURCE west REPORT");
+    viewer.run_until_parked();
+    viewer.render();
+    let rows = palette_rows(&viewer, None);
+    assert_eq!(palette_rows(&viewer, Some(2)).len(), 1, "{rows:?}");
+    let position = rows.len() - 1;
+    let list = viewer.read(|view| match &view.dialog {
+        Some(Dialog::Palette(dialog)) => dialog.palette.list.id,
+        _ => panic!("a palette is open"),
+    });
+    viewer.click(|hit| *hit == Hit::List(list, Part::Row(position)));
+    viewer.run_until_parked();
+    assert!(!viewer.has_dialog());
+    // A recent file that is not watched opens in query mode.
+    viewer.read(|view| {
+        assert!(view.query_file().unwrap().ends_with("West report.csv"));
+        assert_eq!(view.session.result.row_count(), 2);
         assert!(matches!(
-            session.identity,
+            view.session.identity,
             crate::application::session::SessionIdentity::DraftQuery
         ));
-    })
-    .unwrap();
+    });
 }
 
-#[gpui_kit::test]
-fn save_dialog_focuses_name_for_shortcut_and_palette(cx: &mut TestAppContext) {
+#[test]
+fn save_dialog_focuses_name_for_shortcut_and_palette() {
     for from_palette in [false, true] {
         let home = tempfile::tempdir().unwrap();
-        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        let repository = repository(home.path());
         let source = home.path().join("source.csv");
         std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
-        let (handle, view) = viewer_with_document(
-            cx,
-            repository.clone(),
-            Some(source.to_string_lossy().into_owned()),
-            None,
+        let viewer = viewer_with_document(repository.clone(), Some(source.to_string_lossy().into_owned()), None);
+        if from_palette {
+            viewer.focus_grid();
+            press(&viewer, "ctrl-shift-p");
+            viewer.input("save view");
+            viewer.run_until_parked();
+            press(&viewer, "enter");
+        } else {
+            viewer.focus_search();
+            press(&viewer, "ctrl-s");
+        }
+        viewer.render();
+        assert!(viewer.has_dialog());
+        viewer.press("ctrl-a");
+        viewer.input("Keyboard saved view");
+        press(&viewer, "enter");
+        assert!(
+            !viewer.has_dialog(),
+            "from_palette={from_palette}, saved={:?}, error={:?}",
+            repository.load_views().0,
+            viewer.read(|view| view.error.clone())
         );
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let focus = if from_palette {
-                view.read(cx).grid.read(cx).focus_handle(cx)
-            } else {
-                view.read(cx).search_input.read(cx).focus_handle(cx)
-            };
-            window.focus(&focus, cx);
-            if from_palette {
-                window.press("ctrl-shift-p", cx);
-                window.render_frame(cx);
-                window.input("save view", cx);
-            } else {
-                window.press("ctrl-s", cx);
-            }
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            if from_palette {
-                window.press("enter", cx);
-            }
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.has_active_dialog(cx));
-            window.press("ctrl-a", cx);
-            window.input("Keyboard saved view", cx);
-            window.press("enter", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            assert!(
-                !window.has_active_dialog(cx),
-                "from_palette={from_palette}, saved={:?}, error={:?}",
-                repository.load_views().0,
-                view.read(cx).error
-            );
-            assert!(view.read(cx).session.search_text.is_empty());
-            assert!(!view.read(cx).session.dirty);
-            let (saved, issues) = repository.load_views();
-            assert!(issues.is_empty());
-            assert_eq!(saved.len(), 1);
-            assert_eq!(saved[0].name, "Keyboard saved view");
-        })
-        .unwrap();
+        viewer.read(|view| {
+            assert!(view.session.search_text.is_empty());
+            assert!(!view.session.dirty);
+        });
+        let (saved, issues) = repository.load_views();
+        assert!(issues.is_empty());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "Keyboard saved view");
     }
 }
 
-#[gpui_kit::test]
-fn settings_directory_command_reports_an_unusable_active_profile(cx: &mut TestAppContext) {
+#[test]
+fn settings_directory_command_reports_an_unusable_active_profile() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository);
+    let viewer = viewer_with_repository(repository(home.path()));
     let blocked = home.path().join("blocked");
     std::fs::write(&blocked, "blocked").unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, _| view.repository.paths.config = blocked.clone());
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("settings directory", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let rows = window.within("command");
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(0))
-                .is_some()
-        );
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(1))
-                .is_none()
-        );
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(!window.has_active_dialog(cx));
-        let error = view.read(cx).error.as_deref().unwrap();
-        assert!(error.starts_with("Cannot open settings directory"));
-        assert!(error.contains(&blocked.display().to_string()));
-        assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "blocked");
-    })
-    .unwrap();
+    viewer.update(|view, _| view.repository.paths.config = blocked.clone());
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("settings directory");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(palette_rows(&viewer, None).len(), 1);
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    let error = viewer.read(|view| view.error.clone()).unwrap();
+    assert!(error.starts_with("Cannot open settings directory"));
+    assert!(error.contains(&blocked.display().to_string()));
+    assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "blocked");
 }
 
-#[gpui_kit::test]
-fn command_palette_add_folder_opens_directory_picker_and_saves_selection(cx: &mut TestAppContext) {
+#[test]
+fn command_palette_add_folder_opens_directory_picker_and_saves_selection() {
+    use crate::ui::platform::system::fake;
     let home = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("add folder", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
-    assert!(cx.did_prompt_for_paths());
-    cx.simulate_path_prompt_response(|options| {
-        assert!(options.directories);
-        assert!(!options.files);
-        Some(vec![folder.path().to_path_buf()])
-    });
-    cx.run_until_parked();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("add folder");
+    viewer.run_until_parked();
+    fake::with(|system| system.path_answers.push_back(Some(vec![folder.path().to_path_buf()])));
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    assert_eq!(fake::with(|system| system.path_prompts), 1);
+    viewer.run_until_parked();
     assert_eq!(
         repository.load_settings().unwrap().watched_folders,
-        [folder
-            .path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()]
+        [folder.path().canonicalize().unwrap().to_string_lossy().to_string()]
     );
 }
 
-#[gpui_kit::test]
-fn command_palette_filters_all_terms_and_confirms_the_filtered_command(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("SHIFT keymap", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let rows = window.within("command");
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(0))
-                .is_some()
-        );
-        assert!(
-            rows.try_find(gpui_kit::component::IndexPath::new(1))
-                .is_none()
-        );
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).keymap_editor.is_some());
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
+#[test]
+fn command_palette_filters_all_terms_and_confirms_the_filtered_command() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("SHIFT keymap");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(palette_rows(&viewer, None).len(), 1);
+    press(&viewer, "enter");
+    assert!(viewer.read(|view| view.keymap_editor.is_some()));
+    assert!(!viewer.has_dialog());
 }
 
-#[gpui_kit::test]
-fn command_palette_empty_matches_and_escape_restore_rows(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("keymap nonexistent", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .within("command")
-                .try_find(gpui_kit::component::IndexPath::new(0))
-                .is_none()
-        );
-        window.press("enter", cx);
-        assert!(window.has_active_dialog(cx));
-        assert!(view.read(cx).keymap_editor.is_none());
-        window.press("escape", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(
-            window
-                .within("command")
-                .try_find(gpui_kit::component::IndexPath::new(1))
-                .is_some()
-        );
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
+#[test]
+fn command_palette_empty_matches_and_escape_restore_rows() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("keymap nonexistent");
+    viewer.run_until_parked();
+    viewer.render();
+    assert!(palette_rows(&viewer, None).is_empty());
+    viewer.press("enter");
+    assert!(viewer.has_dialog());
+    assert!(viewer.read(|view| view.keymap_editor.is_none()));
+    press(&viewer, "escape");
+    assert!(palette_rows(&viewer, None).len() > 1);
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
 }
 
-#[gpui_kit::test]
-fn command_palette_doubles_width_and_fits_smaller_windows(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.simulate_window_resize(handle.into(), size(px(1400.), px(900.)));
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        assert_eq!(
-            window.within("dialog").find(0usize).bounds().size.width,
-            px(896.)
-        );
-    })
-    .unwrap();
-    cx.simulate_window_resize(handle.into(), size(px(700.), px(600.)));
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let bounds = window.within("dialog").find(0usize).bounds();
-        assert!(bounds.size.width < px(700.));
-        assert!(bounds.origin.x >= px(0.));
-        assert!(bounds.origin.x + bounds.size.width <= px(700.));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn search_down_and_tab_focus_grid(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        let search_focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&grid_focus));
-        window.focus(&grid_focus, cx);
-        window.press("/", cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&search_focus));
-        window.press("down", cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&grid_focus));
-        window.focus(&search_focus, cx);
-        window.press("tab", cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&grid_focus));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn escape_clears_active_search_without_leaving_search(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| {
-            view.set_search_text("North".into(), window, cx);
-        });
-        let search_focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        window.focus(&search_focus, cx);
-        window.press("escape", cx);
-
-        assert!(view.read(cx).search_input.read(cx).value().is_empty());
-        assert!(view.read(cx).search_text().is_empty());
-        assert_eq!(window.focused(cx).as_ref(), Some(&search_focus));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn typing_a_quote_in_search_offers_columns_and_tab_or_enter_inserts_them(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    let step = |cx: &mut TestAppContext,
-                action: &dyn Fn(&mut gpui_kit::Window, &mut gpui_kit::App)| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            action(window, cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let view = view.read(cx);
-            (
-                view.search_input.read(cx).value().to_string(),
-                view.search_completion.read(cx).items(),
-            )
-        })
+#[test]
+fn command_palette_doubles_width_and_fits_smaller_windows() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let dialog = || {
+        viewer.render();
+        viewer.find(|hit| *hit == Hit::Surface).expect("a dialog")
     };
-    let search = view.clone();
-    step(cx, &|window, cx| {
-        let focus = search.read(cx).search_input.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
+    viewer.resize(1400., 900.);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    assert_eq!(dialog().w, 896.);
+    viewer.resize(700., 600.);
+    let bounds = dialog();
+    assert!(bounds.w < 700.);
+    assert!(bounds.x >= 0.);
+    assert!(bounds.right() <= 700.);
+}
+
+#[test]
+fn search_down_and_tab_focus_grid() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.render();
+    assert!(viewer.grid_focused());
+    viewer.press("/");
+    assert!(viewer.search_focused());
+    viewer.press("down");
+    assert!(viewer.grid_focused());
+    viewer.focus_search();
+    viewer.press("tab");
+    assert!(viewer.grid_focused());
+}
+
+#[test]
+fn escape_clears_active_search_without_leaving_search() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.render();
+    viewer.update(|view, cx| view.set_search_text("North".into(), cx));
+    viewer.focus_search();
+    viewer.press("escape");
+    viewer.read(|view| {
+        assert!(view.search_input.text().is_empty());
+        assert!(view.search_text().is_empty());
     });
-    let (_, items) = step(cx, &|window, cx| window.input("\"", cx));
+    assert!(viewer.search_focused());
+}
+
+#[test]
+fn typing_a_quote_in_search_offers_columns_and_tab_or_enter_inserts_them() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let step = |action: &dyn Fn()| {
+        viewer.render();
+        action();
+        viewer.run_until_parked();
+        viewer.read(|view| (view.search_input.text().to_owned(), view.search_completion.items()))
+    };
+    step(&|| viewer.focus_search());
+    let (_, items) = step(&|| viewer.input("\""));
     assert_eq!(items, Some(vec!["region".into(), "sales".into()]));
-    let (_, items) = step(cx, &|window, cx| window.input("S", cx));
+    let (_, items) = step(&|| viewer.input("S"));
     assert_eq!(items, Some(vec!["sales".into()]));
-    let (text, items) = step(cx, &|window, cx| window.press("tab", cx));
+    let (text, items) = step(&|| viewer.press("tab"));
     assert_eq!(text, "\"sales\"");
     assert!(items.is_none());
-    cx.update_window(handle.into(), |_, window, cx| {
-        let focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&focus));
-    })
-    .unwrap();
+    assert!(viewer.search_focused());
     // After an operator a quote names the column to compare against.
-    step(cx, &|window, cx| window.input(">\"", cx));
-    step(cx, &|window, cx| window.press("down", cx));
-    let (text, _) = step(cx, &|window, cx| window.press("enter", cx));
+    step(&|| viewer.input(">\""));
+    step(&|| viewer.press("down"));
+    let (text, _) = step(&|| viewer.press("enter"));
     assert_eq!(text, "\"sales\">\"sales\"");
     // Escape closes the list first and keeps the text.
-    let (_, items) = step(cx, &|window, cx| window.input(" \"", cx));
+    let (_, items) = step(&|| viewer.input(" \""));
     assert!(items.is_some());
-    let (text, items) = step(cx, &|window, cx| window.press("escape", cx));
+    let (text, items) = step(&|| viewer.press("escape"));
     assert!(items.is_none());
     assert!(text.starts_with("\"sales\">\"sales\" \""), "{text}");
 }
 
-#[gpui_kit::test]
-fn right_clicking_a_sorted_header_clears_only_that_sort(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.session.set_sort_direction("region".into(), false);
-            view.session.set_sort_direction("sales".into(), true);
-            let sort = view.session.sort.clone();
-            view.grid.update(cx, |grid, cx| grid.set_sort(sort, cx));
-        });
-        window.render_frame(cx);
-        window.right_click("grid-header:0", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert_eq!(
-            view.read(cx)
-                .session
-                .sort
-                .iter()
-                .map(|key| key.column.as_str())
-                .collect::<Vec<_>>(),
-            ["sales"]
-        );
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn ctrl_q_closes_the_focused_window(cx: &mut TestAppContext) {
-    let (handle, _) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-q", cx);
-    })
-    .unwrap();
-    assert!(cx.update_window(handle.into(), |_, _, _| {}).is_err());
-}
-
-fn window_view(
-    cx: &mut TestAppContext,
-    handle: gpui_kit::AnyWindowHandle,
-) -> gpui_kit::Entity<DataFrameView> {
-    cx.update_window(handle, |root, _, cx| {
-        root.downcast::<Root>()
-            .ok()
-            .expect("window root")
-            .read(cx)
-            .view()
-            .clone()
-            .downcast::<DataFrameView>()
-            .ok()
-            .expect("dataframe view")
-    })
-    .unwrap()
-}
-
-#[gpui_kit::test]
-fn new_window_shortcut_opens_blank_windows_from_grid_and_search(cx: &mut TestAppContext) {
+#[test]
+fn right_clicking_a_sorted_header_clears_only_that_sort() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (original, view) = viewer_with_repository(cx, repository.clone());
-    cx.run_until_parked();
+    let viewer = viewer(&home);
+    viewer.update(|view, _| {
+        view.session.set_sort_direction("region".into(), false);
+        view.session.set_sort_direction("sales".into(), true);
+        let sort = view.session.sort.clone();
+        view.grid.set_sort(sort);
+    });
+    viewer.right_click(|hit| *hit == Hit::Grid(crate::ui::hit::GridHit::Header(0)));
+    viewer.run_until_parked();
+    assert_eq!(
+        viewer.read(|view| view.session.sort.iter().map(|key| key.column.clone()).collect::<Vec<_>>()),
+        ["sales"]
+    );
+}
+
+#[test]
+fn ctrl_q_closes_the_focused_window() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press(&viewer, "ctrl-q");
+    assert!(!viewer.is_open());
+}
+
+#[test]
+fn new_window_shortcut_opens_blank_windows_from_grid_and_search() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
     for search_focused in [false, true] {
-        cx.update_window(original.into(), |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.session.set_sort_direction("sales".into(), true);
-                view.set_search_text("north".into(), window, cx);
-                view.session.dirty = true;
-            });
-            let focus = if search_focused {
-                view.read(cx).search_input.read(cx).focus_handle(cx)
-            } else {
-                view.read(cx).grid.read(cx).focus_handle(cx)
-            };
-            window.render_frame(cx);
-            window.focus(&focus, cx);
-            window.press("ctrl-n", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
+        viewer.update(|view, cx| {
+            view.session.set_sort_direction("sales".into(), true);
+            view.set_search_text("north".into(), cx);
+            view.session.dirty = true;
+        });
+        if search_focused {
+            viewer.focus_search();
+        } else {
+            viewer.focus_grid();
+        }
+        press(&viewer, "ctrl-n");
     }
-    let windows = cx.windows();
-    assert_eq!(windows.len(), 3);
-    for handle in windows
-        .into_iter()
-        .filter(|handle| *handle != original.into())
-    {
-        let blank = window_view(cx, handle);
-        cx.update(|cx| {
-            let blank = blank.read(cx);
+    let blanks = viewer.others();
+    assert_eq!(blanks.len(), 2);
+    let store = viewer.read(|view| view.session.source.store.clone());
+    for blank in blanks {
+        blank.read(|blank| {
             assert_eq!(blank.repository.paths.config, repository.paths.config);
             assert_eq!(blank.repository.paths.data, repository.paths.data);
             assert!(blank.session.source_path.is_none());
@@ -2368,284 +1451,163 @@ fn new_window_shortcut_opens_blank_windows_from_grid_and_search(cx: &mut TestApp
             assert!(blank.session.sort.is_empty());
             assert_eq!(blank.session.source.row_count(), 0);
             assert_eq!(blank.session.result.row_count(), 0);
-            assert!(!std::sync::Arc::ptr_eq(
-                &blank.session.source.store,
-                &view.read(cx).session.source.store,
-            ));
+            assert!(!std::sync::Arc::ptr_eq(&blank.session.source.store, &store));
             assert!(blank.window_geometry.is_none());
         });
-        cx.update_window(handle, |_, window, cx| {
-            assert_eq!(window.viewport_size(), size(px(1400.), px(900.)));
-            assert_eq!(
-                window.focused(cx),
-                Some(blank.read(cx).grid.read(cx).focus_handle(cx))
-            );
-        })
-        .unwrap();
+        assert_eq!(blank.app.update(blank.id, |_, cx| cx.viewport()), (1400., 900.));
+        assert!(blank.grid_focused());
     }
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).session.source.row_count(), 2);
-        assert_eq!(view.read(cx).session.search_text, "north");
-        assert!(view.read(cx).session.dirty);
+    viewer.read(|view| {
+        assert_eq!(view.session.source.row_count(), 2);
+        assert_eq!(view.session.search_text, "north");
+        assert!(view.session.dirty);
     });
 }
 
-#[gpui_kit::test]
-fn new_window_palette_command_opens_a_blank_window(cx: &mut TestAppContext) {
+#[test]
+fn new_window_palette_command_opens_a_blank_window() {
     let home = tempfile::tempdir().unwrap();
-    let (original, view) =
-        viewer_with_repository(cx, ViewRepository::new(StorePaths::for_home(home.path())));
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, cx| view.open_command_palette(window, cx));
-        window.render_frame(cx);
-        window.input("new window", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(original.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let matches = super::matching_commands(
-            &super::active_commands(),
-            &view.read(cx).keymap,
-            "new window",
-        );
-        // Drill down in new window matches too, after New window.
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].0.id, super::CommandId::NewWindow);
-        assert_eq!(matches[0].1, "New window · ctrl-n");
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(original.into(), |_, window, cx| {
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
-    assert_eq!(cx.windows().len(), 2);
-    let new_handle = cx
-        .windows()
-        .into_iter()
-        .find(|handle| *handle != original.into())
-        .unwrap();
-    let blank = window_view(cx, new_handle);
-    cx.update(|cx| assert_eq!(blank.read(cx).session.source.row_count(), 0));
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_command_palette(cx));
+    viewer.render();
+    viewer.input("new window");
+    viewer.run_until_parked();
+    viewer.render();
+    let matches = viewer.read(|view| {
+        crate::ui::command_palette::matching_commands(&super::active_commands(), &view.keymap, "new window")
+    });
+    // Drill down in new window matches too, after New window.
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].0.id, CommandId::NewWindow);
+    assert_eq!(matches[0].1, "New window · ctrl-n");
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    let others = viewer.others();
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].read(|view| view.session.source.row_count()), 0);
 }
 
-#[gpui_kit::test]
-fn new_window_respects_disabled_and_remapped_shortcuts_and_dialogs(cx: &mut TestAppContext) {
+#[test]
+fn new_window_respects_disabled_and_remapped_shortcuts_and_dialogs() {
     use crate::application::keymap::{ActionId, DisabledDefault, KeyContext, UserBinding};
     let home = tempfile::tempdir().unwrap();
-    let (original, view) =
-        viewer_with_repository(cx, ViewRepository::new(StorePaths::for_home(home.path())));
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, _| {
-            view.keymap.disabled_defaults.push(DisabledDefault {
-                action: ActionId::NewWindow,
-                context: KeyContext::Application,
-                keystroke: "ctrl-n".into(),
-            });
-            view.keymap.bindings.push(UserBinding {
-                action: ActionId::NewWindow,
-                context: KeyContext::Application,
-                keystroke: "ctrl-shift-n".into(),
-            });
+    let viewer = viewer(&home);
+    let windows = || viewer.app.windows().len();
+    viewer.update(|view, _| {
+        view.keymap.disabled_defaults.push(DisabledDefault {
+            action: ActionId::NewWindow,
+            context: KeyContext::Application,
+            keystroke: "ctrl-n".into(),
         });
-        window.render_frame(cx);
-        window.press("ctrl-n", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 1);
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, cx| view.open_information(window, cx));
-        window.render_frame(cx);
-        window.press("ctrl-shift-n", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 1);
-    cx.update_window(original.into(), |_, window, cx| {
-        window.close_dialog(cx);
-        view.update(cx, |view, cx| view.open_keymap_editor(window, cx));
-        window.render_frame(cx);
-        window.press("ctrl-shift-n", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 1);
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, _| view.keymap_editor = None);
-        let focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
-        window.render_frame(cx);
-        window.press("ctrl-shift-n", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 2);
+        view.keymap.bindings.push(UserBinding {
+            action: ActionId::NewWindow,
+            context: KeyContext::Application,
+            keystroke: "ctrl-shift-n".into(),
+        });
+    });
+    press(&viewer, "ctrl-n");
+    assert_eq!(windows(), 1);
+    viewer.update(|view, cx| view.open_information(cx));
+    press(&viewer, "ctrl-shift-n");
+    assert_eq!(windows(), 1);
+    viewer.close_dialog();
+    viewer.update(|view, cx| view.open_keymap_editor(cx));
+    press(&viewer, "ctrl-shift-n");
+    assert_eq!(windows(), 1);
+    viewer.update(|view, _| view.keymap_editor = None);
+    press_in_grid(&viewer, "ctrl-shift-n");
+    assert_eq!(windows(), 2);
 }
 
-#[gpui_kit::test]
-fn new_windows_navigate_independently_and_survive_closing_original(cx: &mut TestAppContext) {
+#[test]
+fn new_windows_navigate_independently_and_survive_closing_original() {
+    use crate::infrastructure::source_database::LoadMode;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
     let source = home.path().join("other.csv");
     std::fs::write(&source, "name,amount\nFirst,30\nSecond,40\nThird,50\n").unwrap();
-    let (original, view) = viewer_with_repository(cx, repository);
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.dispatch_command(super::CommandId::NewWindow, window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let other_handle = cx
-        .windows()
-        .into_iter()
-        .find(|handle| *handle != original.into())
-        .unwrap();
-    let other = window_view(cx, other_handle);
-    cx.update_window(other_handle, |_, window, cx| {
-        other.update(cx, |view, cx| {
-            view.load_source(
-                source.clone(),
-                false,
-                super::LoadMode::Check,
-                window.window_handle(),
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| {
-        assert!(other.read(cx).error.is_none(), "{:?}", other.read(cx).error);
-        assert_eq!(other.read(cx).session.source.row_count(), 3);
-        assert_eq!(view.read(cx).session.source.row_count(), 2);
-        assert!(view.read(cx).session.source_path.is_none());
+    let viewer = viewer_with_repository(repository(home.path()));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewWindow, cx));
+    viewer.run_until_parked();
+    let other = viewer.others().remove(0);
+    other.update(|view, cx| view.load_source(source.clone(), false, LoadMode::Check, cx));
+    other.settle();
+    other.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.source.row_count(), 3);
     });
-    cx.update_window(original.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-q", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows(), vec![other_handle]);
-    cx.update_window(other_handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-n", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 2);
-    cx.update_window(other_handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-q", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(cx.windows().len(), 1);
-    let survivor = window_view(cx, cx.windows()[0]);
-    cx.update(|cx| assert_eq!(survivor.read(cx).session.source.row_count(), 0));
+    viewer.read(|view| {
+        assert_eq!(view.session.source.row_count(), 2);
+        assert!(view.session.source_path.is_none());
+    });
+    press(&viewer, "ctrl-q");
+    assert_eq!(other.app.windows(), vec![other.id]);
+    press(&other, "ctrl-n");
+    assert_eq!(other.app.windows().len(), 2);
+    press(&other, "ctrl-q");
+    let survivors = other.app.windows();
+    assert_eq!(survivors.len(), 1);
+    assert_eq!(other.window(survivors[0]).read(|view| view.session.source.row_count()), 0);
 }
 
-#[gpui_kit::test]
-fn new_window_closing_saves_preferences_without_changing_primary_placement(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn new_window_closing_saves_preferences_without_changing_primary_placement() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (original, view) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(original.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.remember_window(window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.remember_window(cx));
+    viewer.run_until_parked();
     let placement = repository.load_history().unwrap().primary_window;
+    assert!(placement.is_some());
     for close_method in ["native", "shortcut", "release"] {
-        cx.update(|cx| view.update(cx, |view, cx| view.open_blank_window(None, cx)));
-        cx.run_until_parked();
-        let other_handle = cx
-            .windows()
-            .into_iter()
-            .find(|handle| *handle != original.into())
-            .unwrap();
-        let other = window_view(cx, other_handle);
+        viewer.update(|view, cx| view.open_blank_window(None, cx));
+        viewer.run_until_parked();
+        let other = viewer.others().remove(0);
         let source = home.path().join(format!("{close_method}.csv"));
-        cx.update(|cx| {
-            other.update(cx, |view, _| {
-                view.session.source_path = Some(source.to_string_lossy().into_owned());
-                view.session.direct_table.source_path = source.to_string_lossy().into_owned();
-                view.session.set_column_width("Row".into(), 180.);
-            });
+        other.update(|view, _| {
+            view.session.source_path = Some(source.to_string_lossy().into_owned());
+            view.session.direct_table.source_path = source.to_string_lossy().into_owned();
+            view.session.set_column_width("Row".into(), 180.);
         });
-        if close_method == "native" {
-            let mut visual = gpui_kit::VisualTestContext::from_window(other_handle, cx);
-            assert!(visual.simulate_close());
+        match close_method {
+            "native" => assert!(other.request_close()),
+            // Painting would measure the column and replace the width set above.
+            "shortcut" => other.press("ctrl-q"),
+            _ => other.app.close(other.id),
         }
-        // Release coverage must not retain the view outside its window.
-        drop(other);
-        cx.update_window(other_handle, |_, window, cx| {
-            if close_method == "shortcut" {
-                window.render_frame(cx);
-                window.press("ctrl-q", cx);
-            } else {
-                window.remove_window();
-            }
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update(|cx| view.read(cx).table_writer.flush().unwrap());
-        assert_eq!(
-            repository.load_table_preferences(&source).unwrap().widths["Row"],
-            180.
-        );
+        viewer.run_until_parked();
+        viewer.read(|view| view.table_writer.flush().unwrap());
+        assert_eq!(repository.load_table_preferences(&source).unwrap().widths["Row"], 180.);
         assert_eq!(repository.load_history().unwrap().primary_window, placement);
-        assert_eq!(cx.windows(), vec![original.into()]);
+        assert_eq!(viewer.app.windows(), vec![viewer.id]);
     }
 }
 
-#[gpui_kit::test]
-fn closing_window_flushes_latest_size_without_waiting_for_debounce(cx: &mut TestAppContext) {
+#[test]
+fn closing_window_flushes_latest_size_without_waiting_for_debounce() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.repository = repository.clone();
-            view.remember_window(window, cx);
-        });
-    })
-    .unwrap();
-    cx.simulate_window_resize(handle.into(), size(px(1100.), px(700.)));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(
-            view.read(cx).window_geometry.as_ref().unwrap().width,
-            1100.0
-        );
+    let repository = repository(home.path());
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| {
+        view.repository = repository.clone();
+        view.remember_window(cx);
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-q", cx);
-    })
-    .unwrap();
-    drop(view);
-    cx.run_until_parked();
+    viewer.resize(1100., 700.);
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.window_geometry.as_ref().unwrap().width), 1100.0);
+    press(&viewer, "ctrl-q");
+    viewer.run_until_parked();
     let saved = repository.load_history().unwrap().primary_window.unwrap();
     assert_eq!(saved.width, 1100.0);
     assert_eq!(saved.height, 700.0);
 }
 
-#[gpui_kit::test]
-fn startup_restores_saved_position_and_size(cx: &mut TestAppContext) {
+#[test]
+fn startup_restores_saved_position_and_size() {
     use super::ViewerOptions;
     use crate::infrastructure::json_store::WindowGeometry;
-    cx.update(gpui_kit::init);
+    use crate::ui::platform::headless::TestApp;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let saved = WindowGeometry {
         x: 120.0,
         y: 60.0,
@@ -2654,2145 +1616,1316 @@ fn startup_restores_saved_position_and_size(cx: &mut TestAppContext) {
         maximized: false,
     };
     repository.save_window_geometry(&saved).unwrap();
+    let app = TestApp::<super::DataFrameView>::new();
     let frame = FrameSnapshot::new(DuckDbStore::synthetic(10).unwrap(), 1);
-    cx.update(|cx| {
-        DataFrameView::open(
-            frame,
-            None,
-            ViewerOptions {
-                repository: repository.clone(),
-                ..Default::default()
-            },
-            cx,
-        )
-    });
-    cx.run_until_parked();
-    let handle = cx.update(|cx| cx.windows()[0]);
-    cx.update_window(handle, |_, window, _| {
-        assert_eq!(
-            super::window_placement::geometry(window.window_bounds()),
-            saved
-        );
-        window.remove_window();
-    })
-    .unwrap();
+    super::DataFrameView::open(
+        app.runtime(),
+        frame,
+        None,
+        ViewerOptions {
+            repository,
+            ..Default::default()
+        },
+    );
+    app.run_until_parked();
+    let id = app.windows()[0];
+    let placement = app.update(id, |_, cx| cx.placement()).unwrap();
+    assert_eq!(crate::ui::window_placement::geometry(placement), saved);
 }
 
-#[gpui_kit::test]
-fn info_shortcut_opens_dialog(cx: &mut TestAppContext) {
-    let (handle, _) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("i", cx);
-        window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn info_profiles_every_source_row_while_search_narrows_the_grid(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.set_search_text("North".into(), window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(view.read(cx).session.result.row_count(), 1);
-        view.update(cx, |view, cx| view.open_information(window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let panel = view
-            .read(cx)
-            .information_panel
-            .as_ref()
-            .and_then(|panel| panel.upgrade())
-            .expect("information panel");
-        let panel = panel.read(cx);
-        assert_eq!(
-            panel.row_text("region", cx).unwrap(),
-            [
-                "region",
-                "VARCHAR",
-                "0",
-                "0.0%",
-                "2",
-                "North",
-                "South",
-                "North (1) · South (1)"
-            ]
-        );
-        assert_eq!(
-            panel.row_text("sales", cx).unwrap()[2..7],
-            ["0", "0.0%", "2", "10", "20"]
-        );
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn help_font_changes_and_repeated_scrollbar_drags_keep_track_fixed(cx: &mut TestAppContext) {
-    use gpui_kit::{
-        InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        point,
-    };
+#[test]
+fn info_shortcut_opens_dialog() {
     let home = tempfile::tempdir().unwrap();
-    let (handle, view) =
-        viewer_with_repository(cx, ViewRepository::new(StorePaths::for_home(home.path())));
-    cx.simulate_window_resize(handle.into(), size(px(800.), px(600.)));
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        view.update(cx, |view, cx| view.open_help(window, cx));
-        window.render_frame(cx);
-        let key_height = window.find("help-key-Navigation-0").bounds().size.height;
-        let description_height = window
-            .find("help-description-Navigation-0")
-            .bounds()
-            .size
-            .height;
-        view.update(cx, |view, cx| view.change_font_size(9, cx));
-        window.render_frame(cx);
-        assert!(window.find("help-key-Navigation-0").bounds().size.height > key_height);
+    let viewer = viewer(&home);
+    press(&viewer, "i");
+    viewer.render();
+    assert!(viewer.has_dialog());
+}
+
+fn information<R>(viewer: &Viewer, f: impl FnOnce(&crate::ui::info::InformationPanel) -> R) -> R {
+    viewer.read(|view| {
+        let Some(Dialog::Information(panel)) = &view.dialog else {
+            panic!("the information dialog is open")
+        };
+        f(panel)
+    })
+}
+
+#[test]
+fn info_profiles_every_source_row_while_search_narrows_the_grid() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.set_search_text("North".into(), cx));
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    viewer.update(|view, cx| view.open_information(cx));
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(
+        information(&viewer, |panel| panel.row_text("region")).unwrap(),
+        [
+            "region",
+            "VARCHAR",
+            "0",
+            "0.0%",
+            "2",
+            "North",
+            "South",
+            "North (1) · South (1)"
+        ]
+    );
+    assert_eq!(
+        information(&viewer, |panel| panel.row_text("sales")).unwrap()[2..7],
+        ["0", "0.0%", "2", "10", "20"]
+    );
+}
+
+fn help<R>(viewer: &Viewer, f: impl FnOnce(&crate::ui::help::HelpDialog) -> R) -> R {
+    viewer.read(|view| {
+        let Some(Dialog::Help(help)) = &view.dialog else {
+            panic!("help is open")
+        };
+        f(help)
+    })
+}
+
+fn find(viewer: &Viewer, hit: Hit) -> Rect {
+    viewer.render();
+    viewer.find(|found| *found == hit).unwrap_or_else(|| panic!("no {hit:?}"))
+}
+
+#[test]
+fn help_font_changes_and_repeated_scrollbar_drags_keep_track_fixed() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.resize(800., 600.);
+    viewer.update(|view, cx| view.open_help(cx));
+    viewer.render();
+    let height = help(&viewer, |help| help.content_height());
+    viewer.update(|view, cx| view.change_font_size(9, cx));
+    viewer.render();
+    assert!(help(&viewer, |help| help.content_height()) > height);
+
+    let track = find(&viewer, Hit::DialogScroll);
+    let bar = find(&viewer, Hit::DialogBar);
+    let mut from = point(bar.center().x, bar.y + 12.);
+    for travel in [60., 60., -90.] {
+        let before = help(&viewer, |help| help.scroll.offset);
+        let to = point(from.x, from.y + travel);
+        viewer.drag(from, to);
+        let after = help(&viewer, |help| help.scroll.offset);
         assert!(
-            window
-                .find("help-description-Navigation-0")
-                .bounds()
-                .size
-                .height
-                > description_height
+            if travel > 0. { after > before } else { after < before },
+            "drag should follow the thumb"
         );
-
-        let track = window.find("help-viewport").bounds();
-        let mut from = point(track.right() - px(5.), track.top() + px(12.));
-        for travel in [60., 60., -90.] {
-            let before = window.find("help-section-Navigation").bounds().origin.y;
-            window.dispatch_event(
-                MouseDownEvent {
-                    position: from,
-                    modifiers: Modifiers::default(),
-                    button: MouseButton::Left,
-                    click_count: 1,
-                    first_mouse: false,
-                }
-                .to_platform_input(),
-                cx,
-            );
-            window.render_frame(cx);
-            let to = point(from.x, from.y + px(travel));
-            window.dispatch_event(
-                MouseMoveEvent {
-                    position: to,
-                    modifiers: Modifiers::default(),
-                    pressed_button: Some(MouseButton::Left),
-                }
-                .to_platform_input(),
-                cx,
-            );
-            window.render_frame(cx);
-            window.dispatch_event(
-                MouseUpEvent {
-                    position: to,
-                    modifiers: Modifiers::default(),
-                    button: MouseButton::Left,
-                    click_count: 1,
-                }
-                .to_platform_input(),
-                cx,
-            );
-            window.render_frame(cx);
-            let after = window.find("help-section-Navigation").bounds().origin.y;
-            assert!(
-                if travel > 0. {
-                    after < before
-                } else {
-                    after > before
-                },
-                "drag should follow the thumb"
-            );
-            assert_eq!(window.find("help-viewport").bounds(), track);
-            from = to;
-        }
-    })
-    .unwrap();
+        assert_eq!(find(&viewer, Hit::DialogScroll), track);
+        from = to;
+    }
 }
 
-#[gpui_kit::test]
-fn help_columns_resize_align_scroll_and_dismiss(cx: &mut TestAppContext) {
-    use gpui_kit::{ScrollDelta, point};
-
+#[test]
+fn help_columns_resize_align_scroll_and_dismiss() {
+    use crate::ui::help::HelpLayout;
     let home = tempfile::tempdir().unwrap();
-    let (handle, view) =
-        viewer_with_repository(cx, ViewRepository::new(StorePaths::for_home(home.path())));
-    cx.simulate_window_resize(handle.into(), size(px(1920.), px(1080.)));
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("f1", cx);
-        window.render_frame(cx);
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
+    let viewer = viewer(&home);
+    viewer.resize(1920., 1080.);
+    press(&viewer, "f1");
+    viewer.render();
+    assert!(viewer.has_dialog());
 
     for (width, height, columns) in [(1920., 1080., 3), (1200., 800., 2), (800., 600., 1)] {
-        cx.simulate_window_resize(handle.into(), size(px(width), px(height)));
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let dialog = window.within("dialog").find(0usize).bounds();
-            assert_eq!(dialog.size.width, px((width - 48.).min(1500.)));
-            assert!(dialog.origin.x >= px(24.));
-            assert!(dialog.right() <= px(width - 24.));
-            let close = window.find("close").bounds();
-            assert!(close.right() >= dialog.right() - px(40.));
-            assert!(close.right() < dialog.right());
-            let body = window.find("help-body").bounds();
-            assert!(body.size.height <= px(height - 140.));
-            for column in 0..columns {
-                let bounds = window.find(format!("help-column-{column}")).bounds();
-                assert!(bounds.origin.x >= dialog.origin.x);
-                assert!(bounds.right() <= dialog.right());
-            }
-            assert!(window.try_find(format!("help-column-{columns}")).is_none());
-            let key = window.find("help-key-Navigation-0").bounds();
-            let description = window.find("help-description-Navigation-0").bounds();
-            for row in 1..4 {
-                let next_key = window.find(format!("help-key-Navigation-{row}")).bounds();
-                let next_description = window
-                    .find(format!("help-description-Navigation-{row}"))
-                    .bounds();
-                assert_eq!(next_key.origin.x, key.origin.x);
-                assert_eq!(next_key.size.width, key.size.width);
-                assert_eq!(next_description.origin.x, description.origin.x);
-                assert!(next_description.origin.x > next_key.right());
-            }
-            if columns == 1 {
-                let before = window.find("help-section-FilesViews").bounds().origin.y;
-                window.scroll(
-                    "help-body",
-                    ScrollDelta::Pixels(point(px(0.), px(-600.))),
-                    cx,
-                );
-                window.render_frame(cx);
-                assert!(window.find("help-section-FilesViews").bounds().origin.y < before);
-            }
-        })
-        .unwrap();
+        viewer.resize(width, height);
+        let dialog = find(&viewer, Hit::Surface);
+        assert_eq!(dialog.w, (width - 48.).min(1500.));
+        assert!(dialog.x >= 24.);
+        assert!(dialog.right() <= width - 24.);
+        let close = find(&viewer, Hit::Button(Button::DialogClose));
+        assert!(close.right() >= dialog.right() - 40.);
+        assert!(close.right() < dialog.right());
+        let body = find(&viewer, Hit::DialogScroll);
+        assert!(body.h <= height - 140.);
+        assert_eq!(HelpLayout::for_viewport(width).column_count, columns);
+        if columns == 1 {
+            let before = help(&viewer, |help| help.scroll.offset);
+            viewer.app.scroll(viewer.id, body.center(), point(0., -10.));
+            viewer.render();
+            assert!(help(&viewer, |help| help.scroll.offset) > before);
+        }
     }
 
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-        view.update(cx, |view, cx| {
-            view.change_font_size(9, cx);
-            view.open_help(window, cx);
-        });
-        window.render_frame(cx);
-        let body = window.find("help-body").bounds();
-        assert!(body.size.height <= px(460.));
-        window.click("close", cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
+    viewer.update(|view, cx| {
+        view.change_font_size(9, cx);
+        view.open_help(cx);
+    });
+    let body = find(&viewer, Hit::DialogScroll);
+    assert!(body.h <= 460.);
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogClose));
+    assert!(!viewer.has_dialog());
 }
 
-#[gpui_kit::test]
-fn information_sql_is_readonly_selectable_copyable_and_escape_restores_grid(
-    cx: &mut TestAppContext,
-) {
-    use crate::ui::info::InformationPanel;
-    use gpui_kit::ParentElement;
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    let sql = cx.update(|cx| view.read(cx).session.sql.text());
+#[test]
+fn information_sql_is_readonly_selectable_copyable_and_escape_restores_grid() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let sql = viewer.read(|view| view.session.sql.text());
     assert!(sql.contains("Result search and sort"));
-    let mut panel = None;
-    cx.update_window(handle.into(), |_, window, cx| {
-        let entity = cx.new(|cx| {
-            InformationPanel::new(
-                vec![("n".into(), "BIGINT".into())],
-                1,
-                String::new(),
-                sql.clone(),
-                window,
-                cx,
-            )
-        });
-        panel = Some(entity.clone());
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.content({
-                let entity = entity.clone();
-                move |content, _, _| content.child(entity.clone())
-            })
-        });
-        window.render_frame(cx);
-        let editor = panel.as_ref().unwrap().read(cx).editor.clone();
-        window.focus(&editor.read(cx).focus_handle(cx), cx);
-        window.press("ctrl-a", cx);
-        window.input("DELETE", cx);
-        window.press("backspace", cx);
-        assert_eq!(editor.read(cx).value().to_string(), sql);
-        window.press("ctrl-c", cx);
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some(sql.clone())
-        );
-        window.click("information-copy-sql", cx);
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some(sql.clone())
-        );
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-        assert!(
-            view.read(cx)
-                .grid
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        );
-    })
-    .unwrap();
+    viewer.update(|view, cx| view.open_information(cx));
+    viewer.run_until_parked();
+    viewer.render();
+    let (editor, shown) = information(&viewer, |panel| (panel.editor.id, panel.sql.clone()));
+    viewer.focus(editor);
+    viewer.press("ctrl-a");
+    viewer.input("DELETE");
+    viewer.press("backspace");
+    assert_eq!(information(&viewer, |panel| panel.editor.text().to_owned()), shown);
+    viewer.press("ctrl-c");
+    assert_eq!(clipboard_text(), Some(shown.clone()));
+    crate::ui::platform::system::write_clipboard("");
+    viewer.click(|hit| *hit == Hit::Button(Button::CopySql));
+    assert_eq!(clipboard_text(), Some(shown));
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
+    assert!(viewer.grid_focused());
 }
 
-#[gpui_kit::test]
-fn pivot_sql_cache_and_errors_follow_the_published_result(cx: &mut TestAppContext) {
-    use crate::domain::documents::{
-        Aggregation, AggregationOp, Condition, ConditionOp, ConditionValue, ScalarKey,
-    };
+#[test]
+fn pivot_sql_cache_and_errors_follow_the_published_result() {
+    use crate::domain::documents::{Aggregation, AggregationOp, Condition, ConditionOp, ConditionValue, ScalarKey};
     use crate::domain::sql::SqlStatus;
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            view.session.start_query_draft("Pivot".into()).unwrap();
-            let ViewKind::Query(config) = &mut view.session.working.as_mut().unwrap().view else {
-                unreachable!()
-            };
-            config.group_by = vec!["sales".into()];
-            config.pivot_by = vec!["region".into()];
-            config.aggregations = vec![Aggregation {
-                sql: None,
-                source_column: "sales".into(),
-                operation: AggregationOp::Sum,
-                name: None,
-                conditions: vec![Condition {
-                    column: "region".into(),
-                    operation: ConditionOp::Equal,
-                    values: vec![ConditionValue::Literal(ScalarKey::String("North".into()))],
-                }],
-                percentile: None,
-                interpolation: None,
-                ddof: None,
-            }];
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let state = view.read(cx);
-        assert!(state.error.is_none(), "{:?}", state.error);
-        assert_eq!(state.session.sql.displayed.statements.len(), 4);
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| {
+        view.session.start_query_draft("Pivot".into()).unwrap();
+        let ViewKind::Query(config) = &mut view.session.working.as_mut().unwrap().view else {
+            unreachable!()
+        };
+        config.group_by = vec!["sales".into()];
+        config.pivot_by = vec!["region".into()];
+        config.aggregations = vec![Aggregation {
+            sql: None,
+            source_column: "sales".into(),
+            operation: AggregationOp::Sum,
+            name: None,
+            conditions: vec![Condition {
+                column: "region".into(),
+                operation: ConditionOp::Equal,
+                values: vec![ConditionValue::Literal(ScalarKey::String("North".into()))],
+            }],
+            percentile: None,
+            interpolation: None,
+            ddof: None,
+        }];
+        view.schedule_search(String::new(), cx);
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| view.set_search_text("10".into(), window, cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let previous = cx.update(|cx| {
-        let state = view.read(cx);
-        assert_eq!(state.session.sql.displayed.statements.len(), 4);
-        assert!(
-            state.session.sql.displayed.statements[..3]
-                .iter()
-                .all(|s| s.status == SqlStatus::Cached)
-        );
-        assert_eq!(
-            state.session.sql.displayed.statements[3].status,
-            SqlStatus::Succeeded
-        );
-        state.session.result.result_revision
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.sql.displayed.statements.len(), 4);
     });
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| {
-            let ViewKind::Query(config) = &mut view.session.working.as_mut().unwrap().view else {
-                unreachable!()
-            };
-            config.pivot_by = vec!["missing".into()];
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let state = view.read(cx);
-        assert!(state.error.is_some());
-        assert_eq!(state.session.result.result_revision, previous);
-        assert_eq!(state.session.sql.displayed.statements.len(), 4);
-        assert!(state.session.sql.failed.is_some());
+    viewer.update(|view, cx| view.set_search_text("10".into(), cx));
+    viewer.run_until_parked();
+    let previous = viewer.read(|view| {
+        let statements = &view.session.sql.displayed.statements;
+        assert_eq!(statements.len(), 4);
+        assert!(statements[..3].iter().all(|statement| statement.status == SqlStatus::Cached));
+        assert_eq!(statements[3].status, SqlStatus::Succeeded);
+        view.session.result.result_revision
+    });
+    viewer.update(|view, cx| {
+        let ViewKind::Query(config) = &mut view.session.working.as_mut().unwrap().view else {
+            unreachable!()
+        };
+        config.pivot_by = vec!["missing".into()];
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_some());
+        assert_eq!(view.session.result.result_revision, previous);
+        assert_eq!(view.session.sql.displayed.statements.len(), 4);
+        assert!(view.session.sql.failed.is_some());
     });
 }
 
-#[gpui_kit::test]
-fn header_keeps_only_contextual_clear_sort(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        for id in [
-            "files",
-            "order-by",
-            "favorites",
-            "information",
-            "keymap-editor",
-            "help",
-            "save-view",
-            "clear-sort",
-        ] {
-            assert!(
-                window.try_find(id).is_none(),
-                "unexpected header button {id}"
-            );
-        }
-        view.update(cx, |view, cx| {
-            view.session.set_sort_direction("sales".into(), true);
-            let sort = view.session.sort.clone();
-            view.grid.update(cx, |grid, cx| grid.set_sort(sort, cx));
-            cx.notify();
-        });
-        window.render_frame(cx);
-        assert!(window.try_find("clear-sort").is_some());
-        window.click("clear-sort", cx);
-        assert!(view.read(cx).session.sort.is_empty());
-        window.render_frame(cx);
-        assert!(window.try_find("clear-sort").is_none());
-    })
-    .unwrap();
+#[test]
+fn header_keeps_only_contextual_clear_sort() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.render();
+    // The header holds only search, the limit and buttons that undo something.
+    let buttons = viewer
+        .app
+        .hits(viewer.id)
+        .into_iter()
+        .filter(|region| matches!(region.hit, Hit::Button(_)))
+        .map(|region| region.hit)
+        .collect::<Vec<_>>();
+    assert!(buttons.is_empty(), "unexpected buttons {buttons:?}");
+    viewer.update(|view, _| {
+        view.session.set_sort_direction("sales".into(), true);
+        let sort = view.session.sort.clone();
+        view.grid.set_sort(sort);
+    });
+    assert!(has_button(&viewer, Button::ClearSort));
+    viewer.click(|hit| *hit == Hit::Button(Button::ClearSort));
+    assert!(viewer.read(|view| view.session.sort.is_empty()));
+    assert!(!has_button(&viewer, Button::ClearSort));
 }
 
-#[gpui_kit::test]
-fn space_menu_is_scoped_to_grid_and_unknown_keys_leave_it_open(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let search_focus = view.read(cx).search_input.read(cx).focus_handle(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&search_focus, cx);
-        window.press("space", cx);
-        assert!(!view.read(cx).space_menu_open);
-
-        window.focus(&grid_focus, cx);
-        window.press("space", cx);
-        assert!(view.read(cx).space_menu_open);
-        window.render_frame(cx);
-        window.press("q", cx);
-        assert!(view.read(cx).space_menu_open);
-        window.press("escape", cx);
-        assert!(!view.read(cx).space_menu_open);
-    })
-    .unwrap();
+#[test]
+fn space_menu_is_scoped_to_grid_and_unknown_keys_leave_it_open() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.render();
+    viewer.focus_search();
+    viewer.press("space");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    viewer.focus_grid();
+    viewer.press("space");
+    assert!(viewer.read(|view| view.space_menu_open));
+    viewer.render();
+    viewer.press("q");
+    assert!(viewer.read(|view| view.space_menu_open));
+    viewer.press("escape");
+    assert!(!viewer.read(|view| view.space_menu_open));
 }
 
-#[gpui_kit::test]
-fn grid_copy_freeze_and_save_shortcuts_respect_focus(cx: &mut TestAppContext) {
+fn frozen_count(viewer: &Viewer) -> usize {
+    viewer.read(|view| view.session.effective_table_config().frozen_count)
+}
+
+#[test]
+fn grid_copy_freeze_and_save_shortcuts_respect_focus() {
     let home = tempfile::tempdir().unwrap();
     let source = home.path().join("shortcuts.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
-    let (handle, view) = viewer_with_document(
-        cx,
-        ViewRepository::new(StorePaths::for_home(home.path())),
-        Some(source.to_string_lossy().into_owned()),
-        None,
-    );
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let search = view.read(cx).search_input.clone();
-        window.focus(&search.read(cx).focus_handle(cx), cx);
-        window.input("cf", cx);
-        assert_eq!(search.read(cx).value().as_str(), "cf");
-        assert_eq!(
-            view.read(cx).session.effective_table_config().frozen_count,
-            0
-        );
-        assert!(view.read(cx).copy_status.is_none());
-        view.update(cx, |view, cx| {
-            view.set_search_text(String::new(), window, cx)
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("right", cx);
-        window.press("c", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some("10".into())
-        );
-        window.press("f", cx);
-        assert_eq!(
-            view.read(cx).session.effective_table_config().frozen_count,
-            1
-        );
-        assert!(!view.read(cx).space_menu_open);
-        window.press("f", cx);
-        assert_eq!(
-            view.read(cx).session.effective_table_config().frozen_count,
-            0
-        );
-        window.press("ctrl-s", cx);
-        assert!(window.has_active_dialog(cx));
-        window.render_frame(cx);
-        assert!(window.try_find("save-confirm").is_some());
-        window.click("save-confirm", cx);
-        window.render_frame(cx);
-        assert!(!window.has_active_dialog(cx), "{:?}", view.read(cx).error);
-        assert!(!view.read(cx).session.dirty);
-        assert_eq!(view.read(cx).repository.load_views().0.len(), 1);
-    })
-    .unwrap();
+    let viewer = viewer_with_document(repository(home.path()), Some(source.to_string_lossy().into_owned()), None);
+    viewer.render();
+    viewer.focus_search();
+    viewer.input("cf");
+    assert_eq!(viewer.read(|view| view.search_input.text().to_owned()), "cf");
+    assert_eq!(frozen_count(&viewer), 0);
+    assert!(viewer.read(|view| view.copy_status.is_none()));
+    viewer.update(|view, cx| view.set_search_text(String::new(), cx));
+    viewer.run_until_parked();
+    viewer.focus_grid();
+    viewer.render();
+    viewer.press("right c");
+    viewer.run_until_parked();
+    assert_eq!(clipboard_text(), Some("10".into()));
+    viewer.press("f");
+    assert_eq!(frozen_count(&viewer), 1);
+    assert!(!viewer.read(|view| view.space_menu_open));
+    viewer.press("f");
+    assert_eq!(frozen_count(&viewer), 0);
+    viewer.press("ctrl-s");
+    assert!(viewer.has_dialog());
+    assert!(has_button(&viewer, Button::DialogOk));
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    assert!(!viewer.has_dialog(), "{:?}", viewer.read(|view| view.error.clone()));
+    viewer.read(|view| {
+        assert!(!view.session.dirty);
+        assert_eq!(view.repository.load_views().0.len(), 1);
+    });
 }
 
-#[gpui_kit::test]
-fn control_shift_digits_assign_all_favorite_slots(cx: &mut TestAppContext) {
+#[test]
+fn control_shift_digits_assign_all_favorite_slots() {
     use crate::application::state::ApplicationState;
+    use crate::infrastructure::json_store::FavoriteTarget;
     let home = tempfile::tempdir().unwrap();
     let source = home.path().join("favorite.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let source_path = source.to_string_lossy().into_owned();
-    let (handle, view) =
-        viewer_with_document(cx, repository.clone(), Some(source_path.clone()), None);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        for digit in 1..=9 {
-            window.press(&format!("ctrl-shift-{digit}"), cx);
-            assert!(view.read(cx).error.is_none(), "{:?}", view.read(cx).error);
-            assert_eq!(
-                ApplicationState::load(repository.clone())
-                    .unwrap()
-                    .settings
-                    .favorites[digit - 1],
-                Some(crate::infrastructure::json_store::FavoriteTarget::Source(
-                    source_path.clone()
-                ))
-            );
-        }
-    })
-    .unwrap();
+    let viewer = viewer_with_document(repository.clone(), Some(source_path.clone()), None);
+    viewer.focus_grid();
+    viewer.render();
+    for digit in 1..=9 {
+        viewer.press(&format!("ctrl-shift-{digit}"));
+        viewer.read(|view| assert!(view.error.is_none(), "{:?}", view.error));
+        assert_eq!(
+            ApplicationState::load(repository.clone()).unwrap().settings.favorites[digit - 1],
+            Some(FavoriteTarget::Source(source_path.clone()))
+        );
+    }
 }
 
-#[gpui_kit::test]
-fn changed_source_refreshes_all_open_windows_and_pivots(cx: &mut TestAppContext) {
-    use crate::domain::documents::{DocumentDefinition, QueryConfig};
+#[test]
+fn changed_source_refreshes_all_open_windows_and_pivots() {
+    use crate::domain::documents::{Dimension, QueryConfig};
     use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
     let home = tempfile::tempdir().unwrap();
     let source = home.path().join("sales.csv");
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
     let source_path = source.to_string_lossy().into_owned();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+    let repository = repository(home.path());
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let frame = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
-    let (_, table) = viewer_with_document(cx, repository.clone(), Some(source_path.clone()), None);
+    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
+    let table = viewer_with_document(repository.clone(), Some(source_path.clone()), None);
     let mut definition = DocumentDefinition::draft_table("By region".into(), source_path.clone());
     definition.view = ViewKind::Query(QueryConfig {
         group_by: vec!["region".into()],
         ..Default::default()
     });
-    let (_, query) = viewer_with_document(cx, repository, Some(source_path), Some(definition));
-    cx.update(|cx| {
-        table.update(cx, |view, cx| view.replace_dataframe(frame.clone(), cx));
-        query.update(cx, |view, cx| view.replace_dataframe(frame, cx));
-    });
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(table.read(cx).session.result.row_count(), 2);
-        assert_eq!(query.read(cx).session.result.row_count(), 2);
-    });
-    std::fs::write(
-        &source,
-        "region,sales,extra\nEast,100,new\nEast,200,new\nWest,300,new\n",
-    )
-    .unwrap();
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
-    cx.run_until_parked();
-    cx.update(|cx| {
-        for view in [&table, &query] {
-            let view = view.read(cx);
+    let query = Viewer::open_in(&table.app, sales_frame(), Some(source_path), Some(definition), repository);
+    table.update(|view, cx| view.replace_dataframe(loaded.clone(), cx));
+    query.update(|view, cx| view.replace_dataframe(loaded, cx));
+    table.run_until_parked();
+    assert_eq!(table.read(|view| view.session.result.row_count()), 2);
+    assert_eq!(query.read(|view| view.session.result.row_count()), 2);
+    std::fs::write(&source, "region,sales,extra\nEast,100,new\nEast,200,new\nWest,300,new\n").unwrap();
+    table.advance_clock(Duration::from_secs(1));
+    for viewer in [&table, &query] {
+        viewer.read(|view| {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert_eq!(view.session.source.row_count(), 3);
             assert_eq!(view.session.source.columns.len(), 3);
             assert_eq!(view.session.source.store.lock().unwrap().table_sql(), "files.\"sales_csv\"");
-        }
-        assert_eq!(table.read(cx).session.result.row_count(), 3);
-        let view = query.read(cx);
+        });
+    }
+    assert_eq!(table.read(|view| view.session.result.row_count()), 3);
+    query.read(|view| {
         assert_eq!(view.session.result.row_count(), 2);
         let store = view.session.result.store.lock().unwrap();
         let rows = store.fetch_row_ids(&store.initial_row_ids().unwrap()).unwrap();
-        assert_eq!(rows.iter().map(|row| row.values[0].as_deref()).collect::<Vec<_>>(), [Some("East"), Some("West")]);
-        assert!(matches!(&view.session.working.as_ref().unwrap().view, ViewKind::Query(config) if config.group_by == [crate::domain::documents::Dimension::from("region")]));
+        assert_eq!(
+            rows.iter().map(|row| row.values[0].as_deref()).collect::<Vec<_>>(),
+            [Some("East"), Some("West")]
+        );
+        assert!(
+            matches!(&view.session.working.as_ref().unwrap().view, ViewKind::Query(config) if config.group_by == [Dimension::from("region")])
+        );
     });
 }
 
-#[gpui_kit::test]
-fn space_menu_table_commands_sort_and_unfreeze(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("space", cx);
-        window.press("]", cx);
-        assert!(!view.read(cx).space_menu_open);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(view.read(cx).session.sort[0].column, "region");
-        assert!(view.read(cx).session.sort[0].descending);
-
-        window.press("space", cx);
-        window.press("f", cx);
-        let frozen = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Table(table) = &definition.view {
-                    Some(table.frozen_count)
-                } else {
-                    None
-                }
-            });
-        assert_eq!(frozen, Some(1));
-
-        window.press("space", cx);
-        window.press("shift-f", cx);
-        let frozen = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Table(table) = &definition.view {
-                    Some(table.frozen_count)
-                } else {
-                    None
-                }
-            });
-        assert_eq!(frozen, Some(0));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn space_menu_opens_group_pivot_and_aggregation_workflows(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-
-        window.press("space", cx);
-        assert!(view.read(cx).space_menu_open);
-        window.render_frame(cx);
-        window.press("g", cx);
-        assert!(!view.read(cx).space_menu_open);
-        assert!(window.has_active_dialog(cx));
-        window.render_frame(cx);
-        window.input("region", cx);
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let group_by = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Query(config) = &definition.view {
-                    Some(config.group_by.clone())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(group_by, Some(vec!["region".into()]));
-        assert!(view.read(cx).error.is_none());
-        assert!(window.has_active_dialog(cx));
-        window.close_dialog(cx);
-
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("p", cx);
-        window.render_frame(cx);
-        window.input("sales", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let pivot_by = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Query(config) = &definition.view {
-                    Some(config.pivot_by.clone())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(pivot_by, Some(vec!["sales".into()]));
-        assert!(window.has_active_dialog(cx));
-        window.close_dialog(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("a", cx);
-        window.render_frame(cx);
-        window.input("sales", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let aggregations = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Query(config) = &definition.view {
-                    Some(config.aggregations.clone())
-                } else {
-                    None
-                }
-            });
-        let aggregations = aggregations.unwrap();
-        assert_eq!(aggregations.len(), 1);
-        assert_eq!(
-            aggregations[0].operation,
-            crate::domain::documents::AggregationOp::Sum
-        );
-        assert_eq!(aggregations[0].name, None);
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn group_right_pane_reorders_and_removes_selected_field(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("g", cx);
-        window.render_frame(cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.close_dialog(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("g", cx);
-        window.render_frame(cx);
-        window.input("sales", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(window.has_active_dialog(cx));
-        window.close_dialog(cx);
-        let grid_focus = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid_focus, cx);
-        window.press("g", cx);
-        window.render_frame(cx);
-        window.press("tab", cx);
-        window.press("alt-down", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let group_by = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Query(config) = &definition.view {
-                    Some(config.group_by.clone())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(group_by, Some(vec!["sales".into(), "region".into()]));
-        window.press("delete", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        let group_by = view
-            .read(cx)
-            .session
-            .working
-            .as_ref()
-            .and_then(|definition| {
-                if let ViewKind::Query(config) = &definition.view {
-                    Some(config.group_by.clone())
-                } else {
-                    None
-                }
-            });
-        assert_eq!(group_by, Some(vec!["sales".into()]));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn aggregation_right_pane_edits_and_removes_selected_measure(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
-            view.open_aggregation_panel(window, cx);
-        });
-        window.render_frame(cx);
-        window.input("sales", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(window.has_active_dialog(cx));
-        let aggregation = view.read(cx).session.query_config().aggregations[0].clone();
-        assert_eq!(
-            aggregation.operation,
-            crate::domain::documents::AggregationOp::Sum
-        );
-        window.render_frame(cx);
-        window.press("tab", cx);
-        window.render_frame(cx);
-        window.press("enter", cx);
-        window.render_frame(cx);
-        assert!(window.try_find("aggregation-apply").is_some());
-        assert!(window.try_find("condition-add").is_none());
-        window.press("delete", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).session.query_config().aggregations.is_empty());
-        assert!(view.read(cx).is_table());
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
-}
-
-fn aggregation_editor(
-    cx: &mut TestAppContext,
-) -> (
-    gpui_kit::WindowHandle<Root>,
-    gpui_kit::Entity<DataFrameView>,
-    gpui_kit::Entity<crate::ui::aggregation_editor::AggregationPanel>,
-) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    let panel = cx
-        .update_window(handle.into(), |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.open_aggregation_panel(window, cx).unwrap()
-            })
+fn table_frozen(viewer: &Viewer) -> Option<usize> {
+    viewer.read(|view| {
+        view.session.working.as_ref().and_then(|definition| match &definition.view {
+            ViewKind::Table(table) => Some(table.frozen_count),
+            _ => None,
         })
-        .unwrap();
-    (handle, view, panel)
+    })
 }
 
-fn set_aggregation_sql(
-    panel: &gpui_kit::Entity<crate::ui::aggregation_editor::AggregationPanel>,
-    sql: &str,
-    window: &mut gpui_kit::Window,
-    cx: &mut gpui_kit::App,
-) {
-    let state = panel.read(cx).sql.read(cx).state().clone();
-    state.update(cx, |state, cx| state.set_value(sql, window, cx));
-}
-
-#[gpui_kit::test]
-fn aggregation_function_reference_inserts_a_call_into_custom_sql(cx: &mut TestAppContext) {
-    let (handle, view, panel) = aggregation_editor(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("aggregation-show-functions", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        // Descriptions are searchable as well as names.
-        window.input("deviation", cx);
-        window.render_frame(cx);
-        assert!(window.try_find("aggregation-sql").is_none());
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let state = panel.read(cx).sql.read(cx).state().clone();
-        assert_eq!(state.read(cx).value().as_ref(), "");
-        // Clear the query and look the function up by name; `median` comes
-        // before `mad`, whose description mentions the median.
-        for _ in 0.."deviation".len() {
-            window.press("backspace", cx);
-        }
-        window.input("median", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("enter", cx);
-        window.render_frame(cx);
-        let state = panel.read(cx).sql.read(cx).state().clone();
-        assert_eq!(state.read(cx).value().as_ref(), "median()");
-        // The cursor waits between the parentheses for a column.
-        window.input("\"sales\"", cx);
-        assert_eq!(state.read(cx).value().as_ref(), "median(\"sales\")");
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let aggregations = view.read(cx).session.query_config().aggregations.clone();
-        assert_eq!(aggregations.len(), 1);
-        assert_eq!(aggregations[0].sql.as_deref(), Some("median(\"sales\")"));
+#[test]
+fn space_menu_table_commands_sort_and_unfreeze() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "space ]");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    viewer.read(|view| {
+        assert_eq!(view.session.sort[0].column, "region");
+        assert!(view.session.sort[0].descending);
     });
+    viewer.press("space f");
+    assert_eq!(table_frozen(&viewer), Some(1));
+    viewer.press("space shift-f");
+    assert_eq!(table_frozen(&viewer), Some(0));
 }
 
-#[gpui_kit::test]
-fn aggregation_sql_fills_its_area_and_scrolls_multiline_content(cx: &mut TestAppContext) {
-    let (handle, _, panel) = aggregation_editor(cx);
+fn query_config(viewer: &Viewer) -> Option<crate::domain::documents::QueryConfig> {
+    viewer.read(|view| {
+        view.session.working.as_ref().and_then(|definition| match &definition.view {
+            ViewKind::Query(config) => Some(config.clone()),
+            _ => None,
+        })
+    })
+}
+
+#[test]
+fn space_menu_opens_group_pivot_and_aggregation_workflows() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.focus_grid();
+    viewer.render();
+    viewer.press("space");
+    assert!(viewer.read(|view| view.space_menu_open));
+    viewer.render();
+    viewer.press("g");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    assert!(viewer.has_dialog());
+    viewer.render();
+    viewer.input("region");
+    viewer.render();
+    viewer.press("enter");
+    viewer.run_until_parked();
+    assert_eq!(query_config(&viewer).unwrap().group_by, vec!["region".into()]);
+    assert!(viewer.read(|view| view.error.is_none()));
+    assert!(viewer.has_dialog());
+    viewer.close_dialog();
+
+    viewer.focus_grid();
+    viewer.press("p");
+    viewer.render();
+    viewer.input("sales");
+    viewer.press("enter");
+    viewer.run_until_parked();
+    assert_eq!(query_config(&viewer).unwrap().pivot_by, vec!["sales".into()]);
+    assert!(viewer.has_dialog());
+    viewer.close_dialog();
+    viewer.focus_grid();
+    viewer.press("a");
+    viewer.render();
+    viewer.input("sales");
+    viewer.press("enter");
+    viewer.run_until_parked();
+    let aggregations = query_config(&viewer).unwrap().aggregations;
+    assert_eq!(aggregations.len(), 1);
+    assert_eq!(aggregations[0].operation, crate::domain::documents::AggregationOp::Sum);
+    assert_eq!(aggregations[0].name, None);
+    assert!(viewer.has_dialog());
+}
+
+#[test]
+fn group_right_pane_reorders_and_removes_selected_field() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "g");
+    press(&viewer, "enter");
+    viewer.close_dialog();
+    press_in_grid(&viewer, "g");
+    viewer.input("sales");
+    press(&viewer, "enter");
+    assert!(viewer.has_dialog());
+    viewer.close_dialog();
+    press_in_grid(&viewer, "g");
+    viewer.press("tab");
+    press(&viewer, "alt-down");
+    assert_eq!(query_config(&viewer).unwrap().group_by, vec!["sales".into(), "region".into()]);
+    press(&viewer, "delete");
+    assert_eq!(query_config(&viewer).unwrap().group_by, vec!["sales".into()]);
+}
+
+#[test]
+fn aggregation_right_pane_edits_and_removes_selected_measure() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_aggregation_panel(cx));
+    viewer.render();
+    viewer.input("sales");
+    press(&viewer, "enter");
+    assert!(viewer.has_dialog());
+    let aggregation = viewer.read(|view| view.session.query_config().aggregations[0].clone());
+    assert_eq!(aggregation.operation, crate::domain::documents::AggregationOp::Sum);
+    viewer.render();
+    viewer.press("tab");
+    viewer.render();
+    viewer.press("enter");
+    assert!(has_button(&viewer, Button::PanelApply));
+    press(&viewer, "delete");
+    viewer.read(|view| {
+        assert!(view.session.query_config().aggregations.is_empty());
+        assert!(view.is_table());
+    });
+    assert!(viewer.has_dialog());
+}
+
+type Focus = Option<crate::ui::widgets::WidgetId>;
+
+/// Changes the open aggregation editor, then lets the view handle its events.
+fn aggregation<R>(
+    viewer: &Viewer,
+    f: impl FnOnce(&mut crate::ui::aggregation_editor::AggregationPanel, &mut Focus) -> R,
+) -> R {
+    viewer.update(|view, _| {
+        let mut focus = view.focus;
+        let Some(Dialog::Aggregation(panel)) = &mut view.dialog else {
+            panic!("the aggregation editor is open")
+        };
+        let result = f(panel, &mut focus);
+        view.focus = focus;
+        result
+    })
+}
+
+fn aggregation_editor(home: &tempfile::TempDir) -> Viewer {
+    let viewer = viewer(home);
+    viewer.update(|view, cx| view.open_aggregation_panel(cx));
+    viewer
+}
+
+/// Replaces the SQL silently, as code would, without an edit event.
+fn set_aggregation_sql(viewer: &Viewer, sql: &str) {
+    aggregation(viewer, |panel, _| panel.sql.set_text(sql));
+}
+
+fn aggregation_sql(viewer: &Viewer) -> String {
+    aggregation(viewer, |panel, _| panel.sql.text().to_owned())
+}
+
+fn aggregation_error(viewer: &Viewer) -> Option<String> {
+    aggregation(viewer, |panel, _| panel.error.clone())
+}
+
+fn aggregations(viewer: &Viewer) -> Vec<crate::domain::documents::Aggregation> {
+    viewer.read(|view| view.session.query_config().aggregations)
+}
+
+#[test]
+fn aggregation_function_reference_inserts_a_call_into_custom_sql() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelShowFunctions));
+    viewer.run_until_parked();
+    viewer.render();
+    // Descriptions are searchable as well as names.
+    viewer.input("deviation");
+    viewer.render();
+    let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
+    assert!(viewer.find(|hit| matches!(hit, Hit::Editor(id, _) if *id == sql_id)).is_none());
+    viewer.run_until_parked();
+    assert_eq!(aggregation_sql(&viewer), "");
+    // Clear the query and look the function up by name; `median` comes
+    // before `mad`, whose description mentions the median.
+    for _ in 0.."deviation".len() {
+        viewer.press("backspace");
+    }
+    viewer.input("median");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert_eq!(aggregation_sql(&viewer), "median()");
+    // The cursor waits between the parentheses for a column.
+    viewer.input("\"sales\"");
+    assert_eq!(aggregation_sql(&viewer), "median(\"sales\")");
+    press(&viewer, "ctrl-enter");
+    let aggregations = aggregations(&viewer);
+    assert_eq!(aggregations.len(), 1);
+    assert_eq!(aggregations[0].sql.as_deref(), Some("median(\"sales\")"));
+}
+
+#[test]
+fn aggregation_sql_fills_its_area_and_scrolls_multiline_content() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
     let sql = (0..40).map(|_| "-- SQL line\n").collect::<String>() + "count(*)";
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-    })
-    .unwrap();
+    aggregation(&viewer, |panel, focus| panel.start_custom(focus));
+    let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
     for (width, height) in [(1400., 900.), (1000., 700.)] {
-        cx.simulate_window_resize(handle.into(), size(px(width), px(height)));
-        cx.update_window(handle.into(), |_, window, cx| {
-            set_aggregation_sql(&panel, &sql, window, cx);
-            window.render_frame(cx);
-            let state = panel.read(cx).sql.read(cx).state().clone();
-            let editor = window.find(("input", state.entity_id())).bounds();
-            let expected_height = (height - 560_f32).clamp(70., 220.);
-            assert!((px(expected_height) - editor.size.height).abs() <= px(2.));
-            let apply = window.find("aggregation-apply").bounds();
-            let before = state.read(cx).scroll_offset();
-            window.scroll(
-                ("input", state.entity_id()),
-                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-120.))),
-                cx,
-            );
-            assert!(state.read(cx).scroll_offset().y < before.y);
-            assert_eq!(window.find("aggregation-apply").bounds(), apply);
-            assert_eq!(state.read(cx).value().as_ref(), sql);
-        })
-        .unwrap();
+        viewer.resize(width, height);
+        set_aggregation_sql(&viewer, &sql);
+        viewer.render();
+        let editor = viewer
+            .app
+            .hits(viewer.id)
+            .into_iter()
+            .filter(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
+            .map(|region| region.rect)
+            .fold(None::<Rect>, |all, r| {
+                Some(all.map_or(r, |all| {
+                    let (x, y) = (all.x.min(r.x), all.y.min(r.y));
+                    crate::ui::platform::rect(x, y, all.right().max(r.right()) - x, all.bottom().max(r.bottom()) - y)
+                }))
+            })
+            .expect("the SQL editor is painted");
+        let expected_height = (height - 560_f32).clamp(70., 220.);
+        assert!((expected_height - editor.h).abs() <= 2., "{} vs {expected_height}", editor.h);
+        let apply = find(&viewer, Hit::Button(Button::PanelApply));
+        let before = aggregation(&viewer, |panel, _| panel.sql.scroll_offset());
+        viewer.app.scroll(viewer.id, editor.center(), point(0., -5.));
+        assert!(aggregation(&viewer, |panel, _| panel.sql.scroll_offset()) > before);
+        assert_eq!(find(&viewer, Hit::Button(Button::PanelApply)), apply);
+        assert_eq!(aggregation_sql(&viewer), sql);
     }
 }
 
-#[gpui_kit::test]
-fn aggregation_sql_applies_with_ctrl_enter_and_preserves_success_on_errors(
-    cx: &mut TestAppContext,
-) {
-    let (handle, view, panel) = aggregation_editor(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("aggregation-custom", cx);
-        window.render_frame(cx);
-        window.input("count(*) AS Rows", cx);
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let successful = cx.update(|cx| {
-        let view = view.read(cx);
-        assert!(
-            !view.session.query_config().aggregations.is_empty(),
-            "panel error: {:?}; SQL: {}; view error: {:?}",
-            panel.read(cx).error,
-            panel.read(cx).sql.read(cx).state().read(cx).value(),
-            view.error
-        );
-        assert_eq!(
-            view.session.query_config().aggregations[0].sql.as_deref(),
-            Some("count(*) AS Rows")
-        );
-        assert!(
-            view.session.query_config().aggregations[0]
-                .source_column
-                .is_empty()
-        );
+#[test]
+fn aggregation_sql_applies_with_ctrl_enter_and_preserves_success_on_errors() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.render();
+    viewer.input("count(*) AS Rows");
+    press(&viewer, "ctrl-enter");
+    let successful = viewer.read(|view| {
+        let config = view.session.query_config();
+        assert!(!config.aggregations.is_empty(), "view error: {:?}", view.error);
+        assert_eq!(config.aggregations[0].sql.as_deref(), Some("count(*) AS Rows"));
+        assert!(config.aggregations[0].source_column.is_empty());
         assert_eq!(view.session.result.columns[0].0, "Rows");
         assert_eq!(view.session.result.row_count(), 1);
         view.session.result.clone()
     });
-    cx.update_window(handle.into(), |_, window, cx| {
-        set_aggregation_sql(&panel, "sum(\"missing\")", window, cx);
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(panel.read(cx).error.as_ref().unwrap().contains("missing"));
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[0]
-                .sql
-                .as_deref(),
-            Some("count(*) AS Rows")
-        );
-        assert!(std::sync::Arc::ptr_eq(
-            &view.read(cx).session.result.store,
-            &successful.store
-        ));
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "sum(\"missing\")"
-        );
-        window.render_frame(cx);
-        window.click("aggregation-custom", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(panel.read(cx).error.is_some());
-        assert_eq!(view.read(cx).session.query_config().aggregations.len(), 1);
-        window.render_frame(cx);
-        window.click("aggregation-revert", cx);
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "count(*) AS Rows"
-        );
-        set_aggregation_sql(&panel, "sum(\"sales\")", window, cx);
-        panel.update(cx, |panel, cx| panel.focus_sql(window, cx));
-        window.render_frame(cx);
-        window.press("escape", cx);
-        assert!(!window.has_active_dialog(cx));
-        let reopened = view.update(cx, |view, cx| {
-            view.open_aggregation_panel(window, cx).unwrap()
-        });
-        assert_eq!(
-            reopened
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "count(*) AS Rows"
-        );
-    })
-    .unwrap();
+    set_aggregation_sql(&viewer, "sum(\"missing\")");
+    press(&viewer, "ctrl-enter");
+    assert!(aggregation_error(&viewer).unwrap().contains("missing"));
+    assert_eq!(aggregations(&viewer)[0].sql.as_deref(), Some("count(*) AS Rows"));
+    assert!(std::sync::Arc::ptr_eq(
+        &viewer.read(|view| view.session.result.store.clone()),
+        &successful.store
+    ));
+    assert_eq!(aggregation_sql(&viewer), "sum(\"missing\")");
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.run_until_parked();
+    assert!(aggregation_error(&viewer).is_some());
+    assert_eq!(aggregations(&viewer).len(), 1);
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelRevert));
+    assert_eq!(aggregation_sql(&viewer), "count(*) AS Rows");
+    set_aggregation_sql(&viewer, "sum(\"sales\")");
+    aggregation(&viewer, |panel, focus| panel.focus_sql(focus));
+    viewer.render();
+    viewer.press("escape");
+    assert!(!viewer.has_dialog());
+    viewer.update(|view, cx| view.open_aggregation_panel(cx));
+    assert_eq!(aggregation_sql(&viewer), "count(*) AS Rows");
 }
 
-#[gpui_kit::test]
-fn aggregation_selection_applies_sql_aliases_and_reorders_them(cx: &mut TestAppContext) {
-    let (handle, view, panel) = aggregation_editor(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.input("sales", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(view.read(cx).session.result.columns[0].0, "sum(sales)");
-        set_aggregation_sql(&panel, "sum(\"sales\") AS Revenue", window, cx);
-        window.render_frame(cx);
-        window.click("aggregation-custom", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let saved = view.read(cx).session.query_config().aggregations[0].clone();
-        assert!(saved.name.is_none());
-        assert_eq!(saved.sql.as_deref(), Some("sum(\"sales\") AS Revenue"));
-        assert_eq!(view.read(cx).session.result.columns[0].0, "Revenue");
-        set_aggregation_sql(&panel, "count(*)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(view.read(cx).session.query_config().aggregations.len(), 2);
-        set_aggregation_sql(&panel, "avg(\"sales\")", window, cx);
-        window.render_frame(cx);
-        window.click("aggregation-0", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[1]
-                .sql
-                .as_deref(),
-            Some("avg(\"sales\")")
-        );
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "sum(\"sales\") AS Revenue"
-        );
-        set_aggregation_sql(&panel, "sum(\"missing\")", window, cx);
-        window.render_frame(cx);
-        window.click("aggregation-1", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(panel.read(cx).error.is_some());
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "sum(\"missing\")"
-        );
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        window.render_frame(cx);
-        window.press("alt-down", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[1]
-                .sql
-                .as_deref(),
-            Some("sum(\"sales\") AS Revenue")
-        );
-    })
-    .unwrap();
+#[test]
+fn aggregation_selection_applies_sql_aliases_and_reorders_them() {
+    use crate::ui::widgets::list::Part;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    viewer.render();
+    viewer.input("sales");
+    press(&viewer, "enter");
+    assert_eq!(viewer.read(|view| view.session.result.columns[0].0.clone()), "sum(sales)");
+    set_aggregation_sql(&viewer, "sum(\"sales\") AS Revenue");
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.run_until_parked();
+    let saved = aggregations(&viewer)[0].clone();
+    assert!(saved.name.is_none());
+    assert_eq!(saved.sql.as_deref(), Some("sum(\"sales\") AS Revenue"));
+    assert_eq!(viewer.read(|view| view.session.result.columns[0].0.clone()), "Revenue");
+    set_aggregation_sql(&viewer, "count(*)");
+    aggregation(&viewer, |panel, _| panel.apply());
+    viewer.run_until_parked();
+    assert_eq!(aggregations(&viewer).len(), 2);
+    let list = aggregation(&viewer, |panel, _| panel.list.id);
+    set_aggregation_sql(&viewer, "avg(\"sales\")");
+    viewer.click(|hit| *hit == Hit::List(list, Part::Row(0)));
+    viewer.run_until_parked();
+    assert_eq!(aggregations(&viewer)[1].sql.as_deref(), Some("avg(\"sales\")"));
+    assert_eq!(aggregation_sql(&viewer), "sum(\"sales\") AS Revenue");
+    set_aggregation_sql(&viewer, "sum(\"missing\")");
+    viewer.click(|hit| *hit == Hit::List(list, Part::Row(1)));
+    viewer.run_until_parked();
+    assert!(aggregation_error(&viewer).is_some());
+    assert_eq!(aggregation_sql(&viewer), "sum(\"missing\")");
+    aggregation(&viewer, |panel, focus| panel.revert(focus));
+    press(&viewer, "alt-down");
+    assert_eq!(aggregations(&viewer)[1].sql.as_deref(), Some("sum(\"sales\") AS Revenue"));
 }
 
-#[gpui_kit::test]
-fn aggregation_invalid_selection_and_stale_checks_cannot_change_applied_config(
-    cx: &mut TestAppContext,
-) {
-    let (handle, view, panel) = aggregation_editor(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_aggregation_sql(&panel, "count(*)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        set_aggregation_sql(&panel, "count(*) + 1", window, cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).session.query_config().aggregations.is_empty());
-        assert!(panel.read(cx).error.as_ref().unwrap().contains("changed"));
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_aggregation_sql(&panel, "count(*)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_aggregation_sql(&panel, "sum(\"sales\")", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[0]
-                .sql
-                .as_deref(),
-            Some("sum(\"sales\")")
-        );
-        assert!(panel.read(cx).error.is_none());
-        set_aggregation_sql(&panel, "sum(\"missing\")", window, cx);
-        window.render_frame(cx);
-        window.click("aggregation-custom", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(panel.read(cx).error.is_some());
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "sum(\"missing\")"
-        );
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        set_aggregation_sql(&panel, "count(*)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        panel.update(cx, |panel, _| panel.close());
-        window.close_dialog(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[0]
-                .sql
-                .as_deref(),
-            Some("sum(\"sales\")")
-        );
+#[test]
+fn aggregation_invalid_selection_and_stale_checks_cannot_change_applied_config() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    aggregation(&viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text("count(*)");
+        panel.apply();
+        // The text changes before the check reports.
+        panel.sql.set_text("count(*) + 1");
+    });
+    viewer.run_until_parked();
+    assert!(aggregations(&viewer).is_empty());
+    assert!(aggregation_error(&viewer).unwrap().contains("changed"));
+    aggregation(&viewer, |panel, focus| {
+        panel.revert(focus);
+        panel.start_custom(focus);
+        panel.sql.set_text("count(*)");
+        panel.apply();
+        panel.revert(focus);
+        panel.start_custom(focus);
+        panel.sql.set_text("sum(\"sales\")");
+        panel.apply();
+    });
+    viewer.run_until_parked();
+    assert_eq!(aggregations(&viewer)[0].sql.as_deref(), Some("sum(\"sales\")"));
+    assert!(aggregation_error(&viewer).is_none());
+    set_aggregation_sql(&viewer, "sum(\"missing\")");
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.run_until_parked();
+    assert!(aggregation_error(&viewer).is_some());
+    assert_eq!(aggregation_sql(&viewer), "sum(\"missing\")");
+    aggregation(&viewer, |panel, focus| {
+        panel.revert(focus);
+        panel.sql.set_text("count(*)");
+        panel.apply();
+        panel.close();
+    });
+    viewer.close_dialog();
+    viewer.run_until_parked();
+    assert_eq!(aggregations(&viewer)[0].sql.as_deref(), Some("sum(\"sales\")"));
+}
+
+#[test]
+fn aggregation_column_addition_applies_pending_custom_sql_and_pivot_filter_is_inline() {
+    use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig};
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    aggregation(&viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text("count(*)");
+        panel.focus_available(focus);
+    });
+    viewer.render();
+    viewer.input("region");
+    press(&viewer, "enter");
+    let config = viewer.read(|view| view.session.query_config());
+    assert_eq!(config.aggregations.len(), 2);
+    assert_eq!(config.aggregations[0].sql.as_deref(), Some("count(*)"));
+    assert_eq!(config.aggregations[1].operation, AggregationOp::NonNullCount);
+    assert_eq!(aggregation_sql(&viewer), "count(\"region\")");
+    assert!(viewer.has_dialog());
+    viewer.close_dialog();
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(
+                QueryConfig {
+                    group_by: vec!["region".into()],
+                    pivot_by: vec!["sales".into()],
+                    aggregations: vec![Aggregation::sql_expression("count(*)".into(), None)],
+                    ..Default::default()
+                },
+                "Pivot".into(),
+            )
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.update(|view, cx| view.open_aggregation_panel(cx));
+    aggregation(&viewer, |panel, _| {
+        panel.sql.set_text("count(*) FILTER (WHERE true)");
+        panel.apply();
+    });
+    assert!(aggregation_error(&viewer).unwrap().contains("DuckDB ignores FILTER"));
+    assert_eq!(aggregations(&viewer)[0].sql.as_deref(), Some("count(*)"));
+    assert!(has_button(&viewer, Button::PanelLimitations));
+}
+
+fn query_by_region(viewer: &Viewer) {
+    use crate::domain::documents::QueryConfig;
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(
+                QueryConfig {
+                    group_by: vec!["region".into()],
+                    ..Default::default()
+                },
+                "Query".into(),
+            )
+            .unwrap();
+        view.session.dirty = false;
+        view.schedule_search(String::new(), cx);
     });
 }
 
-#[gpui_kit::test]
-fn aggregation_column_addition_applies_pending_custom_sql_and_pivot_filter_is_inline(
-    cx: &mut TestAppContext,
-) {
-    use crate::domain::documents::QueryConfig;
-    let (handle, view, panel) = aggregation_editor(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_aggregation_sql(&panel, "count(*)", window, cx);
-        panel.update(cx, |panel, cx| panel.focus_available(window, cx));
-        window.render_frame(cx);
-        window.input("region", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let config = view.read(cx).session.query_config();
-        assert_eq!(config.aggregations.len(), 2);
-        assert_eq!(config.aggregations[0].sql.as_deref(), Some("count(*)"));
-        assert_eq!(
-            config.aggregations[1].operation,
-            crate::domain::documents::AggregationOp::NonNullCount
-        );
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "count(\"region\")"
-        );
-        assert!(window.has_active_dialog(cx));
-        window.close_dialog(cx);
-        view.update(cx, |view, cx| {
-            view.session
-                .set_query_config(
-                    QueryConfig {
-                        group_by: vec!["region".into()],
-                        pivot_by: vec!["sales".into()],
-                        aggregations: vec![crate::domain::documents::Aggregation::sql_expression(
-                            "count(*)".into(),
-                            None,
-                        )],
-                        ..Default::default()
-                    },
-                    "Pivot".into(),
-                )
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        let panel = view.update(cx, |view, cx| {
-            view.open_aggregation_panel(window, cx).unwrap()
-        });
-        set_aggregation_sql(&panel, "count(*) FILTER (WHERE true)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        assert!(
-            panel
-                .read(cx)
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("DuckDB ignores FILTER")
-        );
-        assert_eq!(
-            view.read(cx).session.query_config().aggregations[0]
-                .sql
-                .as_deref(),
-            Some("count(*)")
-        );
-        window.render_frame(cx);
-        assert!(window.try_find("aggregation-limitations").is_some());
-    })
-    .unwrap();
+fn limit_shown(viewer: &Viewer) -> bool {
+    viewer.render();
+    let limit = viewer.read(|view| view.limit_input.id);
+    viewer.find(|hit| matches!(hit, Hit::Editor(id, _) if *id == limit)).is_some()
 }
 
-#[gpui_kit::test]
-fn query_limit_commits_globally_preserves_dirty_state_and_reuses_search_cache(
-    cx: &mut TestAppContext,
-) {
-    use crate::domain::documents::QueryConfig;
+fn focus_limit(viewer: &Viewer) {
+    let limit = viewer.read(|view| view.limit_input.id);
+    viewer.focus(limit);
+}
+
+#[test]
+fn query_limit_commits_globally_preserves_dirty_state_and_reuses_search_cache() {
     use std::sync::Arc;
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (first_handle, first) = viewer_with_repository(cx, repository.clone());
-    let (second_handle, second) = viewer_with_repository(cx, repository.clone());
-    for (handle, entity) in [(first_handle, &first), (second_handle, &second)] {
-        cx.update_window(handle.into(), |_, _, cx| {
-            entity.update(cx, |view, cx| {
-                view.session
-                    .set_query_config(
-                        QueryConfig {
-                            group_by: vec!["region".into()],
-                            ..Default::default()
-                        },
-                        "Query".into(),
-                    )
-                    .unwrap();
-                view.session.dirty = false;
-                view.schedule_search(String::new(), cx);
-            })
-        })
-        .unwrap();
-    }
-    cx.run_until_parked();
-    cx.update_window(first_handle.into(), |_, window, _| window.activate_window())
-        .unwrap();
-    cx.run_until_parked();
-    cx.update_window(first_handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("query-limit").is_some());
-        let input = first.read(cx).limit_input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.press("ctrl-a", cx);
-        window.input("1", cx);
-        assert_eq!(first.read(cx).query_limit, 100000);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    for (handle, entity) in [(first_handle, &first), (second_handle, &second)] {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let view = entity.read(cx);
+    let repository = repository(home.path());
+    let first = viewer_with_repository(repository.clone());
+    let second = Viewer::open_in(&first.app, sales_frame(), None, None, repository.clone());
+    query_by_region(&first);
+    query_by_region(&second);
+    first.run_until_parked();
+    assert!(limit_shown(&first));
+    focus_limit(&first);
+    first.press("ctrl-a");
+    first.input("1");
+    assert_eq!(first.read(|view| view.query_limit), 100000);
+    press(&first, "enter");
+    for viewer in [&first, &second] {
+        viewer.render();
+        viewer.run_until_parked();
+        viewer.read(|view| {
             assert_eq!(view.query_limit, 1);
-            assert_eq!(view.limit_input.read(cx).value().as_ref(), "1");
+            assert_eq!(view.limit_input.text(), "1");
             assert_eq!(view.session.result.row_count(), 1);
             assert!(!view.session.dirty);
-        })
-        .unwrap();
+        });
     }
     assert_eq!(repository.load_settings().unwrap().query_limit, 1);
-    let cached = cx.update(|cx| {
-        first
-            .read(cx)
-            .query_cache
-            .as_ref()
-            .unwrap()
-            .frame
-            .store
-            .clone()
-    });
-    cx.update_window(first_handle.into(), |_, window, cx| {
-        first.update(cx, |view, cx| {
-            view.set_search_text("South".into(), window, cx)
-        })
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = first.read(cx);
+    let cached = first.read(|view| view.query_cache.as_ref().unwrap().frame.store.clone());
+    first.update(|view, cx| view.set_search_text("South".into(), cx));
+    first.run_until_parked();
+    first.read(|view| {
         // The cached result stopped at the limit of 1, so the search reran
         // inside the query and found South past it; the cache is unchanged.
         assert_eq!(view.session.result.row_count(), 1);
-        assert!(Arc::ptr_eq(
-            &cached,
-            &view.query_cache.as_ref().unwrap().frame.store
-        ));
-        assert!(
-            view.session.sql.displayed.statements[0].status
-                == crate::domain::sql::SqlStatus::Cached
-        );
+        assert!(Arc::ptr_eq(&cached, &view.query_cache.as_ref().unwrap().frame.store));
+        assert!(view.session.sql.displayed.statements[0].status == crate::domain::sql::SqlStatus::Cached);
     });
-    cx.update_window(first_handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let limit = first.read(cx).limit_input.read(cx).focus_handle(cx);
-        window.focus(&limit, cx);
-        window.press("ctrl-a", cx);
-        window.input("2", cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(first_handle.into(), |_, window, cx| {
-        let grid = first.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid, cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        let view = first.read(cx);
+    first.render();
+    focus_limit(&first);
+    first.press("ctrl-a");
+    first.input("2");
+    first.render();
+    first.run_until_parked();
+    // Leaving the box commits the limit.
+    first.focus_grid();
+    first.render();
+    first.run_until_parked();
+    first.read(|view| {
         assert_eq!(view.query_limit, 2);
         assert_eq!(view.session.result.row_count(), 1);
-        assert!(!Arc::ptr_eq(
-            &cached,
-            &view.query_cache.as_ref().unwrap().frame.store
-        ));
+        assert!(!Arc::ptr_eq(&cached, &view.query_cache.as_ref().unwrap().frame.store));
         assert!(!view.session.dirty);
     });
 }
 
-#[gpui_kit::test]
-fn query_limit_invalid_escape_failed_save_and_keyboard_focus(cx: &mut TestAppContext) {
-    use crate::domain::documents::QueryConfig;
+#[test]
+fn query_limit_invalid_escape_failed_save_and_keyboard_focus() {
     let home = tempfile::tempdir().unwrap();
-    let repository = ViewRepository::new(StorePaths::for_home(home.path()));
-    let (handle, entity) = viewer_with_repository(cx, repository.clone());
-    cx.update_window(handle.into(), |_, _, cx| {
-        entity.update(cx, |view, cx| {
-            view.session
-                .set_query_config(
-                    QueryConfig {
-                        group_by: vec!["region".into()],
-                        ..Default::default()
-                    },
-                    "Query".into(),
-                )
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        })
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let search = entity.read(cx).search_input.read(cx).focus_handle(cx);
-        let limit = entity.read(cx).limit_input.read(cx).focus_handle(cx);
-        window.focus(&search, cx);
-        window.press("tab", cx);
-        assert_eq!(window.focused(cx), Some(limit.clone()));
-        window.press("ctrl-a", cx);
-        window.input("0", cx);
-        window.press("enter", cx);
-        assert_eq!(entity.read(cx).query_limit, 100000);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let search = entity.read(cx).search_input.read(cx).focus_handle(cx);
-        let limit = entity.read(cx).limit_input.read(cx).focus_handle(cx);
-        let grid = entity.read(cx).grid.read(cx).focus_handle(cx);
-        assert!(
-            entity.read(cx).limit_error.is_some(),
-            "text={:?} committed={} mode={:?}",
-            entity.read(cx).limit_input.read(cx).value(),
-            entity.read(cx).query_limit,
-            entity.read(cx).session.working
-        );
-        window.press("escape", cx);
-        assert_eq!(
-            entity.read(cx).limit_input.read(cx).value().as_ref(),
-            "100000"
-        );
-        assert!(entity.read(cx).limit_error.is_none());
-        window.press("ctrl-a", cx);
-        window.input("gap i/ ", cx);
-        assert!(!window.has_active_dialog(cx));
-        assert!(!entity.read(cx).space_menu_open);
-        window.press("escape", cx);
-        window.press("shift-tab", cx);
-        assert_eq!(window.focused(cx), Some(search));
-        window.press("tab", cx);
-        window.press("tab", cx);
-        assert_eq!(window.focused(cx), Some(grid));
-        window.press("shift-tab", cx);
-        assert_eq!(window.focused(cx), Some(limit));
-        let blocked = home.path().join("blocked-config");
-        std::fs::write(&blocked, "blocked").unwrap();
-        entity.update(cx, |view, cx| {
-            view.repository.paths.config = blocked;
-            view.limit_input
-                .update(cx, |input, cx| input.set_value("1", window, cx));
-            view.commit_query_limit(window, cx);
-        });
-        assert_eq!(entity.read(cx).query_limit, 100000);
-        assert!(
-            entity
-                .read(cx)
-                .limit_error
-                .as_ref()
-                .unwrap()
-                .contains("Could not save")
-        );
-        assert_eq!(entity.read(cx).session.result.row_count(), 2);
-        assert_eq!(repository.load_settings().unwrap().query_limit, 100000);
-    })
-    .unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    query_by_region(&viewer);
+    viewer.run_until_parked();
+    viewer.render();
+    let (search, limit, grid) = viewer.read(|view| (view.search_input.id, view.limit_input.id, view.grid.id));
+    viewer.focus(search);
+    viewer.press("tab");
+    assert_eq!(viewer.focused(), Some(limit));
+    viewer.press("ctrl-a");
+    viewer.input("0");
+    viewer.press("enter");
+    assert_eq!(viewer.read(|view| view.query_limit), 100000);
+    viewer.run_until_parked();
+    viewer.render();
+    assert!(viewer.read(|view| view.limit_error.is_some()));
+    viewer.press("escape");
+    viewer.read(|view| {
+        assert_eq!(view.limit_input.text(), "100000");
+        assert!(view.limit_error.is_none());
+    });
+    viewer.press("ctrl-a");
+    viewer.input("gap i/ ");
+    assert!(!viewer.has_dialog());
+    assert!(!viewer.read(|view| view.space_menu_open));
+    viewer.press("escape");
+    viewer.press("shift-tab");
+    assert_eq!(viewer.focused(), Some(search));
+    viewer.press("tab tab");
+    assert_eq!(viewer.focused(), Some(grid));
+    viewer.press("shift-tab");
+    assert_eq!(viewer.focused(), Some(limit));
+    let blocked = home.path().join("blocked-config");
+    std::fs::write(&blocked, "blocked").unwrap();
+    viewer.update(|view, cx| {
+        view.repository.paths.config = blocked;
+        view.limit_input.set_text("1");
+        view.commit_query_limit(cx);
+    });
+    viewer.read(|view| {
+        assert_eq!(view.query_limit, 100000);
+        assert!(view.limit_error.as_ref().unwrap().contains("Could not save"));
+        assert_eq!(view.session.result.row_count(), 2);
+    });
+    assert_eq!(repository.load_settings().unwrap().query_limit, 100000);
 }
 
-#[gpui_kit::test]
-fn empty_query_and_pivot_setup_keep_table_controls_and_avoid_sql(cx: &mut TestAppContext) {
+#[test]
+fn empty_query_and_pivot_setup_keep_table_controls_and_avoid_sql() {
+    use crate::application::pivot_editor::PivotFieldKind;
     use crate::domain::documents::{QueryConfig, SlicerDefinition};
-    let (handle, entity) = viewer(cx);
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        entity.update(cx, |view, cx| {
-            view.open_pivot_panel(
-                crate::application::pivot_editor::PivotFieldKind::GroupBy,
-                window,
-                cx,
-            );
-        });
-        assert!(entity.read(cx).is_table());
-        window.close_dialog(cx);
-        entity.update(cx, |view, cx| {
-            view.session
-                .set_query_config(
-                    QueryConfig {
-                        pivot_by: vec!["region".into()],
-                        ..Default::default()
-                    },
-                    "Query".into(),
-                )
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-        window.render_frame(cx);
-        assert!(window.try_find("query-limit").is_some());
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_pivot_panel(PivotFieldKind::GroupBy, cx));
+    assert!(viewer.read(|view| view.is_table()));
+    viewer.close_dialog();
+    viewer.update(|view, cx| {
+        view.session
+            .set_query_config(
+                QueryConfig {
+                    pivot_by: vec!["region".into()],
+                    ..Default::default()
+                },
+                "Query".into(),
+            )
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    assert!(limit_shown(&viewer));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(!view.busy);
+        assert!(view.error.is_none());
+    });
+    viewer.update(|view, cx| {
+        view.session.working.as_mut().unwrap().slicers = vec![SlicerDefinition {
+            sql: false,
+            condition: None,
+            column: "region".into(),
+            selected: vec![],
+        }];
+        view.session
+            .set_query_config(QueryConfig::default(), "unused".into())
+            .unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    assert!(viewer.read(|view| view.is_table()));
+    assert!(!limit_shown(&viewer));
+    assert_eq!(picked_slicers(&viewer).len(), 1);
+}
+
+fn dimension<R>(viewer: &Viewer, f: impl FnOnce(&mut crate::ui::pivot_panel::PivotPanel, &mut Focus) -> R) -> R {
+    viewer.update(|view, _| {
+        let mut focus = view.focus;
+        let Some(Dialog::Pivot(panel)) = &mut view.dialog else {
+            panic!("a dimension editor is open")
+        };
+        let result = f(panel, &mut focus);
+        view.focus = focus;
+        result
     })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(!entity.read(cx).busy);
-        assert!(entity.read(cx).error.is_none());
-        entity.update(cx, |view, cx| {
-            view.session.working.as_mut().unwrap().slicers = vec![SlicerDefinition {
-                sql: false,
-                condition: None,
-                column: "region".into(),
-                selected: vec![],
-            }];
-            view.session
-                .set_query_config(QueryConfig::default(), "unused".into())
-                .unwrap();
-            view.schedule_search(String::new(), cx);
-        });
-        window.render_frame(cx);
-        assert!(entity.read(cx).is_table());
-        assert!(window.try_find("query-limit").is_none());
-        assert_eq!(
-            entity
-                .read(cx)
-                .session
-                .working
-                .as_ref()
-                .unwrap()
-                .slicers
-                .len(),
-            1
-        );
-    })
-    .unwrap();
 }
 
-fn dimension_editor(
-    cx: &mut TestAppContext,
-    kind: crate::application::pivot_editor::PivotFieldKind,
-) -> (
-    gpui_kit::WindowHandle<Root>,
-    gpui_kit::Entity<DataFrameView>,
-    gpui_kit::Entity<crate::ui::pivot_panel::PivotPanel>,
-) {
-    let (handle, view) = viewer(cx);
-    cx.run_until_parked();
-    let panel = cx
-        .update_window(handle.into(), |_, window, cx| {
-            view.update(cx, |view, cx| view.open_pivot_panel(kind, window, cx))
-        })
-        .unwrap();
-    (handle, view, panel)
+fn dimension_editor(home: &tempfile::TempDir, kind: crate::application::pivot_editor::PivotFieldKind) -> Viewer {
+    let viewer = viewer(home);
+    viewer.update(|view, cx| view.open_pivot_panel(kind, cx));
+    viewer
 }
 
-fn set_dimension_sql(
-    panel: &gpui_kit::Entity<crate::ui::pivot_panel::PivotPanel>,
-    sql: &str,
-    window: &mut gpui_kit::Window,
-    cx: &mut gpui_kit::App,
-) {
-    let state = panel.read(cx).sql.read(cx).state().clone();
-    state.update(cx, |state, cx| state.set_value(sql, window, cx));
+fn dimension_sql(viewer: &Viewer) -> String {
+    dimension(viewer, |panel, _| panel.sql.text().to_owned())
 }
 
-#[gpui_kit::test]
-fn dimension_expressions_apply_in_both_managers_and_errors_preserve_results(
-    cx: &mut TestAppContext,
-) {
+fn dimension_error(viewer: &Viewer) -> Option<String> {
+    dimension(viewer, |panel, _| panel.error.clone())
+}
+
+/// Starts a custom dimension with `sql` and applies it.
+fn apply_custom_dimension(viewer: &Viewer, sql: &str) {
+    dimension(viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text(sql);
+        panel.apply();
+    });
+}
+
+#[test]
+fn dimension_expressions_apply_in_both_managers_and_errors_preserve_results() {
     use crate::application::pivot_editor::PivotFieldKind;
     use crate::domain::documents::Dimension;
-    let (handle, view, group) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("dimension-custom", cx);
-        window.render_frame(cx);
-        window.input("upper(region) AS RegionCode", cx);
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let successful = cx
-        .update_window(handle.into(), |_, window, cx| {
-            assert!(window.has_active_dialog(cx));
-            assert!(group.read(cx).error.is_none(), "{:?}", group.read(cx).error);
-            assert_eq!(
-                view.read(cx).session.query_config().group_by,
-                [Dimension::expression("upper(region) AS RegionCode")]
-            );
-            assert_eq!(view.read(cx).session.result.columns[0].0, "RegionCode");
-            view.read(cx).session.result.clone()
-        })
-        .unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        set_dimension_sql(&group, "upper(missing)", window, cx);
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(group.read(cx).error.as_ref().unwrap().contains("missing"));
-        assert!(std::sync::Arc::ptr_eq(
-            &view.read(cx).session.result.store,
-            &successful.store
-        ));
-        window.render_frame(cx);
-        window.click("dimension-custom", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let pivot = cx
-        .update_window(handle.into(), |_, window, cx| {
-            assert!(group.read(cx).error.is_some());
-            assert_eq!(
-                group
-                    .read(cx)
-                    .sql
-                    .read(cx)
-                    .state()
-                    .read(cx)
-                    .value()
-                    .as_ref(),
-                "upper(missing)"
-            );
-            group.update(cx, |panel, cx| panel.revert(window, cx));
-            assert_eq!(
-                group
-                    .read(cx)
-                    .sql
-                    .read(cx)
-                    .state()
-                    .read(cx)
-                    .value()
-                    .as_ref(),
-                "upper(region) AS RegionCode"
-            );
-            window.close_dialog(cx);
-            view.update(cx, |view, cx| {
-                view.open_pivot_panel(PivotFieldKind::PivotBy, window, cx)
-            })
-        })
-        .unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        pivot.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&pivot, "sales / 10 AS Bucket", window, cx);
-        window.press("ctrl-enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(pivot.read(cx).error.is_none(), "{:?}", pivot.read(cx).error);
-        assert!(window.has_active_dialog(cx));
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.render();
+    viewer.input("upper(region) AS RegionCode");
+    press(&viewer, "ctrl-enter");
+    assert!(viewer.has_dialog());
+    assert!(dimension_error(&viewer).is_none(), "{:?}", dimension_error(&viewer));
+    let successful = viewer.read(|view| {
         assert_eq!(
-            view.read(cx).session.query_config().pivot_by,
+            view.session.query_config().group_by,
+            [Dimension::expression("upper(region) AS RegionCode")]
+        );
+        assert_eq!(view.session.result.columns[0].0, "RegionCode");
+        view.session.result.clone()
+    });
+    dimension(&viewer, |panel, _| panel.sql.set_text("upper(missing)"));
+    press(&viewer, "ctrl-enter");
+    assert!(dimension_error(&viewer).unwrap().contains("missing"));
+    assert!(std::sync::Arc::ptr_eq(
+        &viewer.read(|view| view.session.result.store.clone()),
+        &successful.store
+    ));
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.run_until_parked();
+    assert!(dimension_error(&viewer).is_some());
+    assert_eq!(dimension_sql(&viewer), "upper(missing)");
+    dimension(&viewer, |panel, focus| panel.revert(focus));
+    assert_eq!(dimension_sql(&viewer), "upper(region) AS RegionCode");
+    viewer.close_dialog();
+    viewer.update(|view, cx| view.open_pivot_panel(PivotFieldKind::PivotBy, cx));
+    dimension(&viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text("sales / 10 AS Bucket");
+    });
+    press(&viewer, "ctrl-enter");
+    assert!(dimension_error(&viewer).is_none(), "{:?}", dimension_error(&viewer));
+    assert!(viewer.has_dialog());
+    viewer.read(|view| {
+        assert_eq!(
+            view.session.query_config().pivot_by,
             [Dimension::expression("sales / 10 AS Bucket")]
         );
-        assert_eq!(view.read(cx).session.result.columns[0].0, "RegionCode");
-        assert!(view.read(cx).session.result.columns.len() > 1);
-    })
-    .unwrap();
+        assert_eq!(view.session.result.columns[0].0, "RegionCode");
+        assert!(view.session.result.columns.len() > 1);
+    });
 }
 
-#[gpui_kit::test]
-fn dimension_column_edits_aliases_reorder_focus_and_return_to_table(cx: &mut TestAppContext) {
+#[test]
+fn dimension_column_edits_aliases_reorder_focus_and_return_to_table() {
     use crate::application::pivot_editor::PivotFieldKind;
     use crate::domain::documents::Dimension;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.input("region", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "\"region\""
-        );
-        set_dimension_sql(&panel, "upper(region) AS Code", window, cx);
-        window.render_frame(cx);
-        window.click("dimension-custom", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().group_by,
-            [Dimension::expression("upper(region) AS Code")]
-        );
-        set_dimension_sql(&panel, "sales AS Amount", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("dimension-0", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "upper(region) AS Code"
-        );
-        window.render_frame(cx);
-        window.press("tab", cx);
-        assert_eq!(
-            window.focused(cx),
-            Some(
-                panel
-                    .read(cx)
-                    .sql
-                    .read(cx)
-                    .state()
-                    .read(cx)
-                    .focus_handle(cx)
-            )
-        );
-        window.press("shift-tab", cx);
-        window.press("alt-down", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            view.read(cx).session.query_config().group_by,
-            [
-                Dimension::expression("sales AS Amount"),
-                Dimension::expression("upper(region) AS Code")
-            ]
-        );
-        window.press("delete", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(view.read(cx).session.query_config().group_by.len(), 1);
-        window.press("delete", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).is_table());
-        assert!(view.read(cx).session.query_config().group_by.is_empty());
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
+    use crate::ui::widgets::list::Part;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    viewer.render();
+    viewer.input("region");
+    press(&viewer, "enter");
+    assert_eq!(dimension_sql(&viewer), "\"region\"");
+    dimension(&viewer, |panel, _| panel.sql.set_text("upper(region) AS Code"));
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.run_until_parked();
+    assert_eq!(
+        viewer.read(|view| view.session.query_config().group_by),
+        [Dimension::expression("upper(region) AS Code")]
+    );
+    dimension(&viewer, |panel, _| {
+        panel.sql.set_text("sales AS Amount");
+        panel.apply();
+    });
+    viewer.run_until_parked();
+    let list = dimension(&viewer, |panel, _| panel.list.id);
+    viewer.click(|hit| *hit == Hit::List(list, Part::Row(0)));
+    viewer.run_until_parked();
+    assert_eq!(dimension_sql(&viewer), "upper(region) AS Code");
+    viewer.render();
+    viewer.press("tab");
+    let sql_id = dimension(&viewer, |panel, _| panel.sql.id);
+    assert_eq!(viewer.focused(), Some(sql_id));
+    viewer.press("shift-tab");
+    press(&viewer, "alt-down");
+    assert_eq!(
+        viewer.read(|view| view.session.query_config().group_by),
+        [
+            Dimension::expression("sales AS Amount"),
+            Dimension::expression("upper(region) AS Code")
+        ]
+    );
+    press(&viewer, "delete");
+    assert_eq!(viewer.read(|view| view.session.query_config().group_by.len()), 1);
+    press(&viewer, "delete");
+    viewer.read(|view| {
+        assert!(view.is_table());
+        assert!(view.session.query_config().group_by.is_empty());
+    });
+    assert!(viewer.has_dialog());
 }
 
-#[gpui_kit::test]
-fn dimension_pending_setup_validates_and_then_builds_a_pivot(cx: &mut TestAppContext) {
+#[test]
+fn dimension_pending_setup_validates_and_then_builds_a_pivot() {
     use crate::application::pivot_editor::PivotFieldKind;
     use crate::domain::documents::Dimension;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::PivotBy);
-    let previous = cx.update(|cx| view.read(cx).session.result.clone());
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "sum(sales) AS Bad", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::PivotBy);
+    let previous = viewer.read(|view| view.session.result.clone());
+    apply_custom_dimension(&viewer, "sum(sales) AS Bad");
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.session.query_config().pivot_by.is_empty()));
+    assert!(dimension_error(&viewer).is_some());
+    dimension(&viewer, |panel, _| {
+        panel.sql.set_text("sales / 10 AS Bucket");
+        panel.apply();
+    });
+    viewer.run_until_parked();
+    assert!(dimension_error(&viewer).is_none(), "{:?}", dimension_error(&viewer));
+    viewer.read(|view| {
+        assert_eq!(
+            view.session.query_config().pivot_by,
+            [Dimension::expression("sales / 10 AS Bucket")]
+        );
+        assert!(std::sync::Arc::ptr_eq(&view.session.result.store, &previous.store));
+        assert!(!view.busy);
+    });
+    viewer.close_dialog();
+    viewer.update(|view, cx| view.open_pivot_panel(PivotFieldKind::GroupBy, cx));
+    apply_custom_dimension(&viewer, "upper(region) AS Code");
+    viewer.run_until_parked();
+    assert!(dimension_error(&viewer).is_none(), "{:?}", dimension_error(&viewer));
+    viewer.read(|view| {
+        assert_eq!(view.session.result.columns[0].0, "Code");
+        assert!(view.session.result.columns.len() > 1);
+    });
+}
+
+#[test]
+fn dimension_stale_and_closed_checks_cannot_commit() {
+    use crate::application::pivot_editor::PivotFieldKind;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    dimension(&viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text("upper(region)");
+        panel.apply();
+        // The text changes before the check reports.
+        panel.sql.set_text("lower(region)");
+    });
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.session.query_config().group_by.is_empty()));
+    assert!(dimension_error(&viewer).unwrap().contains("changed"));
+    dimension(&viewer, |panel, focus| {
+        panel.revert(focus);
+        panel.start_custom(focus);
+        panel.sql.set_text("upper(region)");
+        panel.apply();
+    });
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelClose));
+    assert!(!viewer.has_dialog());
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.session.query_config().group_by.is_empty()));
+}
+
+#[test]
+fn dimension_pending_column_addition_and_duplicate_output_names() {
+    use crate::application::pivot_editor::PivotFieldKind;
+    use crate::domain::documents::Dimension;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    apply_custom_dimension(&viewer, "upper(region) AS Code");
+    viewer.run_until_parked();
+    apply_custom_dimension(&viewer, "lower(region) AS code");
+    viewer.run_until_parked();
+    assert!(dimension_error(&viewer).unwrap().contains("duplicate dimension output name"));
+    assert_eq!(viewer.read(|view| view.session.query_config().group_by.len()), 1);
+    dimension(&viewer, |panel, focus| {
+        panel.revert(focus);
+        panel.start_custom(focus);
+        panel.sql.set_text("sales % 10 AS Bucket");
+        panel.focus_available(focus);
+    });
+    viewer.render();
+    viewer.input("region");
+    press(&viewer, "enter");
+    assert!(dimension_error(&viewer).is_none(), "{:?}", dimension_error(&viewer));
+    assert_eq!(
+        viewer.read(|view| view.session.query_config().group_by),
+        [
+            Dimension::expression("upper(region) AS Code"),
+            Dimension::expression("sales % 10 AS Bucket"),
+            Dimension::from("region")
+        ]
+    );
+    assert_eq!(dimension_sql(&viewer), "\"region\"");
+    assert!(viewer.has_dialog());
+}
+
+#[test]
+fn expression_group_can_be_removed_from_its_result_column() {
+    use crate::application::pivot_editor::PivotFieldKind;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    apply_custom_dimension(&viewer, "upper(region) AS Code");
+    viewer.run_until_parked();
+    press(&viewer, "escape");
+    viewer.select(0, 0);
+    press(&viewer, "delete");
+    viewer.read(|view| {
+        assert!(view.session.query_config().group_by.is_empty());
+        assert!(view.is_table());
+    });
+}
+
+#[test]
+fn dimension_check_rejects_session_changes() {
+    use crate::application::pivot_editor::PivotFieldKind;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = dimension_editor(&home, PivotFieldKind::GroupBy);
+    apply_custom_dimension(&viewer, "upper(region) AS Code");
+    viewer.update(|view, cx| view.schedule_search("10".into(), cx));
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.session.query_config().group_by.is_empty()));
+    assert!(dimension_error(&viewer).unwrap().contains("changed"));
+}
+
+/// The three-card window: region values, a sales condition and flag values.
+fn slicer_cards(home: &tempfile::TempDir) -> Viewer {
+    let viewer = viewer(home);
+    viewer.resize(1400., 900.);
+    let source = DuckDbStore::from_rows(
+        &[
+            ("region".into(), "VARCHAR".into()),
+            ("sales".into(), "BIGINT".into()),
+            ("flag".into(), "BOOLEAN".into()),
+        ],
+        [
+            vec![Value::Text("North".into()), Value::BigInt(10), Value::Boolean(true)],
+            vec![Value::Text("South".into()), Value::BigInt(20), Value::Boolean(false)],
+        ],
+    )
     .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).session.query_config().pivot_by.is_empty());
-        assert!(panel.read(cx).error.is_some());
-        set_dimension_sql(&panel, "sales / 10 AS Bucket", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let group = cx
-        .update_window(handle.into(), |_, window, cx| {
-            assert!(panel.read(cx).error.is_none(), "{:?}", panel.read(cx).error);
-            assert_eq!(
-                view.read(cx).session.query_config().pivot_by,
-                [Dimension::expression("sales / 10 AS Bucket")]
-            );
-            assert!(std::sync::Arc::ptr_eq(
-                &view.read(cx).session.result.store,
-                &previous.store
-            ));
-            assert!(!view.read(cx).busy);
-            window.close_dialog(cx);
-            view.update(cx, |view, cx| {
-                view.open_pivot_panel(PivotFieldKind::GroupBy, window, cx)
+    viewer.update(|view, cx| {
+        view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
+        view.add_slicer("region".into(), cx);
+        view.add_condition_slicer("sales".into(), cx);
+        view.add_slicer("flag".into(), cx);
+    });
+    viewer.settle();
+    viewer
+}
+
+fn slicer_value_shown(viewer: &Viewer, column: &str, index: usize) -> bool {
+    viewer.render();
+    viewer
+        .find(|hit| {
+            *hit == Hit::Slicer(SlicerHit::Value {
+                column: column.into(),
+                index,
             })
         })
-        .unwrap();
-    cx.update_window(handle.into(), |_, window, cx| {
-        group.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&group, "upper(region) AS Code", window, cx);
-        group.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert!(group.read(cx).error.is_none(), "{:?}", group.read(cx).error);
-        assert_eq!(view.read(cx).session.result.columns[0].0, "Code");
-        assert!(view.read(cx).session.result.columns.len() > 1);
-    })
-    .unwrap();
+        .is_some()
 }
 
-#[gpui_kit::test]
-fn dimension_stale_and_closed_checks_cannot_commit(cx: &mut TestAppContext) {
-    use crate::application::pivot_editor::PivotFieldKind;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "upper(region)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        set_dimension_sql(&panel, "lower(region)", window, cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(view.read(cx).session.query_config().group_by.is_empty());
-        assert!(panel.read(cx).error.as_ref().unwrap().contains("changed"));
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "upper(region)", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-        window.render_frame(cx);
-        window.click("dimension-close", cx);
-        assert!(!window.has_active_dialog(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(view.read(cx).session.query_config().group_by.is_empty());
-    });
-}
-
-#[gpui_kit::test]
-fn dimension_pending_column_addition_and_duplicate_output_names(cx: &mut TestAppContext) {
-    use crate::application::pivot_editor::PivotFieldKind;
-    use crate::domain::documents::Dimension;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "upper(region) AS Code", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "lower(region) AS code", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(
-            panel
-                .read(cx)
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("duplicate dimension output name")
-        );
-        assert_eq!(view.read(cx).session.query_config().group_by.len(), 1);
-        panel.update(cx, |panel, cx| panel.revert(window, cx));
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "sales % 10 AS Bucket", window, cx);
-        panel.update(cx, |panel, cx| panel.focus_available(window, cx));
-        window.render_frame(cx);
-        window.input("region", cx);
-        window.press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        assert!(panel.read(cx).error.is_none(), "{:?}", panel.read(cx).error);
-        assert_eq!(
-            view.read(cx).session.query_config().group_by,
-            [
-                Dimension::expression("upper(region) AS Code"),
-                Dimension::expression("sales % 10 AS Bucket"),
-                Dimension::from("region")
-            ]
-        );
-        assert_eq!(
-            panel
-                .read(cx)
-                .sql
-                .read(cx)
-                .state()
-                .read(cx)
-                .value()
-                .as_ref(),
-            "\"region\""
-        );
-        assert!(window.has_active_dialog(cx));
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn expression_group_can_be_removed_from_its_result_column(cx: &mut TestAppContext) {
-    use crate::application::pivot_editor::PivotFieldKind;
-    use crate::domain::selection::Cell;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "upper(region) AS Code", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("escape", cx);
-        let grid = view.read(cx).grid.clone();
-        grid.update(cx, |grid, cx| {
-            grid.select(Cell { row: 0, column: 0 }, false, cx)
-        });
-        view.update(cx, |view, cx| view.remove_active_group_column(cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(view.read(cx).session.query_config().group_by.is_empty());
-        assert!(view.read(cx).is_table());
-    });
-}
-
-#[gpui_kit::test]
-fn dimension_check_rejects_session_changes(cx: &mut TestAppContext) {
-    use crate::application::pivot_editor::PivotFieldKind;
-    let (handle, view, panel) = dimension_editor(cx, PivotFieldKind::GroupBy);
-    cx.update_window(handle.into(), |_, window, cx| {
-        panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-        set_dimension_sql(&panel, "upper(region) AS Code", window, cx);
-        panel.update(cx, |panel, cx| panel.apply(cx));
-    })
-    .unwrap();
-    cx.update_window(handle.into(), |_, _, cx| {
-        view.update(cx, |view, cx| view.schedule_search("10".into(), cx));
-    })
-    .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert!(view.read(cx).session.query_config().group_by.is_empty());
-        assert!(panel.read(cx).error.as_ref().unwrap().contains("changed"));
-    });
-}
-
-#[gpui_kit::test]
-fn ctrl_l_cycles_slicer_inputs_and_ctrl_d_returns_to_the_grid(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.simulate_window_resize(handle.into(), size(px(1400.), px(900.)));
-    cx.update_window(handle.into(), |_, _, cx| {
-        let source = DuckDbStore::from_rows(
-            &[
-                ("region".into(), "VARCHAR".into()),
-                ("sales".into(), "BIGINT".into()),
-                ("flag".into(), "BOOLEAN".into()),
-            ],
-            [
-                vec![
-                    Value::Text("North".into()),
-                    Value::BigInt(10),
-                    Value::Boolean(true),
-                ],
-                vec![
-                    Value::Text("South".into()),
-                    Value::BigInt(20),
-                    Value::Boolean(false),
-                ],
-            ],
-        )
-        .unwrap();
-        view.update(cx, |view, cx| {
-            view.replace_dataframe(FrameSnapshot::new(source, 2), cx);
-            view.add_slicer("region".into(), cx);
-            view.add_condition_slicer("sales".into(), cx);
-            view.add_slicer("flag".into(), cx);
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    // Inputs only report blur, which commits a condition, in an active window.
-    cx.update_window(handle.into(), |_, window, _| window.activate_window())
-        .unwrap();
-    cx.run_until_parked();
+#[test]
+fn ctrl_l_cycles_slicer_inputs_and_ctrl_d_returns_to_the_grid() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = slicer_cards(&home);
     // From the grid, the first card's value filter opens and takes the typing.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let grid = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid, cx);
-        window.render_frame(cx);
-        window.press("ctrl-l", cx);
-        window.render_frame(cx);
-        window.input("No", cx);
-        window.render_frame(cx);
-        assert!(window.try_find("slicer-value:region:0").is_some());
-        assert!(window.try_find("slicer-value:region:1").is_none());
-        // The condition card is next; moving on commits its text.
-        window.press("ctrl-l", cx);
-        window.render_frame(cx);
-        window.input(">15", cx);
-        window.press("ctrl-l", cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| assert_eq!(view.read(cx).session.result.row_count(), 1));
-    cx.update_window(handle.into(), |_, window, cx| {
-        // After the last card, focus wraps to the first, whose filter text stays.
-        window.render_frame(cx);
-        window.press("ctrl-l", cx);
-        window.render_frame(cx);
-        assert!(window.try_find("slicer-value:region:0").is_some());
-        assert!(window.try_find("slicer-value:region:1").is_none());
-        window.press("ctrl-d", cx);
-        let grid = view.read(cx).grid.read(cx).focus_handle(cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&grid));
-    })
-    .unwrap();
+    viewer.focus_grid();
+    press(&viewer, "ctrl-l");
+    viewer.input("No");
+    assert!(slicer_value_shown(&viewer, "region", 0));
+    assert!(!slicer_value_shown(&viewer, "region", 1));
+    // The condition card is next; moving on commits its text.
+    press(&viewer, "ctrl-l");
+    viewer.input(">15");
+    press(&viewer, "ctrl-l");
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    // After the last card, focus wraps to the first, whose filter text stays.
+    press(&viewer, "ctrl-l");
+    assert!(slicer_value_shown(&viewer, "region", 0));
+    assert!(!slicer_value_shown(&viewer, "region", 1));
+    viewer.press("ctrl-d");
+    assert!(viewer.grid_focused());
 }
 
-#[gpui_kit::test]
-fn ctrl_l_without_slicers_reports_how_to_add_one(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("ctrl-l", cx);
-        let grid = view.read(cx).grid.read(cx).focus_handle(cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&grid));
-        assert_eq!(
-            view.read(cx).copy_status.as_deref(),
-            Some("No slicers to focus. Use Add slicer to add one")
-        );
-    })
-    .unwrap();
+#[test]
+fn ctrl_l_without_slicers_reports_how_to_add_one() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press(&viewer, "ctrl-l");
+    assert!(viewer.grid_focused());
+    assert_eq!(
+        viewer.read(|view| view.copy_status.clone()).as_deref(),
+        Some("No slicers to focus. Use Add slicer to add one")
+    );
 }
 
-#[gpui_kit::test]
-fn undo_steps_back_slicer_selections_and_cards_but_not_search_box_typing(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        let source = DuckDbStore::from_rows(
-            &[("region".into(), "VARCHAR".into())],
-            [
-                vec![Value::Text("North".into())],
-                vec![Value::Text("South".into())],
-            ],
-        )
-        .unwrap();
-        view.update(cx, |view, cx| {
-            view.replace_dataframe(FrameSnapshot::new(source, 2), cx)
-        });
-    })
+#[test]
+fn undo_steps_back_slicer_selections_and_cards_but_not_search_box_typing() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let source = DuckDbStore::from_rows(
+        &[("region".into(), "VARCHAR".into())],
+        [vec![Value::Text("North".into())], vec![Value::Text("South".into())]],
+    )
     .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| view.update(cx, |view, cx| view.add_slicer("region".into(), cx)));
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("slicer-value:region:1", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    let state = |cx: &mut TestAppContext| {
-        cx.update(|cx| {
-            let view = view.read(cx);
+    viewer.update(|view, cx| view.replace_dataframe(FrameSnapshot::new(source, 2), cx));
+    viewer.settle();
+    viewer.update(|view, cx| view.add_slicer("region".into(), cx));
+    viewer.settle();
+    viewer.click_at(slicer_value(&viewer, "region", 1).center());
+    viewer.settle();
+    let state = || {
+        viewer.read(|view| {
             let cards = view
                 .session
                 .working
@@ -4801,137 +2934,101 @@ fn undo_steps_back_slicer_selections_and_cards_but_not_search_box_typing(cx: &mu
             (cards, view.session.result.row_count())
         })
     };
-    assert_eq!(state(cx), (1, 1));
+    assert_eq!(state(), (1, 1));
     // In the search box, ctrl-z undoes typing rather than the view.
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.press("/", cx);
-        window.render_frame(cx);
-        window.input("x", cx);
-        window.press("ctrl-z", cx);
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| assert_eq!(view.read(cx).session.search_text, ""));
-    assert_eq!(state(cx), (1, 1));
-    let undo = |cx: &mut TestAppContext| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.press("ctrl-d", cx);
-            window.render_frame(cx);
-            window.press("ctrl-z", cx);
-        })
-        .unwrap();
-        finish_slicer_work(cx);
+    press(&viewer, "/");
+    viewer.input("x");
+    viewer.press("ctrl-z");
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.search_text.clone()), "");
+    assert_eq!(state(), (1, 1));
+    let undo = || {
+        viewer.press("ctrl-d");
+        viewer.render();
+        viewer.press("ctrl-z");
+        viewer.settle();
     };
-    undo(cx);
-    assert_eq!(state(cx), (1, 2));
-    undo(cx);
-    assert_eq!(state(cx), (0, 2));
+    undo();
+    assert_eq!(state(), (1, 2));
+    undo();
+    assert_eq!(state(), (0, 2));
 }
 
-#[gpui_kit::test]
-fn ctrl_f_focuses_search_from_the_grid_and_from_slicer_inputs(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    cx.update_window(handle.into(), |_, _, cx| {
-        let source = DuckDbStore::from_rows(
-            &[("sales".into(), "BIGINT".into())],
-            [vec![Value::BigInt(10)], vec![Value::BigInt(20)]],
-        )
-        .unwrap();
-        view.update(cx, |view, cx| {
-            view.replace_dataframe(FrameSnapshot::new(source, 2), cx)
-        });
-    })
-    .unwrap();
-    finish_slicer_work(cx);
-    cx.update(|cx| view.update(cx, |view, cx| view.add_condition_slicer("sales".into(), cx)));
-    finish_slicer_work(cx);
-    cx.update_window(handle.into(), |_, window, cx| {
-        let search = view.read(cx).search_input.read(cx).focus_handle(cx);
-        let grid = view.read(cx).grid.read(cx).focus_handle(cx);
-        window.focus(&grid, cx);
-        window.render_frame(cx);
-        window.press("ctrl-f", cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&search));
-        window.press("ctrl-l", cx);
-        window.render_frame(cx);
-        assert_ne!(window.focused(cx).as_ref(), Some(&search));
-        window.press("ctrl-f", cx);
-        assert_eq!(window.focused(cx).as_ref(), Some(&search));
-    })
-    .unwrap();
+#[test]
+fn ctrl_f_focuses_search_from_the_grid_and_from_slicer_inputs() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    let source =
+        DuckDbStore::from_rows(&[("sales".into(), "BIGINT".into())], [vec![Value::BigInt(10)], vec![Value::BigInt(20)]])
+            .unwrap();
+    viewer.update(|view, cx| view.replace_dataframe(FrameSnapshot::new(source, 2), cx));
+    viewer.settle();
+    viewer.update(|view, cx| view.add_condition_slicer("sales".into(), cx));
+    viewer.settle();
+    viewer.focus_grid();
+    press(&viewer, "ctrl-f");
+    assert!(viewer.search_focused());
+    press(&viewer, "ctrl-l");
+    assert!(!viewer.search_focused());
+    viewer.press("ctrl-f");
+    assert!(viewer.search_focused());
 }
 
-#[gpui_kit::test]
-fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog(cx: &mut TestAppContext) {
-    let (handle, view) = viewer(cx);
-    let (sql, state) = cx
-        .update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            let panel = view
-                .update(cx, |view, cx| view.open_aggregation_panel(window, cx))
-                .unwrap();
-            panel.update(cx, |panel, cx| panel.start_custom(window, cx));
-            let sql = panel.read(cx).sql.clone();
-            let state = sql.read(cx).state().clone();
-            state.update(cx, |state, cx| {
-                state.set_value("sum(", window, cx);
-                state.set_selected_range(4..4, cx);
-                state.focus(window, cx);
-            });
-            (sql, state)
-        })
-        .unwrap();
-    cx.run_until_parked();
-    let menu = |cx: &mut TestAppContext| {
-        cx.update(|cx| {
-            let menu = state.read(cx).completion_menu_state();
-            menu.open.then(|| {
-                menu.items
-                    .iter()
-                    .map(|item| item.label.clone())
-                    .collect::<Vec<_>>()
-            })
+#[test]
+fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = aggregation_editor(&home);
+    aggregation(&viewer, |panel, focus| {
+        panel.start_custom(focus);
+        panel.sql.set_text("sum(");
+        panel.sql.set_selection(4..4);
+        panel.focus_sql(focus);
+    });
+    let menu = || {
+        aggregation(&viewer, |panel, _| {
+            panel
+                .sql
+                .completion
+                .as_ref()
+                .map(|menu| menu.items.iter().map(|item| item.label.clone()).collect::<Vec<_>>())
         })
     };
-    let press = |cx: &mut TestAppContext, key: &str| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.press(key, cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
+    let input = |text: &str| {
+        viewer.render();
+        viewer.input(text);
+        viewer.run_until_parked();
     };
-    let input = |cx: &mut TestAppContext, text: &str| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.input(text, cx);
-        })
+    input("\"");
+    assert_eq!(menu(), Some(vec!["region".into(), "sales".into()]));
+    // The list is drawn above the dialog, where it can be clicked.
+    viewer.render();
+    let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
+    let surface = viewer
+        .app
+        .hits(viewer.id)
+        .iter()
+        .rposition(|region| region.hit == Hit::Surface)
         .unwrap();
-        cx.run_until_parked();
-    };
-    input(cx, "\"");
-    assert_eq!(menu(cx), Some(vec!["region".into(), "sales".into()]));
-    // The kit draws its own menu below dialogs, so the editor draws one above.
-    assert!(cx.update(|cx| sql.read(cx).completion_menu(cx).is_some()));
+    let menu_region = viewer
+        .app
+        .hits(viewer.id)
+        .iter()
+        .rposition(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
+        .unwrap();
+    assert!(menu_region > surface);
     // Down then Enter picks the second column; the dialog stays open.
-    press(cx, "down");
-    press(cx, "enter");
-    assert_eq!(cx.update(|cx| state.read(cx).value().to_string()), "sum(\"sales\"");
-    assert!(menu(cx).is_none());
-    cx.update_window(handle.into(), |_, window, cx| assert!(window.has_active_dialog(cx)))
-        .unwrap();
+    press(&viewer, "down");
+    press(&viewer, "enter");
+    assert_eq!(aggregation_sql(&viewer), "sum(\"sales\"");
+    assert!(menu().is_none());
+    assert!(viewer.has_dialog());
     // Escape closes the list but not the dialog; Tab accepts.
-    input(cx, " + \"re");
-    assert_eq!(menu(cx), Some(vec!["region".into()]));
-    press(cx, "escape");
-    assert!(menu(cx).is_none());
-    cx.update_window(handle.into(), |_, window, cx| assert!(window.has_active_dialog(cx)))
-        .unwrap();
-    input(cx, "g");
-    press(cx, "tab");
-    assert_eq!(
-        cx.update(|cx| state.read(cx).value().to_string()),
-        "sum(\"sales\" + \"region\""
-    );
+    input(" + \"re");
+    assert_eq!(menu(), Some(vec!["region".into()]));
+    press(&viewer, "escape");
+    assert!(menu().is_none());
+    assert!(viewer.has_dialog());
+    input("g");
+    press(&viewer, "tab");
+    assert_eq!(aggregation_sql(&viewer), "sum(\"sales\" + \"region\"");
 }

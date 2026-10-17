@@ -7,6 +7,7 @@ pub mod drill;
 pub mod export;
 pub mod formatting;
 pub mod heatmap;
+pub mod keystroke;
 pub mod frame;
 pub mod layout;
 pub mod pivot;

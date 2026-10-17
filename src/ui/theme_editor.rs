@@ -1,126 +1,185 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use gpui_kit::component::color_picker::{ColorPicker, ColorPickerState};
-use gpui_kit::component::input::{Input, InputEvent};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::*;
-
-use crate::application::theme::{ThemeRole, ThemeSettings};
-
-#[derive(Default)]
-pub struct ThemeRuntime {
-    pub profiles: HashMap<PathBuf, ThemeSettings>,
-    pub revisions: HashMap<PathBuf, u64>,
-}
-
-impl Global for ThemeRuntime {}
+use crate::application::theme::{ThemeColor, ThemeRole, ThemeSettings};
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::{Align, Canvas, Color, Point, Rect, rect, text};
+use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::{Column, Fonts, Row, WidgetId, colors};
 
 pub struct ThemeEditor {
-    pickers: Vec<(ThemeRole, Entity<ColorPickerState>)>,
-    preview: ThemeSettings,
+    pub(crate) pickers: Vec<(ThemeRole, Editor)>,
+    pub(crate) preview: ThemeSettings,
     error: Option<String>,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl ThemeEditor {
-    pub fn new(theme: ThemeSettings, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut subscriptions = Vec::new();
+    pub fn new(theme: ThemeSettings) -> Self {
         let pickers = ThemeRole::ALL
             .into_iter()
             .map(|role| {
-                let state = cx.new(|cx| {
-                    let mut state = ColorPickerState::new(window, cx)
-                        .default_value(rgba(role.color(&theme).rgba()));
-                    state.sync_pending_value(window, cx);
-                    state
-                });
-                let input = state.read(cx).hex_input().clone();
-                // Preserve serialized bytes across Kit's HSLA conversion.
-                input.update(cx, |input, cx| {
-                    input.set_value(role.color(&theme).hex(), window, cx)
-                });
-                subscriptions.push(cx.subscribe(&input, |editor, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        editor.update_preview(cx);
-                    }
-                }));
-                subscriptions.push(cx.observe(&state, |editor, _, cx| editor.update_preview(cx)));
-                (role, state)
+                let mut input = Editor::single_line();
+                input.set_text(role.color(&theme).hex());
+                (role, input)
             })
             .collect();
         Self {
             pickers,
             preview: theme,
             error: None,
-            _subscriptions: subscriptions,
         }
     }
 
-    fn update_preview(&mut self, cx: &mut Context<Self>) {
-        if let Ok(theme) = self.build(cx) {
+    fn update_preview(&mut self) {
+        if let Ok(theme) = self.build() {
             self.preview = theme;
             self.error = None;
         }
-        cx.notify();
     }
 
-    pub fn build(&self, cx: &App) -> Result<ThemeSettings, String> {
+    pub fn build(&self) -> Result<ThemeSettings, String> {
         let mut theme = ThemeSettings::default();
-        for (role, picker) in &self.pickers {
-            let text = picker.read(cx).hex_input().read(cx).value();
-            let color = crate::application::theme::ThemeColor::parse(&text)
-                .map_err(|error| format!("{}: {error}", role.label()))?;
+        for (role, input) in &self.pickers {
+            let color = ThemeColor::parse(input.text()).map_err(|error| format!("{}: {error}", role.label()))?;
             role.set(&mut theme, color);
         }
         Ok(theme)
     }
 
-    pub fn set_error(&mut self, error: String, cx: &mut Context<Self>) {
+    pub fn set_error(&mut self, error: String) {
         self.error = Some(error);
-        cx.notify();
     }
 
-    pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
-        window.focus(
-            &self.pickers[0]
-                .1
-                .read(cx)
-                .hex_input()
-                .read(cx)
-                .focus_handle(cx),
-            cx,
-        );
+    pub fn focus_first(&self, focus: &mut Option<WidgetId>) {
+        *focus = Some(self.pickers[0].1.id);
     }
 
-    pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn reset(&mut self) {
         self.preview = ThemeSettings::default();
-        for (role, picker) in &self.pickers {
-            picker.update(cx, |picker, cx| {
-                picker.set_value(rgba(role.color(&self.preview).rgba()), window, cx);
-            });
-            picker.read(cx).hex_input().clone().update(cx, |input, cx| {
-                input.set_value(role.color(&self.preview).hex(), window, cx);
-            });
+        for (role, input) in &mut self.pickers {
+            input.set_text(role.color(&self.preview).hex());
         }
         self.error = None;
-        cx.notify();
     }
-}
 
-impl Render for ThemeEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Sets role `index` to `0xRRGGBB`, keeping its alpha.
+    pub fn set_color(&mut self, index: usize, rgb: u32) {
+        let Some((role, input)) = self.pickers.get_mut(index) else {
+            return;
+        };
+        let alpha = ThemeColor::parse(input.text())
+            .map(|color| color.rgba() & 0xff)
+            .unwrap_or(0xff);
+        let color = ThemeColor::parse(&format!("#{:08X}", (rgb << 8) | alpha)).expect("valid color");
+        let _ = role;
+        input.set_text(color.hex());
+        self.update_preview();
+    }
+
+    /// The color of role `index` as `0xRRGGBB`, for the color dialog.
+    pub fn color(&self, index: usize) -> u32 {
+        self.pickers
+            .get(index)
+            .and_then(|(_, input)| ThemeColor::parse(input.text()).ok())
+            .map_or(0, |color| color.rgba() >> 8)
+    }
+
+    pub fn contains(&self, id: WidgetId) -> bool {
+        self.pickers.iter().any(|(_, input)| input.id == id)
+    }
+
+    fn input_mut(&mut self, id: WidgetId) -> Option<&mut Editor> {
+        self.pickers
+            .iter_mut()
+            .map(|(_, input)| input)
+            .find(|input| input.id == id)
+    }
+
+    /// Returns whether the key was used and whether Enter asked to save.
+    pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> (bool, bool) {
+        let Some(id) = *focus else {
+            return (false, false);
+        };
+        if event.key == "tab" && !event.modifiers.control && !event.modifiers.alt {
+            let ids = self.pickers.iter().map(|(_, input)| input.id).collect::<Vec<_>>();
+            if let Some(position) = ids.iter().position(|input| *input == id) {
+                let next = if event.modifiers.shift {
+                    (position + ids.len() - 1) % ids.len()
+                } else {
+                    (position + 1) % ids.len()
+                };
+                *focus = Some(ids[next]);
+                return (true, false);
+            }
+        }
+        let Some(input) = self.input_mut(id) else {
+            return (false, false);
+        };
+        let outcome = input.key(event);
+        if outcome.changed {
+            self.update_preview();
+        }
+        (outcome.handled, outcome.submit)
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        let Some(input) = focus.and_then(|id| self.input_mut(id)) else {
+            return false;
+        };
+        input.type_text(typed);
+        self.update_preview();
+        true
+    }
+
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> bool {
+        if let Hit::Editor(id, part) = hit
+            && let Some(input) = self.input_mut(*id)
+        {
+            input.mouse_down(*part, pos, clicks, shift);
+            *focus = Some(*id);
+            return true;
+        }
+        false
+    }
+
+    pub fn mouse_drag(&mut self, pos: Point) {
+        for (_, input) in &mut self.pickers {
+            if input.is_dragging() {
+                input.mouse_drag(pos);
+            }
+        }
+    }
+
+    pub fn mouse_up(&mut self) {
+        for (_, input) in &mut self.pickers {
+            input.mouse_up();
+        }
+    }
+
+    pub fn height(&self, fonts: &Fonts) -> f32 {
+        let line = text::line_height(&fonts.small);
+        let input = Editor::line_box_height(&fonts.small);
+        line + 8.0
+            + if self.error.is_some() { line + 8.0 } else { 0.0 }
+            + (line + 10.0) * 3.0
+            + 8.0
+            + (input + 8.0) * self.pickers.len() as f32
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        let font = &fonts.small;
+        let line = text::line_height(font);
+        let mut column = Column::new(r, 8.0);
+        canvas.text(column.next(line), "Choose grid colors. Changes apply when you save.", font, colors::FOREGROUND, Align::Left);
+        if let Some(error) = &self.error {
+            canvas.text(column.next(line), error, font, Color::rgb(0xb42318), Align::Left);
+        }
         let theme = &self.preview;
-        let mut preview = div()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(rgba(theme.grid_border.rgba()))
-            .text_color(rgba(theme.foreground.rgba()));
+        let color = |value: ThemeColor| Color::rgba(value.rgba());
+        let cell_height = line + 10.0;
+        let preview = column.next(cell_height * 3.0);
+        let cell_width = preview.w / 3.0;
         for row in 0..3 {
-            let mut line = div().flex();
-            for column in 0..3 {
-                let bg = match (row, column) {
+            for column_index in 0..3 {
+                let background = match (row, column_index) {
                     (0, 0) => theme.frozen_header_background,
                     (0, _) => theme.header_background,
                     (1, 0) => theme.frozen_background,
@@ -129,146 +188,80 @@ impl Render for ThemeEditor {
                     (1, _) => theme.background,
                     _ => theme.row_stripe_background,
                 };
-                line = line.child(
-                    div()
-                        .flex_1()
-                        .px_3()
-                        .py_1()
-                        .border_1()
-                        .border_color(rgba(if row == 1 && column == 1 {
-                            theme.active_cell_border.rgba()
-                        } else {
-                            theme.grid_border.rgba()
-                        }))
-                        .bg(rgba(bg.rgba()))
-                        .child(match (row, column) {
-                            (0, 0) => "Frozen",
-                            (0, 1) => "Region",
-                            (0, _) => "Amount",
-                            (1, 0) => "2025",
-                            (2, 0) => "2026",
-                            (_, 1) => "West",
-                            _ => "120.00",
-                        }),
+                let cell = rect(
+                    preview.x + column_index as f32 * cell_width,
+                    preview.y + row as f32 * cell_height,
+                    cell_width,
+                    cell_height,
                 );
+                canvas.fill(cell, color(background));
+                canvas.stroke(
+                    cell,
+                    color(if row == 1 && column_index == 1 {
+                        theme.active_cell_border
+                    } else {
+                        theme.grid_border
+                    }),
+                    1.0,
+                );
+                let label = match (row, column_index) {
+                    (0, 0) => "Frozen",
+                    (0, 1) => "Region",
+                    (0, _) => "Amount",
+                    (1, 0) => "2025",
+                    (2, 0) => "2026",
+                    (_, 1) => "West",
+                    _ => "120.00",
+                };
+                canvas.text(cell.inset_xy(12.0, 0.0), label, font, color(theme.foreground), Align::Left);
             }
-            preview = preview.child(line);
         }
-        let rows = self
-            .pickers
-            .iter()
-            .map(|(role, picker)| {
-                let row = div()
-                    .id(format!("theme-color:{}", role.key()))
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(div().flex_1().child(role.label()))
-                    .child(ColorPicker::new(picker).accessibility_label(role.label()))
-                    // Kit renders this input inside the popover while it is open.
-                    .when(!picker.read(cx).is_open(), |row| {
-                        row.child(
-                            Input::new(picker.read(cx).hex_input())
-                                .id(format!("theme-input:{}", role.key()))
-                                .w(px(135.)),
-                        )
-                    })
-                    .when(picker.read(cx).is_open(), |row| {
-                        row.child(
-                            div()
-                                .w(px(135.))
-                                .child(picker.read(cx).hex_input().read(cx).value()),
-                        )
-                    });
-                #[cfg(feature = "snapshots")]
-                let row = row.test_support();
-                row
-            })
-            .collect::<Vec<_>>();
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_sm()
-            .child("Choose grid colors. Changes apply when you save.")
-            .when_some(self.error.clone(), |element, error| {
-                element.child(div().text_color(rgb(0xb42318)).child(error))
-            })
-            .child(preview)
-            .children(rows)
+        let input_height = Editor::line_box_height(font);
+        for (index, (role, input)) in self.pickers.iter_mut().enumerate() {
+            let row = column.next(input_height);
+            let mut items = Row::new(row, 12.0);
+            let hex = items.right(135.0);
+            let swatch = items.right(input_height);
+            let current = ThemeColor::parse(input.text()).ok();
+            canvas.fill_rounded(swatch, 4.0, Color::rgb(0xffffff));
+            if let Some(current) = current {
+                canvas.fill_rounded(swatch.inset(3.0), 3.0, Color::rgba(current.rgba()));
+            }
+            canvas.stroke_rounded(swatch, 4.0, colors::BORDER, 1.0);
+            canvas.hit_with(swatch, Hit::Button(Button::ThemeSwatch(index)), crate::ui::platform::Cursor::Hand, Some("Choose a color"));
+            canvas.text(items.rest(), role.label(), font, colors::FOREGROUND, Align::Left);
+            let id = input.id;
+            input.paint(canvas, hex, font, focus == Some(id), |part| Hit::Editor(id, part));
+        }
     }
 }
 
-#[cfg(all(test, feature = "snapshots"))]
+#[cfg(test)]
 mod tests {
     use super::ThemeEditor;
     use crate::application::theme::{ThemeColor, ThemeSettings};
-    use gpui_kit::component::Root;
-    use gpui_kit::{AppContext, TestAppContext, px, rgba, size};
 
-    #[gpui_kit::test]
-    fn theme_drafts_preserve_exact_colors_validate_hex_and_reset(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
+    #[test]
+    fn theme_drafts_preserve_exact_colors_validate_hex_and_reset() {
         let original = ThemeSettings {
             selection_background: ThemeColor::parse("#12345680").unwrap(),
             ..Default::default()
         };
-        let mut editor = None;
-        let handle = cx.open_window(size(px(800.), px(700.)), |window, cx| {
-            let form = cx.new(|cx| ThemeEditor::new(original.clone(), window, cx));
-            editor = Some(form.clone());
-            Root::new(form, window, cx)
-        });
-        let editor = editor.unwrap();
-        cx.update_window(handle.into(), |_, window, cx| {
-            assert_eq!(editor.read(cx).build(cx).unwrap(), original);
-            let input = editor.read(cx).pickers[0].1.read(cx).hex_input().clone();
-            input.update(cx, |input, cx| input.set_value("#bad", window, cx));
-            assert!(
-                editor
-                    .read(cx)
-                    .build(cx)
-                    .unwrap_err()
-                    .contains("Header background")
-            );
-            input.update(cx, |input, cx| input.set_value("#AABBCC", window, cx));
-            assert_eq!(
-                editor.read(cx).build(cx).unwrap().header_background,
-                ThemeColor::rgb(0xaabbcc)
-            );
-            editor.update(cx, |editor, cx| editor.reset(window, cx));
-            assert_eq!(editor.read(cx).build(cx).unwrap(), ThemeSettings::default());
-        })
-        .unwrap();
+        let mut editor = ThemeEditor::new(original.clone());
+        assert_eq!(editor.build().unwrap(), original);
+        editor.pickers[0].1.set_text("#bad");
+        assert!(editor.build().unwrap_err().contains("Header background"));
+        editor.pickers[0].1.set_text("#AABBCC");
+        assert_eq!(editor.build().unwrap().header_background, ThemeColor::rgb(0xaabbcc));
+        editor.reset();
+        assert_eq!(editor.build().unwrap(), ThemeSettings::default());
     }
 
-    #[gpui_kit::test]
-    fn color_picker_selection_updates_preview(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let mut editor = None;
-        let handle = cx.open_window(size(px(800.), px(700.)), |window, cx| {
-            let form = cx.new(|cx| ThemeEditor::new(ThemeSettings::default(), window, cx));
-            editor = Some(form.clone());
-            Root::new(form, window, cx)
-        });
-        let editor = editor.unwrap();
-        cx.update_window(handle.into(), |_, window, cx| {
-            let picker = editor.read(cx).pickers[0].1.clone();
-            picker.update(cx, |picker, cx| {
-                picker.select_color(rgba(0xff0000ff).into(), window, cx)
-            });
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update(|cx| {
-            assert_eq!(
-                editor.read(cx).preview.header_background,
-                ThemeColor::rgb(0xff0000)
-            );
-            assert_eq!(
-                editor.read(cx).build(cx).unwrap().header_background,
-                ThemeColor::rgb(0xff0000)
-            );
-        });
+    #[test]
+    fn choosing_a_color_updates_the_preview() {
+        let mut editor = ThemeEditor::new(ThemeSettings::default());
+        editor.set_color(0, 0xff0000);
+        assert_eq!(editor.preview.header_background, ThemeColor::rgb(0xff0000));
+        assert_eq!(editor.build().unwrap().header_background, ThemeColor::rgb(0xff0000));
     }
 }

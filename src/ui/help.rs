@@ -1,16 +1,9 @@
 use std::collections::HashSet;
 
-use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::{ActiveTheme, StyledExt};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{
-    AnyElement, App, InteractiveElement, IntoElement, Keystroke, ParentElement, ScrollHandle,
-    StatefulInteractiveElement, Styled, TestSupportExt, Window, div, px,
-};
-
-use super::font_picker::FontPreferences;
 use crate::application::keymap::{ACTIONS, ActionCategory, KeyContext, KeymapFile};
+use crate::ui::hit::Hit;
+use crate::ui::platform::{Align, Canvas, Font, Point, Rect, TextOptions, point, rect, text};
+use crate::ui::widgets::{Fonts, colors, scroll};
 
 const OUTER_MARGIN: f32 = 24.;
 pub(super) const DIALOG_PADDING: f32 = 24.;
@@ -32,12 +25,12 @@ struct HelpRow {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct HelpSection {
+pub struct HelpSection {
     category: ActionCategory,
     rows: Vec<HelpRow>,
 }
 
-pub(super) fn sections(keymap: &KeymapFile) -> Vec<HelpSection> {
+pub(crate) fn sections(keymap: &KeymapFile) -> Vec<HelpSection> {
     let mut sections: Vec<_> = ActionCategory::ALL
         .into_iter()
         .map(|category| HelpSection {
@@ -105,9 +98,9 @@ pub(super) fn sections(keymap: &KeymapFile) -> Vec<HelpSection> {
     sections
 }
 
-pub(super) struct HelpLayout {
+pub(crate) struct HelpLayout {
     pub dialog_width: f32,
-    column_count: usize,
+    pub column_count: usize,
     column_width: f32,
     key_width: f32,
 }
@@ -145,162 +138,226 @@ fn distribute_sections(sections: &[HelpSection], count: usize) -> Vec<Vec<&HelpS
     columns
 }
 
-pub(super) fn render_help(
-    sections: &[HelpSection],
-    scroll_handle: &ScrollHandle,
-    font: &FontPreferences,
-    window: &Window,
-    cx: &App,
-) -> AnyElement {
-    let layout = HelpLayout::for_viewport(window.viewport_size().width.as_f32());
-    let muted = cx.theme().muted_foreground;
-    let border = cx.theme().border;
-    let key_background = cx.theme().tokens.muted;
-    let columns = distribute_sections(sections, layout.column_count);
-    let font_size = px(f32::from(font.size));
-    let font_family = font
-        .family
-        .clone()
-        .map(Into::into)
-        .unwrap_or_else(|| cx.theme().font_family.clone());
-    // Keep the overlay outside the scrolling content so its track stays fixed while dragging.
-    div()
-        .id("help-viewport")
-        .test_support()
-        .min_h_0()
-        .h(px((window.viewport_size().height.as_f32() - 140.).max(0.)))
-        .max_h(px((window.viewport_size().height.as_f32() - 140.).max(0.)))
-        .relative()
-        .overflow_hidden()
-        .text_size(font_size)
-        .font_family(font_family.clone())
-        .child(
-            div()
-                .id("help-body")
-                .test_support()
-                .size_full()
-                .overflow_y_scroll()
-                .track_scroll(scroll_handle)
-                .pr(px(SCROLLBAR_GUTTER))
-                .flex()
-                .items_start()
-                .gap(px(COLUMN_GAP))
-                .children(columns.into_iter().enumerate().map(|(index, sections)| {
-                    div()
-                        .id(format!("help-column-{index}"))
-                        .test_support()
-                        .w(px(layout.column_width))
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(24.))
-                        .children(sections.into_iter().map(|section| {
-                            let category = section.category;
-                            div()
-                                .id(format!("help-section-{category:?}"))
-                                .test_support()
-                                .flex()
-                                .flex_col()
-                                .min_w_0()
-                                .child(div().font_bold().pb_2().child(category.label()))
-                                .when(category == ActionCategory::SpaceMenu, |section| {
-                                    section.child(
-                                        div()
-                                            .text_color(muted)
-                                            .pb_2()
-                                            .child("Keys apply after opening the Space menu."),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap_3()
-                                        .pb_1()
-                                        .border_b_1()
-                                        .border_color(border)
-                                        .font_bold()
-                                        .text_color(muted)
-                                        .child(
-                                            div()
-                                                .w(px(layout.key_width))
-                                                .flex_shrink_0()
-                                                .child("Key"),
-                                        )
-                                        .child(div().flex_1().min_w_0().child("Description")),
-                                )
-                                .children(section.rows.iter().enumerate().map(|(index, row)| {
-                                    div()
-                                        .flex()
-                                        .items_start()
-                                        .gap_3()
-                                        .py_1()
-                                        .border_b_1()
-                                        .border_color(border)
-                                        .child(
-                                            div()
-                                                .id(format!("help-key-{category:?}-{index}"))
-                                                .test_support()
-                                                .w(px(layout.key_width))
-                                                .flex_shrink_0()
-                                                .flex()
-                                                .flex_wrap()
-                                                .gap_1()
-                                                .children(row.keys.iter().map(|key| {
-                                                    match key {
-                                                        HelpKey::Stroke(stroke) => Kbd::new(
-                                                            Keystroke::parse(stroke)
-                                                                .expect("validated keymap stroke"),
-                                                        )
-                                                        .max_w_full()
-                                                        .text_size(font_size)
-                                                        .font_family(font_family.clone())
-                                                        .font_bold()
-                                                        .into_any_element(),
-                                                        HelpKey::Range(label) => div()
-                                                            .max_w_full()
-                                                            .rounded_sm()
-                                                            .px_1()
-                                                            .py_0p5()
-                                                            .font_bold()
-                                                            .text_color(muted)
-                                                            .bg(key_background)
-                                                            .child(*label)
-                                                            .into_any_element(),
-                                                    }
-                                                })),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(format!(
-                                                    "help-description-{category:?}-{index}"
-                                                ))
-                                                .test_support()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .child(row.description)
-                                                .when_some(row.context, |description, context| {
-                                                    let label = match context {
-                                                        KeyContext::TableSpaceMenu => "Table Grid",
-                                                        KeyContext::QuerySpaceMenu => "Query Grid",
-                                                        _ => context.label(),
-                                                    };
-                                                    description
-                                                        .child(div().text_color(muted).child(label))
-                                                }),
-                                        )
-                                }))
-                        }))
-                })),
+/// The keyboard shortcut reference, laid out in columns that scroll together.
+pub struct HelpDialog {
+    sections: Vec<HelpSection>,
+    pub(super) scroll: scroll::Scroll,
+    viewport: Rect,
+    content_height: f32,
+}
+
+enum Op {
+    Title(&'static str),
+    Header(&'static str),
+    Muted(String),
+    Rule,
+    Key(String, bool),
+    Text(String),
+}
+
+impl HelpDialog {
+    pub fn new(keymap: &KeymapFile) -> Self {
+        Self {
+            sections: sections(keymap),
+            scroll: scroll::Scroll::default(),
+            viewport: Rect::default(),
+            content_height: 0.0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn content_height(&self) -> f32 {
+        self.content_height
+    }
+
+    pub fn wheel(&mut self, delta: Point, line: f32) -> bool {
+        self.scroll
+            .scroll_by(-delta.y * line * 2.0, self.viewport.h, self.content_height)
+    }
+
+    pub fn key(&mut self, key: &str, line: f32) -> bool {
+        let page = (self.viewport.h - line).max(line);
+        let delta = match key {
+            "down" => line * 2.0,
+            "up" => -line * 2.0,
+            "pagedown" | "space" => page,
+            "pageup" => -page,
+            "home" => -self.content_height,
+            "end" => self.content_height,
+            _ => return false,
+        };
+        self.scroll.scroll_by(delta, self.viewport.h, self.content_height);
+        true
+    }
+
+    pub fn press_bar(&mut self, pos: Point) {
+        let bar = self.bar();
+        self.scroll.press(pos.y - bar.y, bar.h, self.viewport.h, self.content_height);
+    }
+
+    pub fn drag(&mut self, pos: Point) {
+        let bar = self.bar();
+        self.scroll.drag(pos.y - bar.y, bar.h, self.viewport.h, self.content_height);
+    }
+
+    pub fn release(&mut self) {
+        self.scroll.release();
+    }
+
+    fn bar(&self) -> Rect {
+        rect(
+            self.viewport.right() - scroll::BAR_WIDTH,
+            self.viewport.y,
+            scroll::BAR_WIDTH,
+            self.viewport.h,
         )
-        .child(
-            div().absolute().inset_0().child(
-                Scrollbar::vertical(scroll_handle)
-                    .id("help-scrollbar")
-                    .mode(ScrollbarMode::Always)
-                    .viewport_from_layout(),
-            ),
-        )
-        .into_any_element()
+    }
+
+    /// Lays out one section; returns its height, drawing it at `origin` when
+    /// a canvas is given.
+    fn section(
+        section: &HelpSection,
+        layout: &HelpLayout,
+        font: &Font,
+        canvas: Option<(&mut Canvas<Hit>, Point)>,
+    ) -> f32 {
+        let line = text::line_height(font);
+        let bold = font.bold();
+        let width = layout.column_width;
+        let description_width = (width - layout.key_width - 12.0).max(40.0);
+        let mut ops: Vec<(Rect, Op)> = Vec::new();
+        let mut y = 0.0;
+        ops.push((rect(0.0, y, width, line), Op::Title(section.category.label())));
+        y += line + 8.0;
+        if section.category == ActionCategory::SpaceMenu {
+            ops.push((
+                rect(0.0, y, width, line),
+                Op::Muted("Keys apply after opening the Space menu.".into()),
+            ));
+            y += line + 8.0;
+        }
+        ops.push((rect(0.0, y, layout.key_width, line), Op::Header("Key")));
+        ops.push((
+            rect(layout.key_width + 12.0, y, description_width, line),
+            Op::Header("Description"),
+        ));
+        y += line + 4.0;
+        ops.push((rect(0.0, y, width, 1.0), Op::Rule));
+        y += 1.0;
+        for row in &section.rows {
+            let top = y + 4.0;
+            // Key caps wrap within the key column.
+            let mut x = 0.0;
+            let mut key_y = top;
+            let cap_height = line + 4.0;
+            for key in &row.keys {
+                let label = match key {
+                    HelpKey::Stroke(stroke) => crate::ui::platform::keys::display(stroke),
+                    HelpKey::Range(label) => (*label).to_owned(),
+                };
+                let cap_width = (text::measure(&label, &bold).0 + 10.0).min(layout.key_width);
+                if x > 0.0 && x + cap_width > layout.key_width {
+                    x = 0.0;
+                    key_y += cap_height + 4.0;
+                }
+                ops.push((
+                    rect(x, key_y, cap_width, cap_height),
+                    Op::Key(label, matches!(key, HelpKey::Range(_))),
+                ));
+                x += cap_width + 4.0;
+            }
+            let keys_height = key_y + cap_height - top;
+            let description = text::layout(row.description, font, TextOptions::wrapped(description_width));
+            let mut description_height = description.height;
+            ops.push((
+                rect(layout.key_width + 12.0, top, description_width, description.height),
+                Op::Text(row.description.to_owned()),
+            ));
+            if let Some(context) = row.context {
+                let label = match context {
+                    KeyContext::TableSpaceMenu => "Table Grid",
+                    KeyContext::QuerySpaceMenu => "Query Grid",
+                    _ => context.label(),
+                };
+                ops.push((
+                    rect(layout.key_width + 12.0, top + description_height, description_width, line),
+                    Op::Muted(label.into()),
+                ));
+                description_height += line;
+            }
+            y = top + keys_height.max(description_height) + 4.0;
+            ops.push((rect(0.0, y, width, 1.0), Op::Rule));
+            y += 1.0;
+        }
+        if let Some((canvas, origin)) = canvas {
+            for (r, op) in ops {
+                let r = r.offset(origin.x, origin.y);
+                match op {
+                    Op::Title(title) => {
+                        canvas.text(r, title, &bold, colors::FOREGROUND, Align::Left);
+                    }
+                    Op::Header(label) => {
+                        canvas.text(r, label, &bold, colors::MUTED, Align::Left);
+                    }
+                    Op::Muted(label) => {
+                        canvas.text(r, &label, font, colors::MUTED, Align::Left);
+                    }
+                    Op::Rule => canvas.fill(r, colors::BORDER),
+                    Op::Key(label, range) => {
+                        canvas.fill_rounded(r, 4.0, colors::KEY_BACKGROUND);
+                        if !range {
+                            canvas.stroke_rounded(r, 4.0, colors::BORDER, 1.0);
+                        }
+                        canvas.text(
+                            r,
+                            &label,
+                            &bold,
+                            if range { colors::MUTED } else { colors::FOREGROUND },
+                            Align::Center,
+                        );
+                    }
+                    Op::Text(label) => {
+                        let layout = text::layout(&label, font, TextOptions::wrapped(r.w));
+                        canvas.draw_layout(&layout, r.origin(), colors::FOREGROUND);
+                    }
+                }
+            }
+        }
+        y
+    }
+
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, viewport_width: f32) {
+        let layout = HelpLayout::for_viewport(viewport_width);
+        let font = &fonts.ui;
+        self.viewport = r;
+        let columns = distribute_sections(&self.sections, layout.column_count);
+        let heights = columns
+            .iter()
+            .map(|sections| {
+                sections
+                    .iter()
+                    .map(|section| Self::section(section, &layout, font, None) + 24.0)
+                    .sum::<f32>()
+            })
+            .collect::<Vec<_>>();
+        self.content_height = heights.iter().copied().fold(0.0, f32::max);
+        self.scroll.clamp(r.h, self.content_height);
+        canvas.push_clip(r);
+        for (index, sections) in columns.iter().enumerate() {
+            let x = r.x + index as f32 * (layout.column_width + COLUMN_GAP);
+            let mut y = r.y - self.scroll.offset;
+            for section in sections {
+                let height = Self::section(section, &layout, font, None);
+                if y + height >= r.y && y <= r.bottom() {
+                    Self::section(section, &layout, font, Some((&mut *canvas, point(x, y))));
+                }
+                y += height + 24.0;
+            }
+        }
+        canvas.pop_clip();
+        canvas.hit(r, Hit::DialogScroll);
+        scroll::vertical(canvas, self.bar(), r.h, self.content_height, &self.scroll, Hit::DialogBar);
+    }
 }
 
 #[cfg(test)]
