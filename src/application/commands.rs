@@ -3,7 +3,9 @@ pub enum CommandId {
     Back,
     Forward,
     SqlEditor,
+    NewSqlQuery,
     StartupSql,
+    ResetDatabase,
     Files,
     DatabaseTree,
     Commands,
@@ -89,6 +91,18 @@ pub const COMMANDS: &[Command] = &[
         key: "sql_editor",
         label: "Open SQL editor",
         default_binding: Some("ctrl-j"),
+    },
+    Command {
+        id: CommandId::NewSqlQuery,
+        key: "new_sql_query",
+        label: "New SQL query",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ResetDatabase,
+        key: "reset_database",
+        label: "Reset database connection",
+        default_binding: None,
     },
     Command {
         id: CommandId::StartupSql,

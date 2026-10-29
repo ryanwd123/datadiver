@@ -10,6 +10,8 @@ use super::duckdb_store::{DuckDbStore, quote_identifier};
 use crate::domain::documents::{DatabaseView, RelationKind};
 
 const DATABASE_VERSION: i32 = 2;
+/// The script run on the profile database when it opens, in the settings folder.
+pub const STARTUP_SCRIPT: &str = "duckdb_startup.sql";
 type Profiles = HashMap<PathBuf, Weak<SourceDatabase>>;
 static PROFILES: OnceLock<Mutex<Profiles>> = OnceLock::new();
 
@@ -346,7 +348,7 @@ impl SourceDatabase {
              );
              COMMIT;"
         ).map_err(|error| error.to_string())?;
-        let script = self.path.parent().unwrap().join("startup.sql");
+        let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
         let startup_error = run_startup_script(&connection, &script).err();
         let startup_error = startup_error.or_else(|| share_path_settings(&connection).err());
         let initialized = DatabaseState {
@@ -568,6 +570,45 @@ impl SourceDatabase {
         Ok(())
     }
 
+    /// Starts the profile's DuckDB session over: detaches every attached
+    /// database and runs the startup script again. Returns the script's
+    /// error, if any. The database itself stays open, since every open
+    /// table holds a connection to it; callers replace their own SQL
+    /// connections to drop temporary tables and session settings.
+    pub fn reset_connection(&self) -> Result<Option<String>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "database writer lock poisoned")?;
+        if state.is_none() {
+            self.ensure_initialized(&mut state)?;
+            drop(state);
+            self.invalidate();
+            return Ok(self.startup_error());
+        }
+        let current = state.as_mut().unwrap();
+        let connection = &current.connection;
+        let main: String = connection
+            .query_row("SELECT current_database()", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        for (name, _) in attached_databases(connection)? {
+            if name == main || name == "system" || name == "temp" {
+                continue;
+            }
+            connection
+                .execute_batch(&format!("DETACH {}", quote_identifier(&name)))
+                .map_err(|error| format!("Cannot detach {name}: {error}"))?;
+        }
+        let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
+        current.startup_error = run_startup_script(connection, &script)
+            .err()
+            .or_else(|| share_path_settings(connection).err());
+        let error = current.startup_error.clone();
+        drop(state);
+        self.invalidate();
+        Ok(error)
+    }
+
     /// Detaches an attached database for the rest of this session.
     pub fn detach(&self, catalog: &str) -> Result<(), String> {
         self.execute_and_invalidate(&format!("DETACH {}", quote_identifier(catalog)))
@@ -780,7 +821,7 @@ fn run_startup_script(connection: &Connection, path: &Path) -> Result<(), String
 }
 
 /// `file_search_path` and `home_directory` are per connection in DuckDB, so a
-/// plain `SET` in startup.sql would reach only this writer. Making them global
+/// plain `SET` in the startup script would reach only this writer. Making them global
 /// lets every query connection, including the SQL editor's, resolve the same paths.
 fn share_path_settings(connection: &Connection) -> Result<(), String> {
     for name in ["file_search_path", "home_directory"] {
@@ -798,7 +839,7 @@ fn share_path_settings(connection: &Connection) -> Result<(), String> {
                     "SET GLOBAL {name} = '{}'",
                     value.replace('\'', "''")
                 ))
-                .map_err(|error| format!("startup.sql · SET GLOBAL {name}: {error}"))?;
+                .map_err(|error| format!("{STARTUP_SCRIPT} · SET GLOBAL {name}: {error}"))?;
         }
     }
     Ok(())
@@ -1024,6 +1065,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reset_connection_detaches_databases_and_runs_the_edited_startup_script() {
+        let home = tempfile::tempdir().unwrap();
+        let dropped = home.path().join("dropped.duckdb");
+        Connection::open(&dropped)
+            .unwrap()
+            .execute_batch("CREATE TABLE t AS SELECT 1 AS n")
+            .unwrap();
+        fs::write(home.path().join(STARTUP_SCRIPT), "CREATE OR REPLACE TABLE runs AS SELECT 1 AS n;").unwrap();
+        let database = SourceDatabase::for_profile(home.path());
+        database.initialize().unwrap();
+        database.attach(&dropped, DatabaseFileKind::DuckDb).unwrap();
+        let names = |database: &SourceDatabase| {
+            attached_databases(&database.connect().unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert!(names(&database).contains(&"dropped".to_string()));
+        fs::write(home.path().join(STARTUP_SCRIPT), "CREATE OR REPLACE TABLE runs AS SELECT 2 AS n;").unwrap();
+        let revision = database.revision();
+        assert_eq!(database.reset_connection().unwrap(), None);
+        assert!(database.revision() > revision);
+        assert!(!names(&database).contains(&"dropped".to_string()));
+        let n: i64 = database
+            .connect()
+            .unwrap()
+            .query_row("SELECT n FROM runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        fs::write(home.path().join(STARTUP_SCRIPT), "SELECT * FROM missing_table;").unwrap();
+        assert!(database.reset_connection().unwrap().unwrap().contains("Statement 1"));
+        assert!(database.startup_error().is_some());
+    }
+
+    #[test]
     fn startup_sql_runs_once_per_database_instance_and_attachments_reach_cloned_connections() {
         let home = tempfile::tempdir().unwrap();
         let attached_path = home.path().join("attached.duckdb");
@@ -1032,7 +1109,7 @@ mod tests {
             .execute_batch("CREATE TABLE sample AS SELECT 'hello; world' AS value")
             .unwrap();
         drop(attached);
-        fs::write(home.path().join("startup.sql"), format!(
+        fs::write(home.path().join(STARTUP_SCRIPT), format!(
             "-- A semicolon in a string is part of one statement.\nCREATE TABLE IF NOT EXISTS main.startup_runs(n INTEGER);\nINSERT INTO main.startup_runs VALUES (1);\nATTACH '{}' AS attached (READ_ONLY);",
             attached_path.to_string_lossy().replace('\'', "''")
         )).unwrap();
@@ -1074,7 +1151,7 @@ mod tests {
             .unwrap();
         drop(attached);
         fs::write(
-            home.path().join("startup.sql"),
+            home.path().join(STARTUP_SCRIPT),
             format!(
                 "ATTACH '{}' AS shop (READ_ONLY);\nCREATE TABLE IF NOT EXISTS main.notes AS SELECT 'a' AS note;\nCREATE OR REPLACE VIEW main.note_view AS SELECT * FROM main.notes;
 CREATE TABLE IF NOT EXISTS files.imported AS SELECT 1 AS n;
@@ -1161,7 +1238,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         fs::create_dir(&data).unwrap();
         fs::write(data.join("fruit.csv"), "name\napple\n").unwrap();
         fs::write(
-            home.path().join("startup.sql"),
+            home.path().join(STARTUP_SCRIPT),
             format!(
                 "SET file_search_path = '{}';",
                 data.to_string_lossy().replace('\'', "''")
@@ -1193,11 +1270,11 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
     #[test]
     fn failed_startup_sql_leaves_database_usable_and_reports_the_statement() {
         let home = tempfile::tempdir().unwrap();
-        fs::write(home.path().join("startup.sql"), "CREATE TABLE startup_runs AS SELECT 1 AS n;\nBEGIN;\nINSERT INTO missing_table VALUES (1);\nCREATE TABLE should_not_run(n INT);").unwrap();
+        fs::write(home.path().join(STARTUP_SCRIPT), "CREATE TABLE startup_runs AS SELECT 1 AS n;\nBEGIN;\nINSERT INTO missing_table VALUES (1);\nCREATE TABLE should_not_run(n INT);").unwrap();
         let database = SourceDatabase::for_profile(home.path());
         database.initialize().unwrap();
         let error = database.startup_error().unwrap();
-        assert!(error.contains("startup.sql · Statement 3:"), "{error}");
+        assert!(error.contains("duckdb_startup.sql · Statement 3:"), "{error}");
         let connection = database.connect().unwrap();
         assert_eq!(
             connection

@@ -229,12 +229,16 @@ Completion suggests database tables and DuckDB views after `FROM`, `JOIN`, or si
 
 Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you tick **Auto-run** in the toolbar. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 
-**Open startup SQL script** in the command palette edits `startup.sql`, which runs whenever the profile database opens. Use it for settings and attachments you always want, for example:
+**New SQL query** in the command palette starts an empty SQL draft, even when the editor is already open.
+
+**Open startup SQL script** in the command palette edits `duckdb_startup.sql`, which runs whenever the profile database opens. Use it for settings and attachments you always want, for example:
 
 ```sql
 ATTACH 'C:\data\warehouse.duckdb' AS warehouse (READ_ONLY);
 SET file_search_path = 'C:\data';
 ```
+
+**Reset database connection** starts the DuckDB session over without restarting the app: it detaches every attached database, runs the startup script again, and gives the SQL editor a new connection, which drops its temporary tables and `SET` options. Use it after editing the startup script.
 
 ## Ask AI for SQL
 
@@ -313,7 +317,7 @@ On Windows, the profile is stored in `%LOCALAPPDATA%\datadiver`; other platforms
 | `datadiver.duckdb` | Imported sources and anything you create in SQL |
 | `settings.json` | Preferences, favorites, and AI providers |
 | `keymap.json`, `theme.json` | Custom shortcuts and theme |
-| `startup.sql` | The startup SQL script |
+| `duckdb_startup.sql` | The startup SQL script |
 | `state.json` | Session state restored at startup |
 | `views/` | Saved views; archived views move to `deleted/` |
 | `pasted/` | Tables opened from the clipboard |

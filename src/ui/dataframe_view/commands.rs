@@ -35,6 +35,8 @@ impl DataFrameView {
             CommandId::Back => self.navigate_history(false, cx),
             CommandId::Forward => self.navigate_history(true, cx),
             CommandId::SqlEditor => self.open_sql_editor(cx),
+            CommandId::NewSqlQuery => self.new_sql_query(cx),
+            CommandId::ResetDatabase => self.reset_database_connection(cx),
             CommandId::StartupSql => {
                 if matches!(self.session.identity, SessionIdentity::StartupSql) {
                     self.open_sql_editor(cx);

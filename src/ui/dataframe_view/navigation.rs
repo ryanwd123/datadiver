@@ -133,7 +133,7 @@ impl DataFrameView {
                     let definition = if startup_script {
                         repository
                             .load_startup_sql()
-                            .map_err(|error| format!("Cannot open startup.sql: {error}"))?
+                            .map_err(|error| format!("Cannot open {}: {error}", crate::infrastructure::source_database::STARTUP_SCRIPT))?
                     } else {
                         sql_definition.expect("SQL view destination")
                     };

@@ -687,19 +687,19 @@ impl SqlPanel {
         let mut column = Column::new(rect(r.x, r.y + 1.0, r.w, r.h - 1.0), 0.0);
         let toolbar = column.next(button_height(font) + 8.0);
         let mut items = Row::new(toolbar.inset_xy(12.0, 4.0), 8.0);
-        let label = if self.startup_script { "startup.sql" } else { "SQL" };
+        let label = if self.startup_script { "duckdb_startup.sql" } else { "SQL" };
         let label_rect = items.left(text::measure(label, font).0 + 4.0);
         canvas.text(label_rect, label, font, colors::FOREGROUND, Align::Left);
         if self.startup_script {
             let save = items.left(button_width("Save", font));
             button(canvas, save, "Save", font, ButtonStyle::Outline, true, Hit::Button(Button::SqlSave));
-            canvas.hit_with(save, Hit::Button(Button::SqlSave), crate::ui::platform::Cursor::Arrow, Some("Save startup.sql for the next database startup"));
+            canvas.hit_with(save, Hit::Button(Button::SqlSave), crate::ui::platform::Cursor::Arrow, Some("Save duckdb_startup.sql for the next database startup"));
         }
         let auto_save_width = text::measure("Auto-save", font).0 + 26.0;
         let auto_save = items.left(auto_save_width);
         checkbox(canvas, auto_save, "Auto-save", self.auto_save, font, Hit::Button(Button::SqlAutoSave));
         canvas.hit_with(auto_save, Hit::Button(Button::SqlAutoSave), crate::ui::platform::Cursor::Arrow, Some("Save SQL text after 2 seconds without typing"));
-        // startup.sql already runs whenever the database opens.
+        // The startup script already runs whenever the database opens.
         if !self.startup_script {
             let auto_run = items.left(text::measure("Auto-run", font).0 + 26.0);
             checkbox(canvas, auto_run, "Auto-run", self.auto_run, font, Hit::Button(Button::SqlAutoRun));

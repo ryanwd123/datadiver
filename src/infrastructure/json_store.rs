@@ -266,7 +266,7 @@ impl ViewRepository {
     }
 
     pub fn startup_sql_path(&self) -> PathBuf {
-        self.paths.config.join("startup.sql")
+        self.paths.config.join(crate::infrastructure::source_database::STARTUP_SCRIPT)
     }
 
     pub fn load_startup_sql(&self) -> io::Result<DocumentDefinition> {
@@ -278,7 +278,10 @@ impl ViewRepository {
             }
             Err(error) => return Err(error),
         };
-        let mut definition = DocumentDefinition::draft_table("startup.sql".into(), String::new());
+        let mut definition = DocumentDefinition::draft_table(
+            crate::infrastructure::source_database::STARTUP_SCRIPT.into(),
+            String::new(),
+        );
         definition.view =
             crate::domain::documents::ViewKind::Sql(crate::domain::documents::SqlConfig {
                 text,

@@ -117,7 +117,7 @@ impl FileEntry {
         match self {
             Self::View(view) => view.name.clone(),
             Self::Source(path) => source_file_name(path),
-            Self::StartupSql => "startup.sql".into(),
+            Self::StartupSql => crate::infrastructure::source_database::STARTUP_SCRIPT.into(),
         }
     }
 
@@ -141,7 +141,7 @@ impl FileEntry {
                 }
             ),
             Self::Source(path) => format!("{} source", path.display()),
-            Self::StartupSql => "startup.sql startup SQL script settings".into(),
+            Self::StartupSql => "duckdb_startup.sql startup SQL script settings".into(),
         }
     }
 }
@@ -205,7 +205,9 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::Back,
     CommandId::Forward,
     CommandId::SqlEditor,
+    CommandId::NewSqlQuery,
     CommandId::StartupSql,
+    CommandId::ResetDatabase,
     CommandId::Files,
     CommandId::DatabaseTree,
     CommandId::Commands,

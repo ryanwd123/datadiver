@@ -155,10 +155,10 @@ fn startup_sql_is_absent_from_picker_and_command_history_keeps_save_destination(
     let repository = repository(home.path());
     repository.save_startup_sql("SELECT * FROM missing_table;").unwrap();
     let viewer = viewer(repository.clone(), None);
-    assert!(viewer.read(|view| view.error.as_ref().unwrap().contains("startup.sql")));
+    assert!(viewer.read(|view| view.error.as_ref().unwrap().contains("duckdb_startup.sql")));
     viewer.update(|view, cx| view.open_file_palette(cx));
     viewer.render();
-    viewer.input("startup.sql");
+    viewer.input("duckdb_startup.sql");
     viewer.run_until_parked();
     viewer.render();
     viewer.read(|view| {
@@ -993,4 +993,60 @@ fn ask_ai_at_mentions_complete_and_send_only_those_tables() {
             .iter()
             .any(|event| matches!(event, AiEvent::Note(text) if text.contains("with data values")))
     }));
+}
+
+#[test]
+fn new_sql_query_replaces_sql_text_after_confirming() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlQuery, cx));
+    viewer.run_until_parked();
+    // An empty SQL draft has nothing to lose, so it is replaced without asking.
+    assert!(!viewer.has_dialog());
+    assert!(viewer.read(|view| view.session.is_sql()));
+    edit_sql(&viewer, "SELECT 1");
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlQuery, cx));
+    viewer.render();
+    assert!(viewer.has_dialog());
+    click(&viewer, Button::DialogOk);
+    assert!(!viewer.has_dialog());
+    assert_eq!(sql_text(&viewer), "");
+    assert_eq!(sql_config(&viewer).text, "");
+    assert!(editor_focused(&viewer));
+}
+
+#[test]
+fn reset_database_connection_drops_sql_temp_tables_and_reruns_the_startup_script() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    std::fs::write(
+        repository.startup_sql_path(),
+        "CREATE OR REPLACE TABLE startup_runs AS SELECT 1 AS n;",
+    )
+    .unwrap();
+    let viewer = viewer(repository.clone(), None);
+    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.run_until_parked();
+    run_all_sql(&viewer, "CREATE TEMP TABLE scratch AS SELECT 1 AS n;\nSELECT * FROM scratch;");
+    assert!(viewer.read(|view| view.error.is_none()));
+    std::fs::write(
+        repository.startup_sql_path(),
+        "CREATE OR REPLACE TABLE startup_runs AS SELECT 2 AS n;",
+    )
+    .unwrap();
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ResetDatabase, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.copy_status.as_deref(), Some("Database connection reset"));
+    });
+    assert_eq!(sql_text(&viewer), "CREATE TEMP TABLE scratch AS SELECT 1 AS n;\nSELECT * FROM scratch;");
+    run_all_sql(&viewer, "SELECT n FROM startup_runs;");
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.result.fetch_rows(0, 1).unwrap()[0].values[0].as_deref(), Some("2"));
+    });
+    run_all_sql(&viewer, "SELECT * FROM scratch;");
+    let error = panel(&viewer, |panel| panel.error.clone()).expect("the temp table is gone");
+    assert!(format!("{error:?}").contains("scratch"), "{error:?}");
 }

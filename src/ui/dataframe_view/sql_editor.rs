@@ -163,8 +163,39 @@ impl DataFrameView {
         }
     }
 
+    /// Starts an empty SQL draft, replacing the working document even when it
+    /// is already SQL.
+    pub(crate) fn new_sql_query(&mut self, cx: &mut Cx<Self>) {
+        let empty_sql = matches!(
+            self.session.working.as_ref().map(|d| &d.view),
+            Some(ViewKind::Sql(config)) if config.text.trim().is_empty()
+        );
+        if self.session.dirty && !empty_sql {
+            self.confirm(
+                "Start a new SQL query?".into(),
+                "The current view has unsaved changes. A new query replaces the working document.".into(),
+                "New SQL query".into(),
+                false,
+                dialogs::ConfirmAction::NewSqlQuery,
+                cx,
+            );
+        } else {
+            self.begin_new_sql_query(cx);
+        }
+    }
+
+    pub(crate) fn begin_new_sql_query(&mut self, cx: &mut Cx<Self>) {
+        self.start_sql_session(true, cx);
+    }
+
     pub(crate) fn begin_sql_editor(&mut self, cx: &mut Cx<Self>) {
-        if !self.session.is_sql() {
+        self.start_sql_session(false, cx);
+    }
+
+    /// Opens the SQL editor, on a new draft unless the working document is
+    /// already SQL and `fresh` is off.
+    fn start_sql_session(&mut self, fresh: bool, cx: &mut Cx<Self>) {
+        if fresh || !self.session.is_sql() {
             self.rollback_navigation(cx);
             self.autosave_table_preferences(cx);
             self.remember_navigation_current();
@@ -193,6 +224,41 @@ impl DataFrameView {
             self.set_focus(Some(id), cx);
         }
         cx.notify();
+    }
+
+    /// Detaches attached databases and runs the startup script again, then
+    /// gives this window's SQL editor a new connection, which drops its
+    /// temporary tables and session settings.
+    pub(crate) fn reset_database_connection(&mut self, cx: &mut Cx<Self>) {
+        self.stop_sql();
+        self.copy_status = Some("Resetting the database connection…".into());
+        cx.notify();
+        let database = self.database.clone();
+        cx.spawn(
+            move || database.reset_connection(),
+            |view: &mut Self, cx, result| {
+                view.copy_status = None;
+                match result {
+                    Ok(startup_error) => {
+                        if view.sql_panel.is_some() {
+                            view.reset_sql_editor();
+                            view.ensure_sql_panel(cx);
+                        }
+                        if view.session.working.as_ref().is_some_and(|d| d.database_view.is_some()) {
+                            view.reload(false, cx);
+                        }
+                        view.refresh_database_tree(cx);
+                        match startup_error {
+                            Some(error) => view.error = Some(error),
+                            None => view.copy_status = Some("Database connection reset".into()),
+                        }
+                    }
+                    Err(error) => view.error = Some(format!("Cannot reset the database connection: {error}")),
+                }
+                cx.notify();
+            },
+        )
+        .detach();
     }
 
     pub(crate) fn ensure_sql_panel(&mut self, cx: &mut Cx<Self>) {
@@ -507,7 +573,7 @@ impl DataFrameView {
                     self.session.dirty = false;
                     self.error = None;
                 }
-                Err(error) => self.error = Some(format!("Cannot save startup.sql: {error}")),
+                Err(error) => self.error = Some(format!("Cannot save {}: {error}", crate::infrastructure::source_database::STARTUP_SCRIPT)),
             }
             return;
         }
