@@ -1202,7 +1202,12 @@ impl DataFrameView {
                 }
             }
             GridEvent::CopyRequested { result, selection } => self.schedule_copy(result, selection, cx),
-            GridEvent::SelectionChanged { result, selection } => {
+            GridEvent::SelectionChanged { result, selection, by_user } => {
+                // A status message is about what happened before; a new
+                // selection's statistics replace it.
+                if by_user {
+                    self.copy_status = None;
+                }
                 self.schedule_statistics(result, selection, cx);
                 self.refresh_cell_detail();
             }

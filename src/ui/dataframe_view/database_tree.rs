@@ -5,20 +5,15 @@ use crate::infrastructure::source_database::database_file_kind;
 use crate::ui::database_tree::{DatabaseTreeEvent, DeleteTarget, TreeData, TreeTarget};
 
 /// Says how to make an attached database writable, since a drop attaches it
-/// read-only.
-fn attach_message(attached: &[(String, PathBuf)], alias: &str, path: &std::path::Path) -> String {
-    if attached.len() > 1 {
-        let names = attached
-            .iter()
-            .map(|(alias, _)| alias.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return format!("Attached {names} read-only. To write to one, DETACH it and ATTACH it again in SQL");
-    }
-    format!(
-        "Attached {alias} read-only. To write to it, run in SQL: DETACH {alias}; ATTACH '{}' AS {alias}",
-        path.display().to_string().replace('\'', "''")
-    )
+/// read-only. It leaves out the path, which can be too long for the status bar.
+fn attach_message(attached: &[(String, PathBuf)]) -> String {
+    let names = attached
+        .iter()
+        .map(|(alias, _)| alias.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let target = if attached.len() > 1 { "one" } else { names.as_str() };
+    format!("Attached {names} read-only; to write, DETACH {target} and ATTACH it again in SQL")
 }
 
 impl DataFrameView {
@@ -108,8 +103,8 @@ impl DataFrameView {
                 if !errors.is_empty() {
                     view.error = Some(errors.join("\n"));
                 }
-                if let Some((alias, path)) = attached.last() {
-                    view.copy_status = Some(attach_message(&attached, alias, path));
+                if let Some((alias, _)) = attached.last() {
+                    view.copy_status = Some(attach_message(&attached));
                     view.database_tree.reveal(alias);
                     view.set_database_tree_open(true, cx);
                 }

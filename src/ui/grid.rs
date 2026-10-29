@@ -126,6 +126,8 @@ pub enum GridEvent {
     SelectionChanged {
         result: ResultSnapshot,
         selection: Selection,
+        /// Moved by a click or key, not kept across a new result.
+        by_user: bool,
     },
     SelectionCleared,
     MoveColumn(isize),
@@ -675,6 +677,7 @@ impl GridView {
             self.events.push(GridEvent::SelectionChanged {
                 result: self.result.clone(),
                 selection,
+                by_user: false,
             });
         } else {
             self.events.push(GridEvent::SelectionCleared);
@@ -682,6 +685,10 @@ impl GridView {
     }
 
     pub fn select(&mut self, cell: Cell, extend: bool) {
+        self.select_cell(cell, extend, true);
+    }
+
+    fn select_cell(&mut self, cell: Cell, extend: bool, by_user: bool) {
         if cell.row >= self.result.row_count() || cell.column >= self.result.column_count() {
             return;
         }
@@ -702,6 +709,7 @@ impl GridView {
         self.events.push(GridEvent::SelectionChanged {
             result: self.result.clone(),
             selection: self.selection.unwrap(),
+            by_user,
         });
     }
 
@@ -710,7 +718,7 @@ impl GridView {
         self.scroll_x = 0.0;
         self.v_scroll.offset = 0.0;
         if self.result.row_count() > 0 && self.result.column_count() > 0 {
-            self.select(Cell { row: 0, column: 0 }, false);
+            self.select_cell(Cell { row: 0, column: 0 }, false, false);
         } else {
             self.events.push(GridEvent::SelectionCleared);
         }
@@ -756,6 +764,7 @@ impl GridView {
         self.events.push(GridEvent::SelectionChanged {
             result: self.result.clone(),
             selection: self.selection.unwrap(),
+            by_user: true,
         });
     }
 
@@ -843,6 +852,7 @@ impl GridView {
         self.events.push(GridEvent::SelectionChanged {
             result: self.result.clone(),
             selection: self.selection.unwrap(),
+            by_user: true,
         });
         self.scroll_to_row(next.row);
         self.keep_active_column_visible(self.viewport_width());

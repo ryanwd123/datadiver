@@ -828,8 +828,7 @@ fn dropped_databases_attach_read_only_and_show_in_the_tree() {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
         let status = view.copy_status.as_deref().unwrap();
-        assert!(status.starts_with("Attached shop read-only."), "{status}");
-        assert!(status.contains("DETACH shop; ATTACH '"), "{status}");
+        assert_eq!(status, "Attached shop read-only; to write, DETACH shop and ATTACH it again in SQL");
         assert!(view.database_tree_open);
         assert_eq!(view.database_tree.selected_id().as_deref(), Some("db:shop"));
         assert!(
@@ -844,6 +843,10 @@ fn dropped_databases_attach_read_only_and_show_in_the_tree() {
             .execute_batch("INSERT INTO shop.orders VALUES (2)");
         assert!(written.is_err());
     });
+    // Selecting cells replaces the message with the selection's statistics.
+    viewer.update(|view, cx| view.focus_grid(cx));
+    press_each(&viewer, &["down"]);
+    assert!(viewer.read(|view| view.copy_status.is_none()));
 }
 
 #[test]
