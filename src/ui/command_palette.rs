@@ -1,5 +1,6 @@
 use crate::application::commands::Command;
 use crate::application::keymap::{ACTIONS, KeymapFile};
+use crate::domain::keystroke::display;
 
 pub(super) const PALETTE_WIDTH: f32 = 896.0;
 
@@ -12,13 +13,13 @@ pub(super) fn matching_commands(
     commands: &[&'static Command],
     keymap: &KeymapFile,
     query: &str,
-) -> Vec<(&'static Command, String)> {
+) -> Vec<(&'static Command, String, String)> {
     let query = query.to_lowercase();
     let terms = query.split_whitespace().collect::<Vec<_>>();
     commands
         .iter()
         .filter_map(|&command| {
-            let binding = ACTIONS
+            let strokes = ACTIONS
                 .iter()
                 .find(|spec| spec.command == Some(command.id))
                 .map(|spec| {
@@ -27,14 +28,16 @@ pub(super) fn matching_commands(
                         .into_iter()
                         .map(|(stroke, _)| stroke)
                         .collect::<Vec<_>>()
-                        .join(", ")
                 })
-                .filter(|binding| !binding.is_empty());
-            let label = binding
-                .map(|binding| format!("{} · {binding}", command.label))
-                .unwrap_or_else(|| command.label.into());
-            let searchable = format!("{label} {}", command.key);
-            matches_terms(&searchable, &terms).then_some((command, label))
+                .unwrap_or_default();
+            let shortcut = strokes
+                .iter()
+                .map(|stroke| display(stroke))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // Both spellings match, so `ctrl-shift` and `Ctrl+Shift` find the same row.
+            let searchable = format!("{} {} {shortcut} {}", command.label, strokes.join(" "), command.key);
+            matches_terms(&searchable, &terms).then(|| (command, command.label.to_owned(), shortcut))
         })
         .collect()
 }
@@ -51,7 +54,7 @@ mod tests {
         let ids = |query| {
             matching_commands(&commands, &keymap, query)
                 .into_iter()
-                .map(|(command, _)| command.id)
+                .map(|(command, ..)| command.id)
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids("  BY\tORDER  "), [CommandId::OrderBy]);
@@ -70,6 +73,8 @@ mod tests {
         let rows = matching_commands(&commands, &KeymapFile::default(), "shift copy_as");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0.id, CommandId::CopyAs);
-        assert_eq!(rows[0].1, "Copy As · ctrl-shift-c");
+        assert_eq!(rows[0].1, "Copy As");
+        assert_eq!(rows[0].2, "Ctrl+Shift+C");
+        assert_eq!(matching_commands(&commands, &KeymapFile::default(), "ctrl+shift+c copy").len(), 1);
     }
 }

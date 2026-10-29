@@ -21,6 +21,12 @@ use crate::ui::theme_editor::ThemeEditor;
 use crate::ui::widgets::list::{self, Item, Palette};
 use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors, scroll};
 
+/// A command palette row, with its shortcuts on the right.
+fn command_item((command, label, shortcut): &(&'static crate::application::commands::Command, String, String)) -> Item {
+    let item = Item::new(label.clone()).keywords(command.key);
+    if shortcut.is_empty() { item } else { item.detail(shortcut.clone()) }
+}
+
 /// What a confirmation does once accepted.
 #[derive(Clone, Debug)]
 pub enum ConfirmAction {
@@ -552,8 +558,8 @@ impl DataFrameView {
             })
             .collect::<Vec<_>>();
         let shown = matching_commands(&commands, &self.keymap, "");
-        let items = shown.iter().map(|(command, label)| Item::new(label.clone()).keywords(command.key)).collect();
-        let listed = shown.iter().map(|(command, _)| *command).collect();
+        let items = shown.iter().map(command_item).collect();
+        let listed = shown.iter().map(|(command, ..)| *command).collect();
         self.palette("Commands", "Find a command", items, PaletteKind::Commands(commands, listed), cx);
         if let Some(Dialog::Palette(dialog)) = &mut self.dialog {
             dialog.palette.filterable = false;
@@ -570,10 +576,8 @@ impl DataFrameView {
             return;
         };
         let shown = matching_commands(commands, &keymap, dialog.palette.query_text());
-        *listed = shown.iter().map(|(command, _)| *command).collect();
-        dialog
-            .palette
-            .set_items(shown.iter().map(|(command, label)| Item::new(label.clone()).keywords(command.key)).collect());
+        *listed = shown.iter().map(|(command, ..)| *command).collect();
+        dialog.palette.set_items(shown.iter().map(command_item).collect());
         dialog.palette.list.select_item(Some(0));
     }
 

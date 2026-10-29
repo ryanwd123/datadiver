@@ -1479,7 +1479,8 @@ fn new_window_palette_command_opens_a_blank_window() {
     // Drill down in new window matches too, after New window.
     assert_eq!(matches.len(), 2);
     assert_eq!(matches[0].0.id, CommandId::NewWindow);
-    assert_eq!(matches[0].1, "New window · ctrl-n");
+    assert_eq!(matches[0].1, "New window");
+    assert_eq!(matches[0].2, "Ctrl+N");
     press(&viewer, "enter");
     assert!(!viewer.has_dialog());
     let others = viewer.others();
