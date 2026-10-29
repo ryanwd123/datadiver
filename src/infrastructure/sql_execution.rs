@@ -1021,17 +1021,17 @@ mod tests {
         let (_dir, service) = service();
         let run = service.run("CREATE TABLE files.amazon_book_parquet(asin VARCHAR, ISBN10 VARCHAR); CREATE VIEW main.book_view AS SELECT * FROM files.amazon_book_parquet", 10);
         assert!(run.error.is_none(), "{:?}", run.error);
-        let columns = service.connection.query_row("SELECT count(*) FROM duckdb_columns() WHERE schema_name = 'files' AND table_name = 'amazon_book_parquet' AND NOT internal", [], |row| row.get::<_, i64>(0)).unwrap();
+        let columns = service.connection.query_row("SELECT count(*) FROM duckdb_columns() WHERE database_name = 'files' AND table_name = 'amazon_book_parquet' AND NOT internal", [], |row| row.get::<_, i64>(0)).unwrap();
         assert_eq!(columns, 2);
         let catalog = service.catalog().unwrap();
         let table = catalog
             .iter()
-            .find(|r| r.schema == "files" && r.name == "amazon_book_parquet")
+            .find(|r| r.catalog == "files" && r.name == "amazon_book_parquet")
             .unwrap();
         assert_eq!(table.columns, ["asin", "ISBN10"]);
         let suggestions = completions("SELECT * FROM amazon", 20, &catalog);
         assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].insert, "\"files\".\"amazon_book_parquet\"");
+        assert_eq!(suggestions[0].insert, "\"files\".\"main\".\"amazon_book_parquet\"");
         let run = service.run(&format!("SELECT * FROM {}", suggestions[0].insert), 10);
         assert!(run.error.is_none(), "{:?}", run.error);
         for relation in ["files.amazon_book_parquet", "main.book_view"] {
@@ -1104,7 +1104,7 @@ mod tests {
         std::fs::write(&file, "id\n1\n").unwrap();
         let original = service
             .database
-            .load(&file, super::super::source_database::LoadMode::Check)
+            .load(&file, super::super::source_database::LoadMode::Check, true)
             .unwrap();
         let identity = original.persistent_identity().unwrap();
         let table = original.table_sql();
@@ -1124,7 +1124,7 @@ mod tests {
             .database
             .load_reusing(
                 &file,
-                super::super::source_database::LoadMode::Check,
+                super::super::source_database::LoadMode::Check, true,
                 Some(&identity),
             )
             .unwrap()
@@ -1137,13 +1137,15 @@ mod tests {
         drop(identity);
         drop(original);
         drop(service);
+        // SQL writes change the table in memory, never the file, so a new
+        // read once nothing holds the table sees the file again.
         let reopened = SourceDatabase::for_profile(dir.path());
         assert_eq!(
             reopened
-                .load(&file, super::super::source_database::LoadMode::Check)
+                .load(&file, super::super::source_database::LoadMode::Check, true)
                 .unwrap()
                 .row_count(),
-            2
+            1
         );
     }
 

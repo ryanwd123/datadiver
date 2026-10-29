@@ -191,7 +191,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::CacheFiles,
         key: "cache_files",
-        label: "Drop files to add to cache",
+        label: "Drop files to watch",
         default_binding: Some("n"),
     },
     Command {

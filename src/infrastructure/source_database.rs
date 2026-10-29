@@ -9,7 +9,10 @@ use duckdb::{Connection, OptionalExt, params};
 use super::duckdb_store::{DuckDbStore, quote_identifier};
 use crate::domain::documents::{DatabaseView, RelationKind};
 
-const DATABASE_VERSION: i32 = 2;
+const DATABASE_VERSION: i32 = 3;
+/// The in-memory catalog holding files the DuckDB engine reads. Nothing in it
+/// is written to disk.
+pub const FILES_CATALOG: &str = "files";
 /// The script run on the profile database when it opens, in the settings folder.
 pub const STARTUP_SCRIPT: &str = "duckdb_startup.sql";
 type Profiles = HashMap<PathBuf, Weak<SourceDatabase>>;
@@ -17,12 +20,10 @@ static PROFILES: OnceLock<Mutex<Profiles>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadMode {
+    /// Reuses the table already read while the file is unchanged.
     Check,
+    /// Reads the file again.
     Force,
-    /// Like `Check`, but a file with no cached table returns
-    /// [`SourceLoad::NotCached`] instead of being imported, so an open window
-    /// can tell a file removed from the cache from one that changed.
-    Refresh,
 }
 
 #[derive(Clone)]
@@ -36,8 +37,6 @@ pub struct PersistentSourceIdentity {
 pub enum SourceLoad {
     Reused,
     Loaded(Box<DuckDbStore>),
-    /// A [`LoadMode::Refresh`] found no cached table for the file.
-    NotCached,
 }
 
 /// What a source's freshness depends on, cheap enough to read every second:
@@ -56,23 +55,44 @@ impl SourceProbe {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FileStamp {
-    modified_ns: i128,
-    size: u64,
+pub(crate) struct FileStamp {
+    pub(crate) modified_ns: i128,
+    pub(crate) size: u64,
 }
 
+/// A file read into the in-memory files catalog.
 #[derive(Clone, Debug)]
-struct CatalogEntry {
+struct LoadedFile {
     file_id: i64,
     revision: i64,
     table_name: String,
     stamp: FileStamp,
     renamed_rowid: Option<String>,
+    preserve_order: bool,
+    /// Alive while a store reads the table.
+    table: Weak<LoadedTable>,
+}
+
+/// Keeps a file's table while stores read it; the last one to go drops it.
+pub(crate) struct LoadedTable {
+    name: String,
+    retired: Arc<Mutex<Vec<String>>>,
+}
+
+impl Drop for LoadedTable {
+    fn drop(&mut self) {
+        if let Ok(mut retired) = self.retired.lock() {
+            retired.push(self.name.clone());
+        }
+    }
 }
 
 struct DatabaseState {
     connection: Connection,
     startup_error: Option<String>,
+    /// By path key.
+    files: HashMap<String, LoadedFile>,
+    next_file_id: i64,
 }
 
 /// One database instance per profile, with independent query connections.
@@ -81,12 +101,16 @@ pub struct SourceDatabase {
     path: PathBuf,
     state: Mutex<Option<DatabaseState>>,
     revision: std::sync::atomic::AtomicU64,
+    /// Tables of files no store reads any more, dropped on the next load.
+    retired_tables: Arc<Mutex<Vec<String>>>,
 }
 
 pub(crate) struct PersistentBacking {
     pub database: Arc<SourceDatabase>,
     // Identifies the current import; materialized query results have no source version.
     pub source_version: Option<(i64, i64)>,
+    /// The file's table, kept while this store reads it.
+    pub _table: Option<Arc<LoadedTable>>,
 }
 
 impl SourceDatabase {
@@ -132,6 +156,7 @@ impl SourceDatabase {
             path: profile.join("datadiver.duckdb"),
             state: Mutex::new(None),
             revision: std::sync::atomic::AtomicU64::new(0),
+            retired_tables: Arc::default(),
         });
         profiles.insert(profile, Arc::downgrade(&database));
         database
@@ -248,8 +273,8 @@ impl SourceDatabase {
             .map_err(|error| error.to_string())?;
         Ok(rows
             .into_iter()
-            .filter(|(_, _, _, name, _, _)| {
-                !name.starts_with("__qp_") && !name.starts_with("__dd_")
+            .filter(|(catalog, _, _, name, _, _)| {
+                catalog != FILES_CATALOG && !name.starts_with("__qp_") && !name.starts_with("__dd_")
             })
             .map(
                 |(catalog, current, schema, name, is_view, rowid)| DatabaseView {
@@ -328,69 +353,77 @@ impl SourceDatabase {
             })
             .optional()
             .map_err(|error| error.to_string())?;
-        if version.is_some_and(|version| version != DATABASE_VERSION) {
-            return Err(format!(
-                "unsupported DataDiver database version: {}",
-                version.unwrap()
-            ));
+        match version {
+            None => connection
+                .execute_batch(&format!(
+                    "INSERT INTO main.__qp_storage_version VALUES ({DATABASE_VERSION})"
+                ))
+                .map_err(|error| error.to_string())?,
+            // Version 2 kept a copy of every watched file; files are now read
+            // into memory each session instead.
+            Some(2) => connection
+                .execute_batch(&format!(
+                    "BEGIN TRANSACTION;
+                     DROP SCHEMA IF EXISTS files CASCADE;
+                     DROP TABLE IF EXISTS main.__qp_file_catalog;
+                     DROP SEQUENCE IF EXISTS main.__qp_file_id_seq;
+                     UPDATE main.__qp_storage_version SET version = {DATABASE_VERSION};
+                     COMMIT;"
+                ))
+                .map_err(|error| error.to_string())?,
+            Some(DATABASE_VERSION) => {}
+            Some(version) => {
+                return Err(format!("unsupported DataDiver database version: {version}"));
+            }
         }
-        connection.execute_batch(
-            "BEGIN TRANSACTION;
-             INSERT INTO main.__qp_storage_version SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM main.__qp_storage_version);
-             CREATE SCHEMA IF NOT EXISTS files;
-             CREATE SEQUENCE IF NOT EXISTS main.__qp_file_id_seq;
-             CREATE TABLE IF NOT EXISTS main.__qp_file_catalog (
-                 path_key VARCHAR PRIMARY KEY, source_path VARCHAR NOT NULL,
-                 file_id BIGINT NOT NULL, revision BIGINT NOT NULL, table_name VARCHAR NOT NULL UNIQUE,
-                 modified_ns HUGEINT NOT NULL, size UBIGINT NOT NULL,
-                 created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
-                 row_count UBIGINT NOT NULL, renamed_rowid VARCHAR
-             );
-             COMMIT;"
-        ).map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(&format!("ATTACH ':memory:' AS {FILES_CATALOG}"))
+            .map_err(|error| error.to_string())?;
         let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
         let startup_error = run_startup_script(&connection, &script).err();
         let startup_error = startup_error.or_else(|| share_path_settings(&connection).err());
-        let initialized = DatabaseState {
+        *state = Some(DatabaseState {
             connection,
             startup_error,
-        };
-        sweep_missing(&initialized.connection)?;
-        *state = Some(initialized);
+            files: HashMap::new(),
+            next_file_id: 1,
+        });
         Ok(())
     }
 
-    pub fn load(self: &Arc<Self>, path: &Path, mode: LoadMode) -> Result<DuckDbStore, String> {
-        self.load_observed(path, mode, || {})
+    /// Reads `path` into a table of the in-memory files catalog, or reuses
+    /// the table while the file is unchanged and `mode` allows it. With
+    /// `preserve_order` off, DuckDB may store rows out of file order, which
+    /// reads large files faster.
+    pub fn load(
+        self: &Arc<Self>,
+        path: &Path,
+        mode: LoadMode,
+        preserve_order: bool,
+    ) -> Result<DuckDbStore, String> {
+        match self.load_internal(path, mode, preserve_order, None, || {})? {
+            SourceLoad::Loaded(store) => Ok(*store),
+            SourceLoad::Reused => unreachable!("no existing source was supplied"),
+        }
     }
 
-    /// Checks freshness before retaining an existing query connection and its caches.
+    /// Like [`Self::load`], but reports [`SourceLoad::Reused`] when `existing`
+    /// already reads the current table.
     pub fn load_reusing(
         self: &Arc<Self>,
         path: &Path,
         mode: LoadMode,
+        preserve_order: bool,
         existing: Option<&PersistentSourceIdentity>,
     ) -> Result<SourceLoad, String> {
-        self.load_internal(path, mode, existing, || {})
-    }
-
-    fn load_observed(
-        self: &Arc<Self>,
-        path: &Path,
-        mode: LoadMode,
-        after_import: impl FnMut(),
-    ) -> Result<DuckDbStore, String> {
-        match self.load_internal(path, mode, None, after_import)? {
-            SourceLoad::Loaded(store) => Ok(*store),
-            SourceLoad::Reused => unreachable!("no existing source was supplied"),
-            SourceLoad::NotCached => Err(format!("{} is not cached", path.display())),
-        }
+        self.load_internal(path, mode, preserve_order, existing, || {})
     }
 
     fn load_internal(
         self: &Arc<Self>,
         path: &Path,
         mode: LoadMode,
+        preserve_order: bool,
         existing: Option<&PersistentSourceIdentity>,
         mut after_import: impl FnMut(),
     ) -> Result<SourceLoad, String> {
@@ -400,45 +433,24 @@ impl SourceDatabase {
             .map_err(|_| "database writer lock poisoned")?;
         self.ensure_initialized(&mut state_guard)?;
         let state = state_guard.as_mut().unwrap();
+        self.drop_retired_tables(state);
         let source_path = absolute_source_path(path);
         let key = path_key(&source_path);
-        let mut stamp = match file_stamp(&source_path) {
-            Ok(stamp) => stamp,
-            Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    remove_source(&state.connection, &key)?;
-                }
-                return Err(format!("cannot access source {}: {error}", path.display()));
-            }
-        };
+        let mut stamp = file_stamp(&source_path)
+            .map_err(|error| format!("cannot access source {}: {error}", path.display()))?;
         let reader = source_reader(&source_path)?;
-        let table_name = source_table_name(&source_path)?;
-        let duplicate = state.connection.query_row(
-            "SELECT path_key, source_path FROM main.__qp_file_catalog WHERE table_name = ? AND path_key <> ?",
-            params![table_name, key], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).optional().map_err(|error| error.to_string())?;
-        if let Some((duplicate_key, duplicate)) = duplicate {
-            if fs::metadata(&duplicate)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-            {
-                remove_source(&state.connection, &duplicate_key)?;
-            } else {
-                return Err(format!(
-                    "duplicate file name: {} and {duplicate} both map to files.{table_name}; rename one of the files",
-                    source_path.display()
-                ));
-            }
-        }
-        let previous = catalog_entry(&state.connection, &key)?;
-        if mode == LoadMode::Refresh && previous.is_none() {
-            return Ok(SourceLoad::NotCached);
-        }
-        if mode != LoadMode::Force
+        let previous = state
+            .files
+            .get(&key)
+            .filter(|entry| entry.table.strong_count() > 0)
+            .cloned();
+        if mode == LoadMode::Check
             && let Some(entry) = &previous
             && entry.stamp == stamp
-            && table_exists(&state.connection, &entry.table_name)?
+            && entry.preserve_order == preserve_order
+            && let Some(table) = entry.table.upgrade()
         {
-            let table_sql = format!("files.{}", quote_identifier(&entry.table_name));
+            let table_sql = files_table_sql(&entry.table_name);
             if existing.is_some_and(|identity| {
                 Arc::ptr_eq(&identity.database, self)
                     && identity.table_sql == table_sql
@@ -448,55 +460,55 @@ impl SourceDatabase {
                 return Ok(SourceLoad::Reused);
             }
             return self
-                .store_for_entry(state, entry)
+                .store_for_entry(state, entry, table)
                 .map(|store| SourceLoad::Loaded(Box::new(store)));
         }
-
+        let table_name = match &previous {
+            Some(entry) => entry.table_name.clone(),
+            None => unique_table_name(&source_table_name(&source_path)?, state, &key),
+        };
+        let table_sql = files_table_sql(&table_name);
+        let file_id = previous.as_ref().map_or_else(
+            || {
+                state.next_file_id += 1;
+                state.next_file_id
+            },
+            |entry| entry.file_id,
+        );
+        let revision = previous.as_ref().map_or(1, |entry| entry.revision + 1);
         for attempt in 0..2 {
             let transaction = state
                 .connection
                 .transaction()
                 .map_err(|error| error.to_string())?;
-            let file_id = if let Some(entry) = &previous {
-                entry.file_id
-            } else {
+            if !preserve_order {
                 transaction
-                    .query_row("SELECT nextval('main.__qp_file_id_seq')", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .map_err(|error| error.to_string())?
-            };
-            let revision = previous.as_ref().map_or(1, |entry| entry.revision + 1);
-            let table_name = table_name.clone();
-            let table_sql = format!("files.{}", quote_identifier(&table_name));
-            transaction
-                .execute_batch(&format!("DROP TABLE IF EXISTS {table_sql}"))
-                .map_err(|error| error.to_string())?;
-            transaction
+                    .execute_batch("SET preserve_insertion_order = false")
+                    .map_err(|error| error.to_string())?;
+            }
+            let created = transaction
                 .execute(
-                    &format!("CREATE TABLE {table_sql} AS SELECT * FROM {reader}"),
+                    &format!("CREATE OR REPLACE TABLE {table_sql} AS SELECT * FROM {reader}"),
                     params![source_path.to_string_lossy().as_ref()],
                 )
                 .map_err(|error| {
                     let hint = if reader.starts_with("read_xlsx") {
                         "; the first XLSX import may require internet access to install DuckDB's excel extension"
-                    } else { "" };
+                    } else {
+                        ""
+                    };
                     format!("could not import {}: {error}{hint}", source_path.display())
-                })?;
+                });
+            if !preserve_order {
+                let _ = transaction.execute_batch("RESET preserve_insertion_order");
+            }
+            created?;
             let renamed_rowid = normalize_rowid(&transaction, &table_sql)?;
-            let row_count = transaction
-                .query_row(&format!("SELECT count(*) FROM {table_sql}"), [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map_err(|error| error.to_string())? as usize;
             after_import();
             let after = match file_stamp(&source_path) {
                 Ok(stamp) => stamp,
                 Err(error) => {
                     transaction.rollback().map_err(|error| error.to_string())?;
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        remove_source(&state.connection, &key)?;
-                    }
                     return Err(format!("cannot verify source after importing: {error}"));
                 }
             };
@@ -508,40 +520,58 @@ impl SourceDatabase {
                 stamp = after;
                 continue;
             }
-            transaction.execute(
-                "INSERT INTO main.__qp_file_catalog (path_key, source_path, file_id, revision, table_name, modified_ns, size, created_at, updated_at, row_count, renamed_rowid)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp, current_timestamp, ?, ?)
-                 ON CONFLICT (path_key) DO UPDATE SET
-                 source_path = excluded.source_path, revision = excluded.revision, table_name = excluded.table_name,
-                 modified_ns = excluded.modified_ns, size = excluded.size, updated_at = excluded.updated_at,
-                 row_count = excluded.row_count, renamed_rowid = excluded.renamed_rowid",
-                params![key, source_path.to_string_lossy().as_ref(), file_id, revision, table_name, stamp.modified_ns, stamp.size, row_count as u64, renamed_rowid]
-            ).map_err(|error| error.to_string())?;
             transaction.commit().map_err(|error| error.to_string())?;
             self.invalidate();
-            let entry = CatalogEntry {
+            // Stores of the earlier read keep the same table, replaced in place.
+            let table = previous
+                .as_ref()
+                .and_then(|entry| entry.table.upgrade())
+                .unwrap_or_else(|| {
+                    Arc::new(LoadedTable {
+                        name: table_name.clone(),
+                        retired: self.retired_tables.clone(),
+                    })
+                });
+            let entry = LoadedFile {
                 file_id,
                 revision,
                 table_name,
                 stamp,
                 renamed_rowid,
+                preserve_order,
+                table: Arc::downgrade(&table),
             };
-            let store = self.store_for_entry(state, &entry)?;
+            state.files.insert(key, entry.clone());
+            let store = self.store_for_entry(state, &entry, table)?;
             return Ok(SourceLoad::Loaded(Box::new(store)));
         }
         unreachable!()
     }
 
+    #[cfg(test)]
+    fn load_observed_for_test(
+        self: &Arc<Self>,
+        path: &Path,
+        mode: LoadMode,
+        after_import: impl FnMut(),
+    ) -> Result<DuckDbStore, String> {
+        match self.load_internal(path, mode, true, None, after_import)? {
+            SourceLoad::Loaded(store) => Ok(*store),
+            SourceLoad::Reused => unreachable!("no existing source was supplied"),
+        }
+    }
+
     fn store_for_entry(
         self: &Arc<Self>,
         state: &mut DatabaseState,
-        entry: &CatalogEntry,
+        entry: &LoadedFile,
+        table: Arc<LoadedTable>,
     ) -> Result<DuckDbStore, String> {
         let connection = state
             .connection
             .try_clone()
             .map_err(|error| error.to_string())?;
-        let table_sql = format!("files.{}", quote_identifier(&entry.table_name));
+        let table_sql = files_table_sql(&entry.table_name);
         let row_count = connection
             .query_row(&format!("SELECT count(*) FROM {table_sql}"), [], |row| {
                 row.get::<_, i64>(0)
@@ -549,25 +579,47 @@ impl SourceDatabase {
             .map_err(|e| e.to_string())? as usize;
         DuckDbStore::from_persistent(
             connection,
-            format!("files.{}", quote_identifier(&entry.table_name)),
+            table_sql,
             entry.renamed_rowid.clone(),
             row_count,
             PersistentBacking {
                 database: self.clone(),
                 source_version: Some((entry.file_id, entry.revision)),
+                _table: Some(table),
             },
         )
     }
 
-    pub fn cleanup(&self) -> Result<(), String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "database writer lock poisoned")?;
-        if let Some(state) = state.as_mut() {
-            sweep_missing(&state.connection)?;
+    /// Drops the tables of files no store reads any more.
+    fn drop_retired_tables(&self, state: &mut DatabaseState) {
+        let retired = match self.retired_tables.lock() {
+            Ok(mut retired) => std::mem::take(&mut *retired),
+            Err(_) => return,
+        };
+        for name in retired {
+            // A later read may have taken the name again.
+            if state
+                .files
+                .values()
+                .any(|entry| entry.table_name == name && entry.table.strong_count() > 0)
+            {
+                continue;
+            }
+            state.files.retain(|_, entry| entry.table_name != name);
+            let _ = state
+                .connection
+                .execute_batch(&format!("DROP TABLE IF EXISTS {}", files_table_sql(&name)));
         }
-        Ok(())
+    }
+
+    /// The table name of `path` in the files catalog, while a store reads it.
+    pub fn loaded_table(&self, path: &Path) -> Option<String> {
+        let state = self.state.lock().ok()?;
+        let entry = state
+            .as_ref()?
+            .files
+            .get(&path_key(&absolute_source_path(path)))?;
+        (entry.table.strong_count() > 0).then(|| entry.table_name.clone())
     }
 
     /// Starts the profile's DuckDB session over: detaches every attached
@@ -592,7 +644,7 @@ impl SourceDatabase {
             .query_row("SELECT current_database()", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
         for (name, _) in attached_databases(connection)? {
-            if name == main || name == "system" || name == "temp" {
+            if name == main || name == "system" || name == "temp" || name == FILES_CATALOG {
                 continue;
             }
             connection
@@ -646,38 +698,6 @@ impl SourceDatabase {
         drop(state);
         self.invalidate();
         result
-    }
-
-    /// Drops the cached tables of `path`, or of every file under it when it
-    /// is a folder, except files `keep` says are still watched.
-    pub fn forget_sources(&self, path: &Path, keep: impl Fn(&Path) -> bool) -> Result<(), String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "database writer lock poisoned")?;
-        self.ensure_initialized(&mut state)?;
-        let connection = &state.as_ref().unwrap().connection;
-        let root = PathBuf::from(path_key(&absolute_source_path(path)));
-        let entries = {
-            let mut statement = connection
-                .prepare("SELECT path_key, source_path FROM main.__qp_file_catalog")
-                .map_err(|error| error.to_string())?;
-            statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|error| error.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?
-        };
-        for (key, source) in entries {
-            if Path::new(&key).starts_with(&root) && !keep(Path::new(&source)) {
-                remove_source(connection, &key)?;
-            }
-        }
-        drop(state);
-        self.invalidate();
-        Ok(())
     }
 
     /// Attaches a DuckDB or SQLite file read-only and returns its catalog
@@ -862,67 +882,21 @@ fn source_table_name(path: &Path) -> Result<String, String> {
         .collect())
 }
 
-fn remove_source(connection: &Connection, key: &str) -> Result<(), String> {
-    let Some(entry) = catalog_entry(connection, key)? else {
-        return Ok(());
+fn files_table_sql(name: &str) -> String {
+    format!("{FILES_CATALOG}.main.{}", quote_identifier(name))
+}
+
+/// `base`, numbered when another file read now has that name.
+fn unique_table_name(base: &str, state: &DatabaseState, key: &str) -> String {
+    let taken = |name: &str| {
+        state.files.iter().any(|(other, entry)| {
+            other != key && entry.table_name == name && entry.table.strong_count() > 0
+        })
     };
-    connection
-        .execute_batch("BEGIN TRANSACTION")
-        .map_err(|error| error.to_string())?;
-    let result = (|| {
-        connection
-            .execute_batch(&format!(
-                "DROP TABLE IF EXISTS files.{}",
-                quote_identifier(&entry.table_name)
-            ))
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "DELETE FROM main.__qp_file_catalog WHERE path_key = ?",
-                params![key],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute_batch("COMMIT")
-            .map_err(|error| error.to_string())
-    })();
-    if result.is_err() {
-        let _ = connection.execute_batch("ROLLBACK");
-    }
-    result
-}
-
-fn sweep_missing(connection: &Connection) -> Result<(), String> {
-    let entries = {
-        let mut statement = connection
-            .prepare("SELECT path_key, source_path FROM main.__qp_file_catalog")
-            .map_err(|error| error.to_string())?;
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
-    };
-    for (key, path) in entries {
-        if fs::metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
-            remove_source(connection, &key)?;
-        }
-    }
-    Ok(())
-}
-
-fn catalog_entry(connection: &Connection, key: &str) -> Result<Option<CatalogEntry>, String> {
-    connection.query_row("SELECT file_id, revision, table_name, modified_ns, size, renamed_rowid FROM main.__qp_file_catalog WHERE path_key = ?", params![key], |row| Ok(CatalogEntry {
-        file_id: row.get(0)?, revision: row.get(1)?, table_name: row.get(2)?,
-        stamp: FileStamp { modified_ns: row.get(3)?, size: row.get(4)? },
-        renamed_rowid: row.get(5)?,
-    })).optional().map_err(|error| error.to_string())
-}
-
-fn table_exists(connection: &Connection, name: &str) -> Result<bool, String> {
-    connection.query_row("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'files' AND table_name = ?)", params![name], |row| row.get(0)).map_err(|error| error.to_string())
+    std::iter::once(base.to_owned())
+        .chain((2..).map(|number| format!("{base}_{number}")))
+        .find(|name| !taken(name))
+        .unwrap()
 }
 
 pub(crate) fn source_reader(path: &Path) -> Result<&'static str, String> {
@@ -995,7 +969,7 @@ pub(crate) fn normalize_rowid(
     Ok(Some(replacement))
 }
 
-fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
+pub(crate) fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
         return Err(std::io::Error::other("source is not a regular file"));
@@ -1049,7 +1023,7 @@ pub(crate) fn normalized_path(path: &Path) -> PathBuf {
     PathBuf::from(path_key(&absolute_source_path(path)))
 }
 
-fn path_key(path: &Path) -> String {
+pub(crate) fn path_key(path: &Path) -> String {
     #[cfg(windows)]
     {
         path.to_string_lossy().replace('/', "\\").to_lowercase()
@@ -1154,7 +1128,6 @@ mod tests {
             home.path().join(STARTUP_SCRIPT),
             format!(
                 "ATTACH '{}' AS shop (READ_ONLY);\nCREATE TABLE IF NOT EXISTS main.notes AS SELECT 'a' AS note;\nCREATE OR REPLACE VIEW main.note_view AS SELECT * FROM main.notes;
-CREATE TABLE IF NOT EXISTS files.imported AS SELECT 1 AS n;
 CREATE TABLE IF NOT EXISTS main.shadow AS SELECT 7 AS RowId;
 CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 attached_path.to_string_lossy().replace('\'', "''")
@@ -1179,16 +1152,12 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             kind: RelationKind::TableWithoutRowid,
             ..DatabaseView::view("main", "shadow")
         };
-        // The profile database comes first, with imported sources in `files`;
-        // DataDiver's own tables stay hidden. Temp objects belong to the
+        // The profile database comes first; DataDiver's own tables and the
+        // in-memory files catalog stay hidden. Temp objects belong to the
         // connection that made them, so startup's temp table is not listed.
         assert_eq!(
             relations,
             [
-                DatabaseView {
-                    kind: RelationKind::Table,
-                    ..DatabaseView::view("files", "imported")
-                },
                 DatabaseView::view("main", "note_view"),
                 notes.clone(),
                 shadow.clone(),
@@ -1609,23 +1578,23 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let path = home.path().join("source.csv");
         fs::write(&path, "n\n1\n2\n").unwrap();
         let database = SourceDatabase::for_profile(&home.path().join("profile"));
-        let first = database.load(&path, LoadMode::Check).unwrap();
+        let first = database.load(&path, LoadMode::Check, true).unwrap();
         let identity = first.persistent_identity().unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
                 .unwrap(),
             SourceLoad::Reused
         ));
         let other = SourceDatabase::for_profile(&home.path().join("other"));
         assert!(matches!(
             other
-                .load_reusing(&path, LoadMode::Check, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
         let forced = match database
-            .load_reusing(&path, LoadMode::Force, Some(&identity))
+            .load_reusing(&path, LoadMode::Force, true, Some(&identity))
             .unwrap()
         {
             SourceLoad::Loaded(store) => store,
@@ -1634,7 +1603,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         // A refresh in another window must also prevent reuse of this old snapshot.
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
@@ -1642,47 +1611,25 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         fs::write(&path, "n\n300\n").unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, Some(&current))
+                .load_reusing(&path, LoadMode::Check, true, Some(&current))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
         fs::remove_file(&path).unwrap();
         assert!(
             database
-                .load_reusing(&path, LoadMode::Check, Some(&current))
+                .load_reusing(&path, LoadMode::Check, true, Some(&current))
                 .is_err()
         );
-        assert!(first.fetch_row_ids(&[0]).is_err());
+        // The table stays readable while the file is gone.
+        assert!(first.fetch_row_ids(&[0]).is_ok());
         fs::write(&path, "n\n400\n").unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
-    }
-
-    #[test]
-    fn import_timestamps_only_change_when_a_revision_is_written() {
-        let home = tempfile::tempdir().unwrap();
-        let source = home.path().join("data.csv");
-        fs::write(&source, "n\n1\n").unwrap();
-        let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
-        let timestamps = || {
-            let guard = database.state.lock().unwrap();
-            guard.as_ref().unwrap().connection.query_row("SELECT CAST(created_at AS VARCHAR), CAST(updated_at AS VARCHAR) FROM main.__qp_file_catalog", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
-        };
-        let first = timestamps();
-        let _cached = database.load(&source, LoadMode::Check).unwrap();
-        assert_eq!(timestamps(), first);
-        let _forced = database.load(&source, LoadMode::Force).unwrap();
-        let updated = timestamps();
-        assert_eq!(first.0, updated.0);
-        assert_ne!(first.1, updated.1);
-        assert_eq!(old.row_count(), 1);
-        database.checkpoint().unwrap();
-        assert!(fs::metadata(database.path()).unwrap().len() > 12_288);
     }
 
     #[test]
@@ -1691,10 +1638,10 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let source = home.path().join("data.csv");
         fs::write(&source, "n\n1\n").unwrap();
         let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         let mut imports = 0;
         let updated = database
-            .load_observed(&source, LoadMode::Force, || {
+            .load_observed_for_test(&source, LoadMode::Force, || {
                 imports += 1;
                 if imports == 1 {
                     fs::write(&source, "n\n200\n300\n").unwrap();
@@ -1705,7 +1652,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(updated.row_count(), 2);
         let mut changes = 0;
         let error = database
-            .load_observed(&source, LoadMode::Force, || {
+            .load_observed_for_test(&source, LoadMode::Force, || {
                 changes += 1;
                 fs::write(&source, format!("n\n{}\n", "1\n".repeat(changes))).unwrap();
             })
@@ -1717,69 +1664,56 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             vec![vec![Some("200".into())], vec![Some("300".into())]]
         );
         assert_eq!(updated.row_count(), 2);
-        let guard = database.state.lock().unwrap();
-        assert_eq!(
-            catalog_entry(
-                &guard.as_ref().unwrap().connection,
-                &path_key(&absolute_source_path(&source))
-            )
-            .unwrap()
-            .unwrap()
-            .revision,
-            2
-        );
+        assert_eq!(updated.persistent_identity().unwrap().source_version.1, 2);
     }
 
     #[test]
-    fn startup_removes_missing_sources_and_keeps_other_schemas() {
+    fn version_2_profiles_drop_the_old_file_cache_and_keep_other_schemas() {
         let home = tempfile::tempdir().unwrap();
+        {
+            let connection = Connection::open(home.path().join("datadiver.duckdb")).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE main.__qp_storage_version (version INTEGER NOT NULL);
+                     INSERT INTO main.__qp_storage_version VALUES (2);
+                     CREATE SCHEMA files; CREATE TABLE files.abandoned (n INTEGER);
+                     CREATE TABLE main.__qp_file_catalog (path_key VARCHAR);
+                     CREATE SEQUENCE main.__qp_file_id_seq;
+                     CREATE SCHEMA future; CREATE TABLE future.keep (n INTEGER);",
+                )
+                .unwrap();
+        }
         let database = SourceDatabase::for_profile(home.path());
         database.initialize().unwrap();
-        {
-            let guard = database.state.lock().unwrap();
-            let connection = &guard.as_ref().unwrap().connection;
-            connection.execute_batch("CREATE TABLE files.abandoned (n INTEGER); CREATE SCHEMA future; CREATE TABLE future.keep (n INTEGER)").unwrap();
-            connection.execute("INSERT INTO main.__qp_file_catalog VALUES (?, ?, 900, 1, 'abandoned', 0, 0, current_timestamp, current_timestamp, 0, NULL)", params![path_key(&home.path().join("missing.csv")), home.path().join("missing.csv").to_string_lossy().as_ref()]).unwrap();
-        }
-        drop(database);
-        let reopened = SourceDatabase::for_profile(home.path());
-        reopened.initialize().unwrap();
-        let guard = reopened.state.lock().unwrap();
-        let connection = &guard.as_ref().unwrap().connection;
-        assert!(!table_exists(connection, "abandoned").unwrap());
+        let connection = database.connect().unwrap();
+        let count = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT version FROM main.__qp_storage_version"), DATABASE_VERSION as i64);
         assert_eq!(
-            connection
-                .query_row("SELECT count(*) FROM future.keep", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
+            count("SELECT count(*) FROM duckdb_tables() WHERE table_name IN ('abandoned', '__qp_file_catalog')"),
             0
         );
+        assert_eq!(count("SELECT count(*) FROM future.keep"), 0);
+        // The files catalog is in memory now.
+        assert_eq!(
+            count("SELECT count(*) FROM duckdb_databases() WHERE database_name = 'files' AND path IS NULL"),
+            1
+        );
     }
-
     #[test]
-    fn invalid_source_access_keeps_the_cache_and_profiles_share_one_owner() {
+    fn invalid_source_access_keeps_open_rows_and_profiles_share_one_owner() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("data.csv");
         fs::write(&source, "n\n1\n").unwrap();
         let database = SourceDatabase::for_profile(home.path());
         let alias = SourceDatabase::for_profile(&home.path().join("unused/.."));
         assert!(Arc::ptr_eq(&database, &alias));
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         fs::remove_file(&source).unwrap();
         fs::create_dir(&source).unwrap();
-        assert!(database.load(&source, LoadMode::Check).is_err());
+        assert!(database.load(&source, LoadMode::Check, true).is_err());
         assert_eq!(contents(&old).len(), 1);
-        let guard = database.state.lock().unwrap();
-        assert!(
-            catalog_entry(
-                &guard.as_ref().unwrap().connection,
-                &path_key(&absolute_source_path(&source))
-            )
-            .unwrap()
-            .is_some()
-        );
+        assert_eq!(database.loaded_table(&source).as_deref(), Some("data_csv"));
     }
-
     fn contents(store: &DuckDbStore) -> Vec<Vec<Option<String>>> {
         store
             .fetch_row_ids(&store.initial_row_ids().unwrap())
@@ -1790,20 +1724,20 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
     }
 
     #[test]
-    fn persists_reuses_and_replaces_one_named_table() {
+    fn reuses_and_replaces_one_named_table_until_no_store_reads_it() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("data.csv");
         fs::write(&source, "rowid,n,label\n99,1,a\n88,1,a\n77,2,b\n").unwrap();
         let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         let first_table = old.table_sql().to_owned();
-        assert_eq!(first_table, "files.\"data_csv\"");
-        let cached = database.load(&source, LoadMode::Check).unwrap();
+        assert_eq!(first_table, "files.main.\"data_csv\"");
+        let cached = database.load(&source, LoadMode::Check, true).unwrap();
         assert_eq!(cached.table_sql(), first_table);
         assert_eq!(contents(&old), contents(&cached));
         assert_eq!(old.schema()[0].name, "rowid");
         fs::write(&source, "rowid,n,label,extra\n6,4,new,z\n").unwrap();
-        let updated = database.load(&source, LoadMode::Check).unwrap();
+        let updated = database.load(&source, LoadMode::Check, true).unwrap();
         assert_eq!(updated.table_sql(), first_table);
         assert_eq!(updated.row_count(), 1);
         assert_eq!(updated.schema().len(), 4);
@@ -1812,68 +1746,49 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             old.fetch_row_ids(&[0]).unwrap()[0].values[1],
             Some("4".into())
         );
-        let forced = database.load(&source, LoadMode::Force).unwrap();
+        let forced = database.load(&source, LoadMode::Force, true).unwrap();
         assert_eq!(forced.table_sql(), updated.table_sql());
-        let guard = database.state.lock().unwrap();
-        assert_eq!(
-            guard
-                .as_ref()
+        let tables = |database: &SourceDatabase| {
+            database
+                .connect()
                 .unwrap()
-                .connection
                 .query_row(
-                    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'files'",
+                    "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'files'",
                     [],
-                    |row| row.get::<_, i64>(0)
+                    |row| row.get::<_, i64>(0),
                 )
-                .unwrap(),
-            1
-        );
-        drop(guard);
-        let latest_table = forced.table_sql().to_owned();
-        drop((old, cached, updated, forced));
-        database.cleanup().unwrap();
-        drop(database);
-        let reopened = SourceDatabase::for_profile(home.path());
-        assert_eq!(
-            reopened.load(&source, LoadMode::Check).unwrap().table_sql(),
-            latest_table
-        );
+                .unwrap()
+        };
+        assert_eq!(tables(&database), 1);
+        drop((old, cached, updated));
+        assert_eq!(tables(&database), 1);
+        drop(forced);
+        // The next load drops the table nothing reads; nothing reaches disk.
+        let other = home.path().join("other.csv");
+        fs::write(&other, "n\n1\n").unwrap();
+        let _other = database.load(&other, LoadMode::Check, true).unwrap();
+        assert_eq!(tables(&database), 1);
+        assert_eq!(database.loaded_table(&source), None);
     }
-
     #[test]
-    fn missing_sources_remove_the_cached_table_immediately() {
+    fn a_source_removed_while_importing_keeps_the_open_rows() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("data.csv");
         fs::write(&source, "n\n1\n2\n").unwrap();
         let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         assert!(
             database
-                .load_observed(&source, LoadMode::Force, || fs::remove_file(&source)
+                .load_observed_for_test(&source, LoadMode::Force, || fs::remove_file(&source)
                     .unwrap())
                 .is_err()
         );
-        assert!(database.load(&source, LoadMode::Check).is_err());
-        assert!(old.initial_row_ids().is_err());
-        drop(old);
-        database.cleanup().unwrap();
-        let guard = database.state.lock().unwrap();
-        let state = guard.as_ref().unwrap();
-        assert_eq!(
-            state
-                .connection
-                .query_row(
-                    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'files'",
-                    [],
-                    |row| { row.get::<_, i64>(0) }
-                )
-                .unwrap(),
-            0
-        );
+        assert!(database.load(&source, LoadMode::Check, true).is_err());
+        assert_eq!(old.row_count(), 2);
+        assert_eq!(contents(&old).len(), 2);
     }
-
     #[test]
-    fn failed_refresh_preserves_catalog_and_duplicate_filenames_are_rejected() {
+    fn failed_refresh_keeps_the_table_and_duplicate_file_names_are_numbered() {
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
         let source = home.path().join("same.parquet");
@@ -1884,90 +1799,46 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 params![source.to_string_lossy().as_ref()],
             )
             .unwrap();
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         fs::write(&source, "invalid parquet").unwrap();
-        assert!(database.load(&source, LoadMode::Force).is_err());
+        assert!(database.load(&source, LoadMode::Force, true).is_err());
         assert_eq!(contents(&old), vec![vec![Some("1".into())]]);
-        let guard = database.state.lock().unwrap();
-        assert_eq!(
-            catalog_entry(
-                &guard.as_ref().unwrap().connection,
-                &path_key(&absolute_source_path(&source))
-            )
-            .unwrap()
-            .unwrap()
-            .revision,
-            1
-        );
-        drop(guard);
         for directory in ["a", "b"] {
             fs::create_dir(home.path().join(directory)).unwrap();
             fs::write(home.path().join(directory).join("same.csv"), "n\n3\n").unwrap();
         }
         let a = database
-            .load(&home.path().join("a/same.csv"), LoadMode::Check)
+            .load(&home.path().join("a/same.csv"), LoadMode::Check, true)
             .unwrap();
-        let error = database
-            .load(&home.path().join("b/same.csv"), LoadMode::Check)
-            .err()
+        let b = database
+            .load(&home.path().join("b/same.csv"), LoadMode::Check, true)
             .unwrap();
-        assert!(error.contains("duplicate file name"));
-        assert!(error.contains("files.same_csv"));
+        assert_eq!(a.table_sql(), "files.main.\"same_csv\"");
+        assert_eq!(b.table_sql(), "files.main.\"same_csv_2\"");
         assert_eq!(contents(&a), vec![vec![Some("3".into())]]);
     }
-
     #[test]
-    fn normalized_file_names_are_sql_safe_and_collisions_are_rejected() {
+    fn normalized_file_names_are_sql_safe_and_collisions_are_numbered() {
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(&home.path().join("profile"));
-        for (index, name) in ["Sales.csv", "sales.csv"].iter().enumerate() {
-            let directory = home.path().join(index.to_string());
-            fs::create_dir(&directory).unwrap();
-            let source = directory.join(name);
-            fs::write(&source, "n\n1\n").unwrap();
-            if index == 0 {
-                assert_eq!(
-                    database.load(&source, LoadMode::Check).unwrap().table_sql(),
-                    "files.\"sales_csv\""
-                );
-            } else {
-                assert!(
-                    database
-                        .load(&source, LoadMode::Check)
-                        .err()
-                        .unwrap()
-                        .contains("duplicate file name")
-                );
-            }
-        }
-        let source = home.path().join("sales-csv.csv");
+        let source = home.path().join("Sales-2024.csv");
         fs::write(&source, "n\n1\n").unwrap();
-        let first = database.load(&source, LoadMode::Check).unwrap();
-        assert_eq!(first.table_sql(), "files.\"sales_csv_csv\"");
-        let collision = home.path().join("sales_csv.csv");
+        let first = database.load(&source, LoadMode::Check, true).unwrap();
+        assert_eq!(first.table_sql(), "files.main.\"sales_2024_csv\"");
+        let collision = home.path().join("sales_2024.csv");
         fs::write(&collision, "n\n2\n").unwrap();
-        assert!(
-            database
-                .load(&collision, LoadMode::Check)
-                .err()
-                .unwrap()
-                .contains("duplicate file name")
-        );
+        let second = database.load(&collision, LoadMode::Check, true).unwrap();
+        assert_eq!(second.table_sql(), "files.main.\"sales_2024_csv_2\"");
         assert_eq!(contents(&first), vec![vec![Some("1".into())]]);
-        fs::remove_file(&source).unwrap();
-        assert_eq!(
-            contents(&database.load(&collision, LoadMode::Check).unwrap()),
-            vec![vec![Some("2".into())]]
-        );
+        assert_eq!(contents(&second), vec![vec![Some("2".into())]]);
     }
-
     #[test]
     fn metadata_timestamp_changes_are_checked_even_when_size_matches() {
         let home = tempfile::tempdir().unwrap();
         let source = home.path().join("data.csv");
         fs::write(&source, "n\n1\n").unwrap();
         let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         fs::write(&source, "n\n2\n").unwrap();
         let modified = SystemTime::now() + std::time::Duration::from_secs(2);
         fs::File::options()
@@ -1976,7 +1847,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             .unwrap()
             .set_times(fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        let updated = database.load(&source, LoadMode::Check).unwrap();
+        let updated = database.load(&source, LoadMode::Check, true).unwrap();
         assert_eq!(contents(&updated), vec![vec![Some("2".into())]]);
         assert_eq!(old.table_sql(), updated.table_sql());
     }
@@ -1988,7 +1859,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         fs::write(&source, "n\tlabel\n1\ta\n").unwrap();
         let modified = fs::metadata(&source).unwrap().modified().unwrap();
         let database = SourceDatabase::for_profile(home.path());
-        let old = database.load(&source, LoadMode::Check).unwrap();
+        let old = database.load(&source, LoadMode::Check, true).unwrap();
         fs::write(&source, "n\tlabel\n1\ta\n2\tb\n").unwrap();
         fs::File::options()
             .write(true)
@@ -1996,7 +1867,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             .unwrap()
             .set_times(fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        let updated = database.load(&source, LoadMode::Check).unwrap();
+        let updated = database.load(&source, LoadMode::Check, true).unwrap();
         assert_eq!(old.table_sql(), updated.table_sql());
         assert_eq!(updated.row_count(), 2);
     }
@@ -2017,7 +1888,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 format!("ROWID,n,label\n99,{amount},a\n99,{amount},a\n88,,b\n"),
             )
             .unwrap();
-            let store = database.load(&source, LoadMode::Check).unwrap();
+            let store = database.load(&source, LoadMode::Check, true).unwrap();
             assert_eq!(store.schema()[0].name, "ROWID");
             assert_eq!(
                 store.unique_counts(&["n".into()]).unwrap(),
@@ -2069,7 +1940,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             "Year,Sex,Name,Season\n2000,F,A,Summer\n2000,M,B,Winter\n2004,F,C,Winter\n",
         )
         .unwrap();
-        let store = database.load(&path, LoadMode::Check).unwrap();
+        let store = database.load(&path, LoadMode::Check, true).unwrap();
         let config = QueryConfig {
             group_by: vec!["Year".into()],
             pivot_by: vec!["Sex".into()],

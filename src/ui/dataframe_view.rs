@@ -27,7 +27,8 @@ use crate::domain::sql::SqlTrace;
 use crate::domain::statistics::SelectionStatistics;
 use crate::infrastructure::duckdb_store::{ColumnSchema, ViewQuery};
 use crate::infrastructure::json_store::{StorePaths, ViewRepository, WindowGeometry};
-use crate::infrastructure::source_database::{SourceDatabase, SourceProbe};
+use crate::infrastructure::source_database::SourceDatabase;
+use crate::infrastructure::sources::SourceProbe;
 use crate::ui::cell_detail::CellDetailPane;
 use crate::ui::column_completion::{ColumnCompletion, ColumnSyntax};
 use crate::ui::database_tree::DatabaseTree;
@@ -86,14 +87,6 @@ pub(crate) enum FileEntry {
     View(DocumentDefinition),
     Source(PathBuf),
     StartupSql,
-}
-
-/// `path` read in place in query mode, without importing it.
-pub(crate) fn query_file_entry(path: &std::path::Path) -> FileEntry {
-    let path = crate::infrastructure::source_database::absolute_source_path(path);
-    FileEntry::View(DocumentDefinition::draft_database_view(
-        crate::domain::documents::DatabaseView::file(path.to_string_lossy()),
-    ))
 }
 
 /// Filters applied to a source table once a drill-down has opened it.
@@ -485,6 +478,7 @@ pub struct DataFrameView {
     pub(crate) limit_error: Option<String>,
     pub(crate) repository: ViewRepository,
     pub(crate) database: std::sync::Arc<SourceDatabase>,
+    pub(crate) sources: std::sync::Arc<crate::infrastructure::sources::Sources>,
     history_writer: std::sync::Arc<HistoryWriter>,
     table_writer: std::sync::Arc<TablePreferencesWriter>,
     pub(crate) source_modified: Option<String>,
@@ -681,7 +675,8 @@ impl DataFrameView {
             let (rows, columns) = selection.rectangle();
             (rows.count(), columns.count(), selection.cell_count())
         });
-        let database = SourceDatabase::for_profile(&repository.paths.config);
+        let sources = crate::infrastructure::sources::Sources::for_profile(&repository.paths.config);
+        let database = sources.database().clone();
         let initializing_database = database.clone();
         cx.spawn(
             move || {
@@ -728,6 +723,7 @@ impl DataFrameView {
             limit_error: None,
             repository,
             database,
+            sources,
             history_writer,
             table_writer,
             source_modified,
@@ -810,8 +806,8 @@ impl DataFrameView {
     }
 
     pub(crate) fn check_source(&mut self, cx: &mut Cx<Self>) {
-        use crate::application::state::ApplicationState;
-        use crate::infrastructure::source_database::{LoadMode, SourceLoad};
+        use crate::infrastructure::source_database::LoadMode;
+        use crate::infrastructure::sources::SourceLoad;
         if self.session.is_sql() {
             self.refresh_sql_catalog(cx);
             return;
@@ -828,7 +824,7 @@ impl DataFrameView {
             if let Some(path) = database_view.file_path() {
                 // A file read in place reloads when it changes on disk.
                 let revision = self.session.source.source_revision;
-                let probe = self.database.probe(std::path::Path::new(path));
+                let probe = self.sources.probe(std::path::Path::new(path));
                 let changed = match (&self.source_probe, &probe) {
                     (Some((seen, seen_revision, last)), probe) if seen == path && *seen_revision == revision => {
                         !probe.as_ref().is_some_and(|probe| probe.same_file(last))
@@ -851,19 +847,15 @@ impl DataFrameView {
             }
             return;
         }
-        let Some(identity) = self.session.source.persistent_identity.clone() else {
+        let Some(identity) = self.session.source.source_identity.clone() else {
             return;
         };
         let Some(path) = self.session.source_path.clone() else {
             return;
         };
-        let database = self.database.clone();
+        let sources = self.sources.clone();
         let repository = self.repository.clone();
-        let saved_view = self
-            .session
-            .working
-            .as_ref()
-            .is_some_and(|definition| !definition.id.is_empty());
+        let table_writer = self.table_writer.clone();
         let source_revision = self.session.source.source_revision;
         let last_probe = self
             .source_probe
@@ -874,25 +866,14 @@ impl DataFrameView {
         let read_path = PathBuf::from(&path);
         cx.spawn(
             move || {
-                // This runs every second, so skip the catalog queries
-                // while neither the file nor the database has changed.
-                let probe = database.probe(&read_path);
+                // This runs every second, so skip reading the settings
+                // while neither the file nor a read of it has changed.
+                let probe = sources.probe(&read_path);
                 if probe.is_some() && probe == last_probe {
                     return (probe, Ok(SourceLoad::Reused));
                 }
-                let mut result = database.load_reusing(&read_path, LoadMode::Refresh, Some(&identity));
-                if matches!(result, Ok(SourceLoad::NotCached)) {
-                    // The cached table is gone: the file was deleted and
-                    // has come back, or it was removed from the cache.
-                    // Only a saved view or a still-watched file imports it again.
-                    let watched = ApplicationState::load(repository).is_ok_and(|state| state.is_watched(&read_path));
-                    result = if saved_view || watched {
-                        database.load_reusing(&read_path, LoadMode::Check, Some(&identity))
-                    } else {
-                        Err(format!("{} was removed from the cache", read_path.display()))
-                    };
-                }
-                (probe, result)
+                let options = crate::infrastructure::readers::read_options(&repository, &table_writer, &read_path);
+                (probe, sources.load_reusing(&read_path, options, LoadMode::Check, Some(&identity)))
             },
             move |view: &mut Self, cx, (probe, result)| {
                 view.source_check_pending = false;

@@ -21,8 +21,7 @@ pub struct FrameSnapshot {
     pub columns: Arc<[ColumnKey]>,
     pub dtypes: Arc<[String]>,
     pub dtype_labels: Option<Arc<[String]>>,
-    pub(crate) persistent_identity:
-        Option<crate::infrastructure::source_database::PersistentSourceIdentity>,
+    pub(crate) source_identity: Option<crate::infrastructure::sources::SourceIdentity>,
     /// Read once, so the UI never waits on the store lock that a long query on
     /// a worker holds.
     row_count: usize,
@@ -32,7 +31,7 @@ impl FrameSnapshot {
     pub fn new(store: impl Into<Store>, source_revision: u64) -> Self {
         let store = store.into();
         let (columns, dtypes) = schema_snapshot(store.schema());
-        let persistent_identity = store.persistent_identity();
+        let source_identity = store.source_identity();
         let database_view_revision = store.database_view_revision();
         let row_count = store.row_count();
         Self {
@@ -43,7 +42,7 @@ impl FrameSnapshot {
             columns,
             dtypes,
             dtype_labels: None,
-            persistent_identity,
+            source_identity,
             row_count,
         }
     }

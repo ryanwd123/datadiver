@@ -1,56 +1,84 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::infrastructure::duckdb_store::DuckDbStore;
-use crate::infrastructure::source_database::{LoadMode, SourceDatabase, source_reader};
+use crate::application::table_preferences::TablePreferencesWriter;
+use crate::infrastructure::json_store::ViewRepository;
+use crate::infrastructure::source_database::LoadMode;
+use crate::infrastructure::sources::{ReadOptions, Sources};
+use crate::infrastructure::store::Store;
 
 pub fn read_source(
     path: &Path,
-    database: &Arc<SourceDatabase>,
+    sources: &Arc<Sources>,
+    options: ReadOptions,
     mode: LoadMode,
-) -> Result<DuckDbStore, String> {
-    source_reader(path)?;
-    database.load(path, mode)
+) -> Result<Store, String> {
+    sources.load(path, options, mode)
+}
+
+/// How `path` is read: its own file settings, or the default engine. Reads
+/// the profile, so call it on a worker.
+pub fn read_options(
+    repository: &ViewRepository,
+    table_writer: &TablePreferencesWriter,
+    path: &Path,
+) -> ReadOptions {
+    let default_engine = repository
+        .load_settings()
+        .map(|settings| settings.default_engine)
+        .unwrap_or_default();
+    let file = table_writer
+        .load(path)
+        .map(|preferences| preferences.file)
+        .unwrap_or_default();
+    ReadOptions {
+        engine: file.engine_or(default_engine),
+        preserve_order: file.preserve_order,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::duckdb_store::DuckDbStore;
+    use crate::infrastructure::store::Engine;
 
     #[test]
-    fn gzip_csv_imports_through_both_readers_and_refreshes_persistent_data() {
+    fn gzip_csv_reads_in_both_engines_and_refreshes_changed_data() {
         let home = tempfile::tempdir().unwrap();
-        let database = SourceDatabase::for_profile(&home.path().join("profile"));
+        let sources = Sources::for_profile(&home.path().join("profile"));
         let writer = duckdb::Connection::open_in_memory().unwrap();
         for name in ["report.csv.gz", "REPORT.CSV.GZ"] {
             let path = home.path().join(name);
             writer.execute("COPY (SELECT 'North, East' AS region, 10 AS sales UNION ALL SELECT 'South', 20) TO ? (FORMAT CSV, HEADER true, COMPRESSION GZIP)", duckdb::params![path.to_string_lossy().as_ref()]).unwrap();
             assert!(std::fs::read(&path).unwrap().starts_with(&[0x1f, 0x8b]));
-            let persistent = read_source(&path, &database, LoadMode::Check).unwrap();
-            let standalone = DuckDbStore::open_source(&path).unwrap();
-            for store in [&persistent, &standalone] {
-                assert_eq!(store.row_count(), 2);
-                let rows = store.fetch_row_ids(&[0, 1]).unwrap();
-                assert_eq!(
-                    rows[0].values,
-                    [Some("North, East".into()), Some("10".into())]
-                );
-                assert_eq!(rows[1].values, [Some("South".into()), Some("20".into())]);
+            for engine in Engine::ALL {
+                let options = ReadOptions {
+                    engine,
+                    ..ReadOptions::default()
+                };
+                let store = read_source(&path, &sources, options, LoadMode::Check).unwrap();
+                let standalone = Store::from(DuckDbStore::open_source(&path).unwrap());
+                for store in [&store, &standalone] {
+                    assert_eq!(store.row_count(), 2);
+                    let rows = store.fetch_row_ids(&[0, 1]).unwrap();
+                    assert_eq!(rows[0].values, [Some("North, East".into()), Some("10".into())]);
+                    assert_eq!(rows[1].values, [Some("South".into()), Some("20".into())]);
+                }
             }
-            let identity = persistent.persistent_identity().unwrap();
-            assert!(matches!(
-                database
-                    .load_reusing(&path, LoadMode::Check, Some(&identity))
-                    .unwrap(),
-                crate::infrastructure::source_database::SourceLoad::Reused
-            ));
             writer.execute("COPY (SELECT 'Updated' AS region, 300 AS sales) TO ? (FORMAT CSV, HEADER true, COMPRESSION GZIP)", duckdb::params![path.to_string_lossy().as_ref()]).unwrap();
-            let refreshed = read_source(&path, &database, LoadMode::Check).unwrap();
-            assert_eq!(refreshed.row_count(), 1);
-            assert_eq!(
-                refreshed.fetch_row_ids(&[0]).unwrap()[0].values,
-                [Some("Updated".into()), Some("300".into())]
-            );
+            for engine in Engine::ALL {
+                let options = ReadOptions {
+                    engine,
+                    ..ReadOptions::default()
+                };
+                let refreshed = read_source(&path, &sources, options, LoadMode::Check).unwrap();
+                assert_eq!(refreshed.row_count(), 1);
+                assert_eq!(
+                    refreshed.fetch_row_ids(&[0]).unwrap()[0].values,
+                    [Some("Updated".into()), Some("300".into())]
+                );
+            }
             // Remove the first case variant before opening the other on a case-insensitive filesystem.
             std::fs::remove_file(path).unwrap();
         }
@@ -59,14 +87,48 @@ mod tests {
     #[test]
     fn unsupported_spreadsheet_formats_are_rejected() {
         let home = tempfile::tempdir().unwrap();
-        let database = SourceDatabase::for_profile(home.path());
+        let sources = Sources::for_profile(home.path());
         for extension in ["xls", "xlsb", "ods"] {
             let path = Path::new("report").with_extension(extension);
-            let error = match read_source(&path, &database, LoadMode::Check) {
-                Ok(_) => panic!("{extension} should not be supported"),
-                Err(error) => error,
-            };
-            assert!(error.contains("reads .xlsx files"));
+            for engine in Engine::ALL {
+                let options = ReadOptions {
+                    engine,
+                    ..ReadOptions::default()
+                };
+                let error = match read_source(&path, &sources, options, LoadMode::Check) {
+                    Ok(_) => panic!("{extension} should not be supported"),
+                    Err(error) => error,
+                };
+                assert!(error.contains("reads .xlsx files"));
+            }
         }
+    }
+
+    #[test]
+    fn file_settings_choose_the_engine_and_otherwise_the_default_does() {
+        let home = tempfile::tempdir().unwrap();
+        let repository = ViewRepository::new(crate::infrastructure::json_store::StorePaths::for_home(home.path()));
+        let writer = TablePreferencesWriter::for_repository(&repository);
+        let path = home.path().join("a.csv");
+        assert_eq!(read_options(&repository, &writer, &path).engine, Engine::Polars);
+        let mut settings = repository.load_settings().unwrap();
+        settings.default_engine = Engine::DuckDb;
+        repository.save_settings(&settings).unwrap();
+        assert_eq!(read_options(&repository, &writer, &path).engine, Engine::DuckDb);
+        writer
+            .edit(
+                path.clone(),
+                crate::domain::table_preferences::TablePreferencesPatch {
+                    file: Some(crate::domain::table_preferences::FileSettings {
+                        engine: Some(Engine::Polars),
+                        preserve_order: false,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let options = read_options(&repository, &writer, &path);
+        assert_eq!(options.engine, Engine::Polars);
+        assert!(!options.preserve_order);
     }
 }

@@ -222,6 +222,7 @@ fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus() {
                 slicer_columns: Some(vec!["region".into()]),
                 condition_slicers: None,
                 hidden_columns: None,
+                file: None,
             },
         )
         .unwrap();
@@ -470,8 +471,8 @@ fn two_windows_follow_reloads_and_report_missing_sources() {
     let source = home.path().join("shared.csv");
     std::fs::write(&source, "n\n1\n2\n").unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let first_store = database.load(&source, LoadMode::Check).unwrap();
-    let second_store = database.load(&source, LoadMode::Check).unwrap();
+    let first_store = database.load(&source, LoadMode::Check, true).unwrap();
+    let second_store = database.load(&source, LoadMode::Check, true).unwrap();
     let first = viewer_with_repository(repository.clone());
     let second = Viewer::open_in(&first.app, sales_frame(), None, None, repository);
     for (viewer, store) in [(&first, first_store), (&second, second_store)] {
@@ -497,15 +498,8 @@ fn two_windows_follow_reloads_and_report_missing_sources() {
     second.run_until_parked();
     second.read(|view| {
         assert!(view.error.as_ref().unwrap().contains("cannot access source"));
-        assert!(
-            view.session
-                .result
-                .store
-                .lock()
-                .unwrap()
-                .fetch_row_ids(&[0])
-                .is_err()
-        );
+        // The rows already read stay on screen.
+        assert_eq!(view.session.result.row_count(), 1);
     });
 }
 
@@ -519,7 +513,7 @@ fn source_monitor_reports_missing_files_and_recovers_when_recreated() {
     let mut state = crate::application::state::ApplicationState::load(repository.clone()).unwrap();
     state.add_watched_files(std::slice::from_ref(&source)).unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
+    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check, true).unwrap(), 1);
     let viewer = viewer_with_document(repository, Some(source.to_string_lossy().into_owned()), None);
     viewer.update(|view, cx| view.replace_dataframe(loaded, cx));
     viewer.run_until_parked();
@@ -533,21 +527,6 @@ fn source_monitor_reports_missing_files_and_recovers_when_recreated() {
         assert_eq!(view.session.result.row_count(), 1);
     });
     assert_eq!(first_value(&viewer), Some("East".into()));
-
-    // Removing the file from the cache does not let the window import it again.
-    let watched = state.settings.watched_files[0].clone();
-    state.remove_watched_file(&watched).unwrap();
-    database.forget_sources(&source, |_| false).unwrap();
-    viewer.advance_clock(Duration::from_secs(1));
-    let error = viewer.read(|view| view.error.clone()).unwrap();
-    assert!(error.contains("was removed from the cache"), "{error}");
-    assert!(
-        !database
-            .relations()
-            .unwrap()
-            .iter()
-            .any(|relation| relation.schema == "files")
-    );
 }
 
 fn viewer(home: &tempfile::TempDir) -> Viewer {
@@ -1185,14 +1164,16 @@ fn file_picker_empty_query_escape_and_filtered_source_confirmation() {
     viewer.click(|hit| *hit == Hit::List(list, Part::Row(position)));
     viewer.run_until_parked();
     assert!(!viewer.has_dialog());
-    // A recent file that is not watched opens in query mode.
+    // A recent file opens as a table, read by the default engine.
     viewer.read(|view| {
-        assert!(view.query_file().unwrap().ends_with("West report.csv"));
+        assert!(view.session.source_path.as_deref().unwrap().ends_with("West report.csv"));
         assert_eq!(view.session.result.row_count(), 2);
         assert!(matches!(
             view.session.identity,
-            crate::application::session::SessionIdentity::DraftQuery
+            crate::application::session::SessionIdentity::DraftTable
         ));
+        let engine = view.session.source.store.lock().unwrap().engine();
+        assert_eq!(engine, crate::infrastructure::store::Engine::Polars);
     });
 }
 
@@ -1963,8 +1944,12 @@ fn changed_source_refreshes_all_open_windows_and_pivots() {
     std::fs::write(&source, "region,sales\nNorth,10\nSouth,20\n").unwrap();
     let source_path = source.to_string_lossy().into_owned();
     let repository = repository(home.path());
+    // The windows reread the file with the default engine.
+    let mut settings = repository.load_settings().unwrap();
+    settings.default_engine = crate::infrastructure::store::Engine::DuckDb;
+    repository.save_settings(&settings).unwrap();
     let database = SourceDatabase::for_profile(&repository.paths.config);
-    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check).unwrap(), 1);
+    let loaded = FrameSnapshot::new(database.load(&source, LoadMode::Check, true).unwrap(), 1);
     let table = viewer_with_document(repository.clone(), Some(source_path.clone()), None);
     let mut definition = DocumentDefinition::draft_table("By region".into(), source_path.clone());
     definition.view = ViewKind::Query(QueryConfig {
@@ -1984,7 +1969,7 @@ fn changed_source_refreshes_all_open_windows_and_pivots() {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert_eq!(view.session.source.row_count(), 3);
             assert_eq!(view.session.source.columns.len(), 3);
-            assert_eq!(view.session.source.store.lock().unwrap().duckdb().unwrap().table_sql(), "files.\"sales_csv\"");
+            assert_eq!(view.session.source.store.lock().unwrap().duckdb().unwrap().table_sql(), "files.main.\"sales_csv\"");
         });
     }
     assert_eq!(table.read(|view| view.session.result.row_count()), 3);

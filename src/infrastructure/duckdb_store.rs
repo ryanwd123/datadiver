@@ -185,6 +185,7 @@ impl DuckDbStore {
             result.persistent = Some(PersistentBacking {
                 database: backing.database.clone(),
                 source_version: None,
+                _table: None,
             });
             return Ok(result);
         }
@@ -400,6 +401,7 @@ impl DuckDbStore {
                 PersistentBacking {
                     database,
                     source_version: None,
+                    _table: None,
                 },
             )?;
             store.relation = Some(RelationRows::Table);
@@ -459,6 +461,7 @@ impl DuckDbStore {
             persistent: Some(PersistentBacking {
                 database,
                 source_version: None,
+                _table: None,
             }),
             relation: Some(RelationRows::Lazy),
             columns,

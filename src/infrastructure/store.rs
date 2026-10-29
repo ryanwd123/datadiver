@@ -153,26 +153,7 @@ pub struct CachedRow {
 }
 
 
-/// Which engine reads a source and runs its views.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Engine {
-    #[default]
-    Polars,
-    #[serde(rename = "duckdb")]
-    DuckDb,
-}
-
-impl Engine {
-    pub const ALL: [Engine; 2] = [Engine::Polars, Engine::DuckDb];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Polars => "Polars",
-            Self::DuckDb => "DuckDB",
-        }
-    }
-}
+pub use crate::domain::documents::Engine;
 
 /// Stops a running query. Each engine stops differently.
 #[derive(Clone)]
@@ -268,10 +249,12 @@ impl Store {
         }
     }
 
-    pub fn persistent_identity(&self) -> Option<super::source_database::PersistentSourceIdentity> {
+    /// Which read of a file this store holds, when it holds one.
+    pub fn source_identity(&self) -> Option<super::sources::SourceIdentity> {
+        use super::sources::SourceIdentity;
         match self {
-            Self::DuckDb(store) => store.persistent_identity(),
-            Self::Polars(_) => None,
+            Self::DuckDb(store) => store.persistent_identity().map(SourceIdentity::DuckDb),
+            Self::Polars(store) => store.persistent_identity().map(SourceIdentity::Polars),
         }
     }
 

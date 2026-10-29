@@ -107,13 +107,14 @@ fn main() {
                 } else {
                     LoadMode::Check
                 },
+                true,
             )
             .unwrap(),
         None => DuckDbStore::open_source(&path).unwrap(),
     });
     if let Some(database) = &database {
         let reused = measure("cached_same_process", || {
-            database.load(&path, LoadMode::Check).unwrap()
+            database.load(&path, LoadMode::Check, true).unwrap()
         });
         assert_eq!(reused.table_sql(), store.table_sql());
     }

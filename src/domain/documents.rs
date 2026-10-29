@@ -612,6 +612,27 @@ impl DocumentDefinition {
     }
 }
 
+/// Which engine reads a source and runs its views.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Engine {
+    #[default]
+    Polars,
+    #[serde(rename = "duckdb")]
+    DuckDb,
+}
+
+impl Engine {
+    pub const ALL: [Engine; 2] = [Engine::Polars, Engine::DuckDb];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Polars => "Polars",
+            Self::DuckDb => "DuckDB",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

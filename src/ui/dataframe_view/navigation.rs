@@ -3,24 +3,12 @@
 use super::*;
 use crate::application::state::ApplicationState;
 use crate::infrastructure::json_store::FavoriteTarget;
-use crate::infrastructure::readers::read_source;
-use crate::infrastructure::source_database::{LoadMode, SourceLoad};
+use crate::infrastructure::readers::{read_options, read_source};
+use crate::infrastructure::source_database::LoadMode;
+use crate::infrastructure::sources::SourceLoad;
 use crate::ui::platform::system;
 
 impl DataFrameView {
-    /// Watched files open from the cache; any other file is read in place
-    /// in query mode, so opening it never imports it.
-    pub(crate) fn resolve_source(&self, entry: FileEntry) -> FileEntry {
-        match entry {
-            FileEntry::Source(path)
-                if !ApplicationState::load(self.repository.clone()).is_ok_and(|state| state.is_watched(&path)) =>
-            {
-                query_file_entry(&path)
-            }
-            entry => entry,
-        }
-    }
-
     pub(crate) fn navigate_to_file(&mut self, entry: FileEntry, carry_search: bool, pivot_draft: bool, raw_source: bool, cx: &mut Cx<Self>) {
         self.navigate_to_location(entry, carry_search, pivot_draft, raw_source, None, None, cx);
     }
@@ -214,6 +202,8 @@ impl DataFrameView {
         self.error = None;
         cx.notify();
         let database = self.database.clone();
+        let sources = self.sources.clone();
+        let repository = self.repository.clone();
         let existing = self.session.source.clone();
         let table_writer = self.table_writer.clone();
         let direct_destination = matches!(entry, FileEntry::Source(_));
@@ -224,9 +214,9 @@ impl DataFrameView {
                 let source = if let Some(view) = &database_view {
                     FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
                 } else {
-                    match database.load_reusing(&read_path, LoadMode::Check, existing.persistent_identity.as_ref())? {
+                    let options = read_options(&repository, &table_writer, &read_path);
+                    match sources.load_reusing(&read_path, options, LoadMode::Check, existing.source_identity.as_ref())? {
                         SourceLoad::Reused => existing,
-                        SourceLoad::NotCached => unreachable!("checked loads import the file"),
                         SourceLoad::Loaded(store) => FrameSnapshot::new(*store, existing.source_revision + 1),
                     }
                 };
@@ -426,10 +416,16 @@ impl DataFrameView {
         self.error = None;
         cx.notify();
         let database = self.database.clone();
+        let sources = self.sources.clone();
+        let repository = self.repository.clone();
+        let table_writer = self.table_writer.clone();
         cx.spawn(
             move || match target {
-                SourceTarget::File(path) => read_source(&path, &database, mode),
-                SourceTarget::DatabaseView(view) => database.load_view(&view),
+                SourceTarget::File(path) => {
+                    let options = read_options(&repository, &table_writer, &path);
+                    read_source(&path, &sources, options, mode)
+                }
+                SourceTarget::DatabaseView(view) => database.load_view(&view).map(Into::into),
             },
             move |view: &mut Self, cx, result| {
                 if !view.session.accepts(token) {
@@ -516,7 +512,7 @@ impl DataFrameView {
             cx.notify();
             return;
         }
-        let entry = self.resolve_source(FileEntry::Source(first));
+        let entry = FileEntry::Source(first);
         self.navigate_to_file(entry, false, false, true, cx);
         for path in paths.filter(|path| !path.is_dir()) {
             self.open_blank_window(Some(path), cx);
@@ -535,7 +531,7 @@ impl DataFrameView {
         match chosen {
             Ok(Some(paths)) => {
                 if let Some(path) = paths.into_iter().next() {
-                    let entry = self.resolve_source(FileEntry::Source(path));
+                    let entry = FileEntry::Source(path);
                     self.navigate_to_file(entry, false, false, true, cx);
                 }
             }
@@ -570,7 +566,7 @@ impl DataFrameView {
             |view: &mut Self, cx, saved| match saved {
                 Ok(path) => {
                     view.copy_status = Some(format!("Pasted table saved to {}", path.display()));
-                    let entry = view.resolve_source(FileEntry::Source(path));
+                    let entry = FileEntry::Source(path);
                     view.navigate_to_file(entry, false, false, true, cx);
                 }
                 Err(error) => {
@@ -614,7 +610,7 @@ impl DataFrameView {
             Ok(state) => match state.settings.favorites[slot].as_ref() {
                 Some(target) => {
                     let entry = match target {
-                        FavoriteTarget::Source(path) => Some(self.resolve_source(FileEntry::Source(PathBuf::from(path)))),
+                        FavoriteTarget::Source(path) => Some(FileEntry::Source(PathBuf::from(path))),
                         FavoriteTarget::View { view_id } => state
                             .views
                             .iter()

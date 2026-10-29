@@ -454,7 +454,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         id: ActionId::CacheFiles,
         category: ActionCategory::FilesViews,
-        name: "Drop files to add to cache",
+        name: "Drop files to watch",
         context: KeyContext::Grid,
         command: Some(CommandId::CacheFiles),
         default_bindings: &["n"],

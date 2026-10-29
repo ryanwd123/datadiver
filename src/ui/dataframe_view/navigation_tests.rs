@@ -653,7 +653,7 @@ fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns() {
                 .as_deref()
                 .is_some_and(|status| status.starts_with("Pasted table saved to"))
         );
-        std::path::PathBuf::from(view.query_file().unwrap())
+        std::path::PathBuf::from(view.session.source_path.clone().unwrap())
     });
     let pasted_folder = crate::infrastructure::source_database::absolute_source_path(&home.path().join("pasted"));
     assert_eq!(pasted.parent().unwrap(), pasted_folder);
@@ -700,7 +700,7 @@ fn pasting_without_text_reports_an_error_and_keeps_the_table() {
 }
 
 #[test]
-fn dropped_files_open_in_query_mode_unless_watched() {
+fn dropped_files_open_as_tables_without_writing_to_the_database() {
     use crate::application::state::ApplicationState;
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
@@ -713,18 +713,15 @@ fn dropped_files_open_in_query_mode_unless_watched() {
     viewer.drop_files(vec![a.clone(), b.clone()]);
     let database = viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        // Dropped files open in query mode, read in place without importing.
-        assert_eq!(view.session.source_path, None);
-        assert_eq!(
-            view.query_file(),
-            Some(
-                crate::infrastructure::source_database::absolute_source_path(&a)
-                    .to_string_lossy()
-                    .into_owned()
-            )
-        );
-        assert!(!view.is_table());
+        // Dropped files open as tables, read into memory by Polars.
+        assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
+        assert_eq!(view.query_file(), None);
+        assert!(view.is_table());
         assert_eq!(view.session.result.row_count(), 1);
+        assert_eq!(
+            view.session.source.store.lock().unwrap().engine(),
+            crate::infrastructure::store::Engine::Polars
+        );
         view.database.clone()
     });
     assert_eq!(viewer.app.windows().len(), windows + 1);
@@ -733,7 +730,7 @@ fn dropped_files_open_in_query_mode_unless_watched() {
             .relations()
             .unwrap()
             .iter()
-            .any(|relation| relation.schema == "files")
+            .any(|relation| relation.name.contains("csv"))
     );
     crate::application::history::HistoryWriter::flush_profiles();
     let mut state = ApplicationState::load(repository.clone()).unwrap();
@@ -745,19 +742,18 @@ fn dropped_files_open_in_query_mode_unless_watched() {
             .any(|path| path.ends_with("a.csv"))
     );
 
-    // A watched file opens from the cache instead.
+    // A watched file opens the same way.
     state.add_watched_files(std::slice::from_ref(&a)).unwrap();
     viewer.drop_files(vec![a.clone()]);
     viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.query_file(), None);
         assert_eq!(view.session.source_path.as_deref(), Some(a.to_str().unwrap()));
         assert!(view.is_table());
     });
 }
 
 #[test]
-fn n_opens_an_overlay_that_caches_dropped_files_as_watched() {
+fn n_opens_an_overlay_that_watches_dropped_files() {
     use crate::application::state::ApplicationState;
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
@@ -787,19 +783,13 @@ fn n_opens_an_overlay_that_caches_dropped_files_as_watched() {
     viewer.drop_files(vec![a.clone()]);
     let database = viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.copy_status.as_deref(), Some("Cached a.csv"));
-        // The overlay caches the file without opening it.
-        assert_eq!(view.query_file(), None);
+        assert_eq!(view.copy_status.as_deref(), Some("Watching a.csv"));
+        // The overlay watches the file without opening or reading it.
+        assert_eq!(view.session.source_path, None);
         view.database.clone()
     });
     assert!(ApplicationState::load(repository).unwrap().is_watched(&a));
-    assert!(
-        database
-            .relations()
-            .unwrap()
-            .iter()
-            .any(|relation| relation.schema == "files" && relation.name == "a_csv")
-    );
+    assert_eq!(database.loaded_table(&a), None);
 
     // N opens the overlay from the grid and Escape closes it.
     press("n");
@@ -920,7 +910,7 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata() {
 #[test]
 fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
     use crate::application::state::ApplicationState;
-    use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
+    use crate::infrastructure::source_database::SourceDatabase;
     let home = tempfile::tempdir().unwrap();
     let folder = home.path().join("data");
     std::fs::create_dir_all(folder.join("2024")).unwrap();
@@ -942,8 +932,6 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
     repository.save_view(&mut saved).unwrap();
     let viewer = viewer(repository.clone());
     let database = viewer.read(|view| view.database.clone());
-    database.load(&q1, LoadMode::Check).unwrap();
-    database.load(&single, LoadMode::Check).unwrap();
     database
         .connect()
         .unwrap()
@@ -957,7 +945,6 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
             .map(|relation| relation.label())
             .collect::<Vec<_>>()
     };
-    assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
     press_each(&viewer, &["ctrl-b"]);
     let delete = |id: &str| {
         viewer.update(|view, _| {
@@ -985,11 +972,9 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
     delete("db:profile.main");
     assert!(!viewer.has_dialog());
 
-    // The profile database and cached tables explain where to manage them.
+    // The profile database explains why it stays.
     delete("db:profile");
     assert!(status().contains("cannot be detached"));
-    delete("db:files.q1_csv");
-    assert!(status().contains("remove its watched file or folder"));
 
     // A recent file is forgotten.
     let recorded = state.history.recent_sources[0].clone();
@@ -1003,20 +988,18 @@ fn delete_in_the_database_tree_removes_what_each_item_stands_for() {
             .any(|path| path.ends_with("recent.csv"))
     );
 
-    // A watched file stops being watched and its cached table is dropped.
+    // A watched file stops being watched.
     delete(&format!("watched:{}", state.settings.watched_files[0]));
     status();
     assert!(!ApplicationState::load(repository.clone()).unwrap().is_watched(&single));
-    assert!(!tables(&database).contains(&"files.single_csv".to_owned()));
 
     // A file in a watched folder asks before removing the whole folder.
     delete(&format!("src:{}", q1.display()));
-    assert!(tables(&database).contains(&"files.q1_csv".to_owned()));
+    assert!(ApplicationState::load(repository.clone()).unwrap().is_watched(&q1));
     confirm();
     status();
     let state = ApplicationState::load(repository.clone()).unwrap();
     assert!(state.settings.watched_folders.is_empty());
-    assert!(!tables(&database).contains(&"files.q1_csv".to_owned()));
 
     // A table of the profile database is dropped once confirmed.
     delete("db:main.notes");
@@ -1078,23 +1061,10 @@ fn source_checks_skip_unchanged_files_but_still_see_edits() {
     check();
     assert!(viewer.read(|view| view.source_probe.is_some()));
 
-    // A database change, such as SQL dropping the table, forces the full check.
-    viewer.read(|view| {
-        view.database
-            .connect()
-            .unwrap()
-            .execute_batch("DROP TABLE files.watched_csv")
-            .unwrap();
-        view.database.invalidate();
-    });
+    // A database change forces the full check, which still reuses the read.
+    let store = viewer.read(|view| view.session.source.store.clone());
+    viewer.read(|view| view.database.invalidate());
     check();
     assert_eq!(rows(), 3);
-    let restored: i64 = viewer.read(|view| {
-        view.database
-            .connect()
-            .unwrap()
-            .query_row("SELECT count(*) FROM files.watched_csv", [], |row| row.get(0))
-            .unwrap()
-    });
-    assert_eq!(restored, 3);
+    assert!(viewer.read(|view| std::sync::Arc::ptr_eq(&view.session.source.store, &store)));
 }

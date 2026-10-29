@@ -29,8 +29,6 @@ pub enum DeleteTarget {
     Relation(DatabaseView),
     /// A database folder; `None` is the profile database.
     Database(Option<String>),
-    /// The profile database's `files` schema of cached sources.
-    FilesSchema,
     RecentFile(PathBuf),
     WatchedFile(PathBuf),
     WatchedFolder(PathBuf),
@@ -58,7 +56,7 @@ pub struct TreeData {
     pub functions: Vec<DatabaseView>,
     /// Each watched folder with the source files found under it.
     pub folders: Vec<(PathBuf, Vec<PathBuf>)>,
-    /// Single files kept in the cache.
+    /// Single files watched outside every watched folder.
     pub watched_files: Vec<PathBuf>,
     /// Recently opened sources that are not watched.
     pub recent: Vec<PathBuf>,
@@ -304,11 +302,7 @@ fn build_tree(
                 .into_iter()
                 .filter_map(|(schema, items)| {
                     let id = format!("db:{catalog}.{schema}");
-                    let item = builder.folder(&id, &schema, items)?;
-                    if !attached && schema == "files" {
-                        builder.deletable.insert(id.into(), DeleteTarget::FilesSchema);
-                    }
-                    Some(item)
+                    builder.folder(&id, &schema, items)
                 })
                 .collect();
             let id = format!("db:{catalog}");

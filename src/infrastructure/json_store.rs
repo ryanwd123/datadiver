@@ -56,6 +56,8 @@ pub struct Settings {
     pub watched_files: Vec<String>,
     pub favorites: [Option<FavoriteTarget>; 9],
     pub ai: crate::domain::ai::AiSettings,
+    /// The engine for files without their own choice.
+    pub default_engine: crate::domain::documents::Engine,
 }
 
 impl Default for Settings {
@@ -76,6 +78,7 @@ impl Default for Settings {
             watched_files: Vec::new(),
             favorites: Default::default(),
             ai: Default::default(),
+            default_engine: Default::default(),
         }
     }
 }
@@ -770,6 +773,7 @@ mod tests {
             slicer_columns: Some(vec!["region".into()]),
             condition_slicers: None,
             hidden_columns: None,
+            file: None,
         };
         let preferences = repository
             .update_table_preferences(&source, &patch)

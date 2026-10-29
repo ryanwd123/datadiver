@@ -139,7 +139,7 @@ impl ApplicationState {
         Ok(())
     }
 
-    /// Whether `path` is cached: a watched file, or a file under a watched folder.
+    /// Whether `path` is watched: a watched file, or a file under a watched folder.
     pub fn is_watched(&self, path: &Path) -> bool {
         watched_in(&self.settings, path)
     }
@@ -366,7 +366,7 @@ mod tests {
         let repository = ViewRepository::new(StorePaths::for_home(home.path()));
         let mut state = ApplicationState::load(repository.clone()).unwrap();
         state.add_watched_folder(folder.path()).unwrap();
-        // A file under a watched folder is already cached, so it is not added again.
+        // A file under a watched folder is already watched, so it is not added again.
         state
             .add_watched_files(&[single.clone(), inside.clone(), single.clone()])
             .unwrap();

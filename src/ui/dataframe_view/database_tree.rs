@@ -129,11 +129,6 @@ impl DataFrameView {
                         "{} is in {catalog}, which the tree does not change; use SQL to change it",
                         relation.label()
                     ));
-                } else if relation.schema == "files" {
-                    self.copy_status = Some(format!(
-                        "{} is a cached file; remove its watched file or folder under Sources",
-                        relation.label()
-                    ));
                 } else {
                     let kind = if relation.kind == RelationKind::View { "view" } else { "table" };
                     self.confirm(
@@ -145,9 +140,6 @@ impl DataFrameView {
                         cx,
                     );
                 }
-            }
-            DeleteTarget::FilesSchema => {
-                self.copy_status = Some("files holds cached sources; remove watched files or folders under Sources".into());
             }
             DeleteTarget::Database(None) => {
                 self.copy_status = Some("The profile database cannot be detached".into());
@@ -168,7 +160,7 @@ impl DataFrameView {
             DeleteTarget::WatchedFile(path) => {
                 let removed = ApplicationState::load(self.repository.clone())
                     .and_then(|mut state| state.remove_watched_file(&path.to_string_lossy()));
-                self.forget_cached(path, removed, cx);
+                self.finish_unwatching(removed, cx);
             }
             DeleteTarget::WatchedFolder(root) => {
                 self.remove_watched_folder(root, cx);
@@ -179,8 +171,8 @@ impl DataFrameView {
                     format!("Stop watching {}?", root.display()),
                     format!(
                         "{name} is in a watched folder, and DataDiver watches whole folders. \
-                         Removing the folder drops the cached tables of all its files. To \
-                         leave out only some files, move them out of the folder."
+                         Removing the folder stops listing all its files. To leave out only \
+                         some files, move them out of the folder."
                     ),
                     "Remove folder".into(),
                     false,
@@ -195,26 +187,15 @@ impl DataFrameView {
     pub(crate) fn remove_watched_folder(&mut self, root: PathBuf, cx: &mut Cx<Self>) {
         let removed = ApplicationState::load(self.repository.clone())
             .and_then(|mut state| state.remove_watched_folder(&root.to_string_lossy()));
-        self.forget_cached(root, removed, cx);
+        self.finish_unwatching(removed, cx);
     }
 
-    /// Drops the cached tables under `path` once it is no longer watched,
-    /// keeping files still watched some other way.
-    fn forget_cached(&mut self, path: PathBuf, removed: std::io::Result<()>, cx: &mut Cx<Self>) {
+    fn finish_unwatching(&mut self, removed: std::io::Result<()>, cx: &mut Cx<Self>) {
         if let Err(error) = removed {
             self.error = Some(format!("Cannot update watched sources: {error}"));
-            cx.notify();
-            return;
         }
-        let database = self.database.clone();
-        let repository = self.repository.clone();
-        self.run_tree_delete(
-            move || {
-                let state = ApplicationState::load(repository).map_err(|error| error.to_string())?;
-                database.forget_sources(&path, |source| state.is_watched(source))
-            },
-            cx,
-        );
+        self.refresh_database_tree(cx);
+        cx.notify();
     }
 
     /// Runs a database change off the UI thread, then shows its error, if
@@ -247,7 +228,7 @@ impl DataFrameView {
     fn open_tree_target(&mut self, target: TreeTarget, new_window: bool, pivot_draft: bool, cx: &mut Cx<Self>) {
         let entry = match target {
             TreeTarget::View(definition) => FileEntry::View(*definition),
-            TreeTarget::Source(path) => self.resolve_source(FileEntry::Source(path)),
+            TreeTarget::Source(path) => FileEntry::Source(path),
             TreeTarget::Relation(relation) => FileEntry::View(DocumentDefinition::draft_database_view(relation)),
         };
         if new_window {

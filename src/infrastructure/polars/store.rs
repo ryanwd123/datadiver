@@ -12,7 +12,7 @@ use crate::infrastructure::store::{
     CachedRow, ColumnFilter, ColumnSchema, ColumnSummary, MaterializedViewRows, RowIds, ViewQuery,
     filters_mention_rowid,
 };
-use crate::infrastructure::sources::SourceIdentity;
+use crate::infrastructure::sources::FrameIdentity;
 use duckdb::types::Value;
 use crate::domain::{
     documents::{Dimension, ScalarKey, SortKey, ValueFilter},
@@ -33,7 +33,7 @@ pub struct PolarsStore {
     frame: Arc<DataFrame>,
     columns: Vec<ColumnSchema>,
     row_count: usize,
-    identity: Option<SourceIdentity>,
+    identity: Option<FrameIdentity>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -105,7 +105,7 @@ impl PolarsStore {
         }
     }
 
-    pub(crate) fn with_identity(mut self, identity: SourceIdentity) -> Self {
+    pub(crate) fn with_identity(mut self, identity: FrameIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
@@ -116,7 +116,7 @@ impl PolarsStore {
         false
     }
 
-    pub fn persistent_identity(&self) -> Option<SourceIdentity> {
+    pub fn persistent_identity(&self) -> Option<FrameIdentity> {
         self.identity.clone()
     }
 

@@ -987,7 +987,6 @@ impl DataFrameView {
             PaletteKind::Files(sections) => {
                 if let Some(entry) = sections.iter().flatten().nth(index).cloned() {
                     self.close_dialog(cx);
-                    let entry = self.resolve_source(entry);
                     self.navigate_to_file(entry, modifiers.shift, modifiers.control, false, cx);
                 }
             }

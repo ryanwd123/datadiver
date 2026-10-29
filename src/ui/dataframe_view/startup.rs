@@ -225,7 +225,7 @@ impl DataFrameView {
             let entry = if options.load_view.is_some() {
                 FileEntry::Source(path)
             } else {
-                self.resolve_source(FileEntry::Source(path))
+                FileEntry::Source(path)
             };
             match entry {
                 FileEntry::Source(path) => self.load_source(path, false, LoadMode::Check, cx),

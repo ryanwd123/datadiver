@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::documents::{Alignment, ColumnPresentation, SlicerDefinition, TableConfig};
+use super::documents::{Alignment, ColumnPresentation, Engine, SlicerDefinition, TableConfig};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TablePreferences {
@@ -22,6 +22,33 @@ pub struct TablePreferences {
     pub condition_slicers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_columns: Vec<String>,
+    #[serde(default)]
+    pub file: FileSettings,
+}
+
+/// How a file is read and filtered, chosen per file and kept across resets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileSettings {
+    /// `None` follows the default engine in settings.
+    pub engine: Option<Engine>,
+    /// DuckDB only: keep rows in file order. Off reads large files faster.
+    pub preserve_order: bool,
+}
+
+impl Default for FileSettings {
+    fn default() -> Self {
+        Self {
+            engine: None,
+            preserve_order: true,
+        }
+    }
+}
+
+impl FileSettings {
+    pub fn engine_or(&self, default: Engine) -> Engine {
+        self.engine.unwrap_or(default)
+    }
 }
 
 impl TablePreferences {
@@ -35,6 +62,7 @@ impl TablePreferences {
             slicer_columns: Vec::new(),
             condition_slicers: Vec::new(),
             hidden_columns: Vec::new(),
+            file: FileSettings::default(),
         }
     }
 
@@ -151,6 +179,7 @@ pub struct TablePreferencesPatch {
     pub slicer_columns: Option<Vec<String>>,
     pub condition_slicers: Option<Vec<String>>,
     pub hidden_columns: Option<Vec<String>>,
+    pub file: Option<FileSettings>,
 }
 
 impl TablePreferencesPatch {
@@ -173,6 +202,7 @@ impl TablePreferencesPatch {
                 .then(|| new.condition_slicers.clone()),
             hidden_columns: (old.hidden_columns != new.hidden_columns)
                 .then(|| new.hidden_columns.clone()),
+            file: (old.file != new.file).then_some(new.file),
         }
     }
 
@@ -184,12 +214,19 @@ impl TablePreferencesPatch {
             && self.slicer_columns.is_none()
             && self.condition_slicers.is_none()
             && self.hidden_columns.is_none()
+            && self.file.is_none()
     }
 
     pub fn merge(&mut self, newer: Self) {
         if newer.reset {
+            // A reset clears the layout, not how the file is read.
+            let file = self.file.take();
             *self = newer;
+            self.file = self.file.or(file);
             return;
+        }
+        if newer.file.is_some() {
+            self.file = newer.file;
         }
         self.widths.extend(newer.widths);
         if newer.column_order.is_some() {
@@ -211,7 +248,12 @@ impl TablePreferencesPatch {
 
     pub fn apply(&self, preferences: &mut TablePreferences) {
         if self.reset {
+            let file = preferences.file;
             *preferences = TablePreferences::new(preferences.source_path.clone());
+            preferences.file = file;
+        }
+        if let Some(file) = self.file {
+            preferences.file = file;
         }
         for (name, width) in &self.widths {
             if let Some(width) = width {
