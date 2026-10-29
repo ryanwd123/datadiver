@@ -901,7 +901,7 @@ mod tests {
             schema.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
             ["n", "n_1", "big"]
         );
-        assert_eq!(schema[2].duckdb_type, "HUGEINT");
+        assert_eq!(schema[2].sql_type, "HUGEINT");
         // Writes, EXPLAIN, and statements inside a transaction keep the row limit.
         for sql in [
             "INSERT INTO t SELECT 1 RETURNING n",

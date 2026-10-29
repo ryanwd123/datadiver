@@ -211,7 +211,7 @@ impl AggregationPanel {
                 let Some(schema) = self.schema.iter().find(|schema| schema.name == column) else {
                     return;
                 };
-                let dtype = crate::application::pivot_editor::data_type_from_duckdb(&schema.duckdb_type);
+                let dtype = crate::application::pivot_editor::data_type_from_duckdb(&schema.sql_type);
                 self.emit_edit(AggregationEdit::Add(default_aggregation(column, &dtype)));
             }
             PanelAction::Move(direction) => {

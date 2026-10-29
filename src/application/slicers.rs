@@ -1,7 +1,7 @@
 use crate::domain::documents::{SlicerDefinition, ValueFilter};
 use crate::domain::frame::FrameSnapshot;
 use crate::domain::slicers::{self, SlicerCard, SlicerValue};
-use crate::infrastructure::duckdb_store::{ColumnFilter, DuckDbStore};
+use crate::infrastructure::store::{ColumnFilter, Interrupt, Store};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +19,7 @@ pub struct SlicerCatalog {
 #[derive(Default)]
 pub struct SlicerDiscovery {
     cancelled: AtomicBool,
-    running: Mutex<Option<Arc<duckdb::InterruptHandle>>>,
+    running: Mutex<Option<Interrupt>>,
 }
 
 impl SlicerDiscovery {
@@ -40,7 +40,7 @@ impl SlicerDiscovery {
 
     fn run<T>(
         &self,
-        store: &DuckDbStore,
+        store: &Store,
         discover: impl FnOnce() -> Result<T, String>,
     ) -> Option<Result<T, String>> {
         {
@@ -177,14 +177,14 @@ impl SlicerCatalog {
     /// Values for the columns with few enough of them, among `only` or every
     /// column. `stopped` is checked between queries.
     pub fn discover(
-        store: &DuckDbStore,
+        store: &Store,
         only: Option<&[String]>,
         stopped: &dyn Fn() -> bool,
     ) -> Result<Self, String> {
         let candidates = store
             .schema()
             .iter()
-            .filter(|column| slicers::supported(&column.duckdb_type))
+            .filter(|column| slicers::supported(&column.sql_type))
             .filter(|column| only.is_none_or(|only| only.contains(&column.name)))
             .collect::<Vec<_>>();
         if candidates.is_empty() {
@@ -211,7 +211,7 @@ impl SlicerCatalog {
             }
             let values = store.slicer_values(&column.name, &[], &[])?;
             if values.len() <= slicers::MAX_UNIQUE_VALUES {
-                columns.push((column.name.clone(), column.duckdb_type.clone(), values));
+                columns.push((column.name.clone(), column.sql_type.clone(), values));
             }
         }
         Ok(Self {
@@ -224,7 +224,7 @@ impl SlicerCatalog {
     /// and matches the other cards' selections and the view's value filters.
     pub fn cards(
         &self,
-        store: &DuckDbStore,
+        store: &Store,
         definitions: &[SlicerDefinition],
         value_filters: &[ValueFilter],
     ) -> Vec<SlicerCard> {
@@ -321,7 +321,7 @@ impl SlicerCatalog {
     }
 }
 
-fn condition_card(store: &DuckDbStore, definition: &SlicerDefinition, text: &str) -> SlicerCard {
+fn condition_card(store: &Store, definition: &SlicerDefinition, text: &str) -> SlicerCard {
     let (bounds, error) = if definition.sql {
         (None, store.validate_sql(text).err())
     } else {
@@ -360,7 +360,7 @@ pub fn filters(definitions: &[SlicerDefinition]) -> Vec<ColumnFilter> {
 mod tests {
     use super::*;
     use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig, ScalarKey};
-    use crate::infrastructure::duckdb_store::ViewQuery;
+    use crate::infrastructure::duckdb_store::{DuckDbStore, ViewQuery};
     use duckdb::types::Value;
 
     /// Prepares as the open Add Slicer picker does, discovering every column.

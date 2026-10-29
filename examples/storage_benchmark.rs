@@ -147,7 +147,7 @@ fn main() {
         });
     }
     measure("pivot", || {
-        pivot::execute(
+        pivot::sql::execute(
             &store,
             &QueryConfig {
                 group_by: vec!["region".into()],

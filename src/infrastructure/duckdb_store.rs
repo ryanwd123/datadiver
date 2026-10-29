@@ -7,7 +7,7 @@ use super::source_database::PersistentBacking;
 use duckdb::{Connection, appender_params_from_iter, params, params_from_iter, types::Value};
 
 use crate::domain::{
-    documents::{Dimension, ScalarKey, SortKey, ValueFilter},
+    documents::{Dimension, ScalarKey, ValueFilter},
     formatting::{numeric_type_name, string_type_name},
     query::{
         ColumnOperator, ColumnTerm, Comparison, Numeric, Token, parse_condition, parse_number,
@@ -17,58 +17,12 @@ use crate::domain::{
     statistics::{ColumnAggregates, NumericColumnStatistics},
 };
 
+pub use super::store::{
+    CachedRow, ColumnFilter, ColumnSchema, ColumnSummary, MaterializedViewRows, RowIds, ViewQuery,
+};
+pub(crate) use super::store::filters_mention_rowid;
+
 static NEXT_VIEW_ROW_MAP: AtomicU64 = AtomicU64::new(1);
-
-/// The DuckDB rowid at each display position.
-#[derive(Clone, Debug)]
-pub enum RowIds {
-    Listed(Arc<[i64]>),
-    /// Every row in rowid order, where the rowids are exactly `0..n`, so a
-    /// position is its rowid and no list is built.
-    Natural(usize),
-}
-
-impl RowIds {
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Listed(ids) => ids.len(),
-            Self::Natural(count) => *count,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// The rowids at positions `start..end`, clamped to the rows there are.
-    pub fn range(&self, start: usize, end: usize) -> Vec<i64> {
-        let end = end.min(self.len());
-        match self {
-            Self::Listed(ids) => ids.get(start..end).unwrap_or_default().to_vec(),
-            Self::Natural(_) => (start as i64..end as i64).collect(),
-        }
-    }
-
-    pub fn to_vec(&self) -> Vec<i64> {
-        self.range(0, self.len())
-    }
-
-    /// Whether both are the same order without comparing every id.
-    pub fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Listed(a), Self::Listed(b)) => Arc::ptr_eq(a, b),
-            (Self::Natural(a), Self::Natural(b)) => a == b,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct MaterializedViewRows {
-    pub row_ids: RowIds,
-    /// The order as a DuckDB table; natural order has none.
-    pub row_map: Option<Arc<ViewRowMap>>,
-}
 
 pub struct ViewRowMap {
     table_name: String,
@@ -89,68 +43,8 @@ impl Drop for ViewRowMap {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnSchema {
-    /// The name shown to the user. A physical source column named `rowid` is
-    /// preserved under this name while DuckDB's pseudocolumn remains internal.
-    pub name: String,
-    pub duckdb_type: String,
-    pub(crate) storage_name: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ViewQuery {
-    pub tokens: Vec<Token>,
-    pub filters: Vec<ColumnFilter>,
-    pub value_filters: Vec<ValueFilter>,
-    pub sort: Vec<SortKey>,
-    /// Columns plain search and numeric comparisons skip. A `col:` term still
-    /// reaches them.
-    pub hidden: Vec<String>,
-}
-
 /// A view's predicates, their parameters, and its `ORDER BY` terms.
 type ViewClauses = (Vec<String>, Vec<Value>, Vec<String>);
-
-/// A column profile over every row of a store, ignoring any view's filters.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnSummary {
-    pub name: String,
-    pub rows: usize,
-    pub nulls: usize,
-    /// Exact count of distinct non-null values.
-    pub unique: usize,
-    /// Rendered as text; `None` when every value is null or the type is nested.
-    pub min: Option<String>,
-    pub max: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ColumnFilter {
-    pub column: String,
-    /// Selected typed values. `ScalarKey::Null` selects SQL NULL. An empty
-    /// selection means this filter does not restrict the view.
-    pub values: Vec<ScalarKey>,
-    /// A condition card's text; when set, it replaces `values`. Blank text
-    /// does not restrict the view.
-    pub condition: Option<String>,
-    /// `condition` is a raw DuckDB predicate over the row; `column` is unused.
-    pub sql: bool,
-}
-
-/// Whether any SQL card or expression filter names `rowid`.
-pub(crate) fn filters_mention_rowid(
-    filters: &[ColumnFilter],
-    value_filters: &[ValueFilter],
-) -> bool {
-    use crate::domain::aggregation_sql::mentions_rowid;
-    filters
-        .iter()
-        .any(|filter| filter.sql && filter.condition.as_deref().is_some_and(mentions_rowid))
-        || value_filters.iter().any(
-            |filter| matches!(&filter.target, Dimension::Expression { sql } if mentions_rowid(sql)),
-        )
-}
 
 pub struct QueryInput<'a> {
     pub enums: &'a [QueryEnum],
@@ -161,12 +55,6 @@ pub struct QueryEnum {
     /// Bound discovery query returning one VARCHAR dimension label per row.
     pub sql: String,
     pub values: Vec<Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CachedRow {
-    pub rowid: i64,
-    pub values: Vec<Option<String>>,
 }
 
 /// How a store opened from a database relation reads its rows.
@@ -527,7 +415,7 @@ impl DuckDbStore {
                     Ok(ColumnSchema {
                         storage_name: name.clone(),
                         name,
-                        duckdb_type: row.get(1)?,
+                        sql_type: row.get(1)?,
                     })
                 })
                 .map_err(|error| error.to_string())?
@@ -664,7 +552,7 @@ impl DuckDbStore {
         self.columns = statement
             .query_map([], |row| {
                 let storage_name = row.get::<_, String>(0)?;
-                let duckdb_type = row.get::<_, String>(1)?;
+                let sql_type = row.get::<_, String>(1)?;
                 let name = if self.renamed_source_rowid.as_deref() == Some(&storage_name) {
                     storage_name
                         .split(" (source column")
@@ -676,7 +564,7 @@ impl DuckDbStore {
                 };
                 Ok(ColumnSchema {
                     name,
-                    duckdb_type,
+                    sql_type,
                     storage_name,
                 })
             })
@@ -784,7 +672,7 @@ impl DuckDbStore {
             projection.push(format!("count({identifier})"));
             projection.push(format!("count(DISTINCT {identifier})"));
             // Nested values have no useful order to report.
-            if is_nested_type(&column.duckdb_type) {
+            if is_nested_type(&column.sql_type) {
                 projection.push("NULL".into());
                 projection.push("NULL".into());
             } else {
@@ -969,7 +857,7 @@ impl DuckDbStore {
             .find(|column| column.name == name)
             .ok_or_else(|| format!("slicer column not found: {name}"))?;
         let identifier = quote_identifier(&column.storage_name);
-        let order = if crate::domain::schema::from_duckdb(&column.duckdb_type)
+        let order = if crate::domain::schema::from_duckdb(&column.sql_type)
             == crate::domain::schema::ColumnType::String
         {
             format!("CAST({identifier} AS VARCHAR)")
@@ -994,7 +882,7 @@ impl DuckDbStore {
         let mut values = Vec::new();
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
             let value = row.get::<_, Value>(0).map_err(|error| error.to_string())?;
-            let key = crate::domain::slicers::scalar_key(value, &column.duckdb_type)?;
+            let key = crate::domain::slicers::scalar_key(value, &column.sql_type)?;
             let label = match &key {
                 ScalarKey::Null => "(Blank)".into(),
                 ScalarKey::String(value) if value.is_empty() => "(Empty)".into(),
@@ -1262,7 +1150,7 @@ impl DuckDbStore {
                         .columns
                         .iter()
                         .filter(|column| {
-                            is_numeric_type(&column.duckdb_type)
+                            is_numeric_type(&column.sql_type)
                                 && !view.hidden.contains(&column.name)
                         })
                         .map(|column| {
@@ -1450,7 +1338,7 @@ impl DuckDbStore {
                         parameters.push(parameter);
                         let left = quote_identifier(&column.storage_name);
                         alternatives.push(
-                            if column.duckdb_type == "VARCHAR"
+                            if column.sql_type == "VARCHAR"
                                 && matches!(value, ScalarKey::String(_))
                             {
                                 format!("{left} IS NOT DISTINCT FROM ?")
@@ -1589,7 +1477,7 @@ impl DuckDbStore {
             .filter(|column| !hidden.contains(&column.name))
             .filter_map(|column| {
                 let identifier = quote_identifier(&column.storage_name);
-                let value = match search_rendering(&column.duckdb_type)? {
+                let value = match search_rendering(&column.sql_type)? {
                     SearchRendering::Text => format!("lower(CAST({identifier} AS VARCHAR))"),
                     // Converting every value to text dominates search on wide numeric
                     // tables, so skip columns whose rendering cannot contain the needle.
@@ -1901,7 +1789,7 @@ impl DuckDbStore {
             {
                 output.push((
                     column.clone(),
-                    candidates(values, &schema.duckdb_type, *format),
+                    candidates(values, &schema.sql_type, *format),
                 ));
             }
         }
@@ -2384,11 +2272,11 @@ fn column_predicate(
             parameters.push(Value::Text(term.value.to_lowercase()));
             format!("contains({rendered}, ?)")
         }
-        ColumnOperator::Compare(comparison) if is_numeric_type(&column.duckdb_type) => {
+        ColumnOperator::Compare(comparison) if is_numeric_type(&column.sql_type) => {
             let number = parse_number(&term.value)?;
             numeric_predicate(column, &number, comparison, parameters)
         }
-        ColumnOperator::Compare(comparison) if string_type_name(&column.duckdb_type) => {
+        ColumnOperator::Compare(comparison) if string_type_name(&column.sql_type) => {
             text_predicate(
                 &rendered,
                 comparison,
@@ -2396,12 +2284,12 @@ fn column_predicate(
                 parameters,
             )
         }
-        ColumnOperator::Compare(comparison) if is_date_type(&column.duckdb_type) => {
+        ColumnOperator::Compare(comparison) if is_date_type(&column.sql_type) => {
             match crate::domain::query::date_period(&term.value) {
                 Some(period) => date_predicate(&identifier, comparison, period, parameters),
                 // Timestamps also accept a full date and time, cast by DuckDB.
                 None if column
-                    .duckdb_type
+                    .sql_type
                     .to_ascii_uppercase()
                     .starts_with("TIMESTAMP") =>
                 {
@@ -2409,7 +2297,7 @@ fn column_predicate(
                     format!(
                         "{identifier} {} TRY_CAST(? AS {})",
                         comparison.sql(),
-                        column.duckdb_type
+                        column.sql_type
                     )
                 }
                 None => {
@@ -2429,7 +2317,7 @@ fn column_predicate(
             format!(
                 "{identifier} {} TRY_CAST(? AS {})",
                 comparison.sql(),
-                column.duckdb_type
+                column.sql_type
             )
         }
     };
@@ -2443,19 +2331,19 @@ fn column_predicate(
 fn column_comparison(left: &ColumnSchema, right: &ColumnSchema, comparison: Comparison) -> String {
     let identifier = |column: &ColumnSchema| quote_identifier(&column.storage_name);
     let (left_sql, right_sql) =
-        if string_type_name(&left.duckdb_type) && string_type_name(&right.duckdb_type) {
+        if string_type_name(&left.sql_type) && string_type_name(&right.sql_type) {
             (
                 format!("lower({})", identifier(left)),
                 format!("lower({})", identifier(right)),
             )
-        } else if left.duckdb_type == right.duckdb_type
-            || (is_numeric_type(&left.duckdb_type) && is_numeric_type(&right.duckdb_type))
+        } else if left.sql_type == right.sql_type
+            || (is_numeric_type(&left.sql_type) && is_numeric_type(&right.sql_type))
         {
             (identifier(left), identifier(right))
         } else {
             (
                 identifier(left),
-                format!("TRY_CAST({} AS {})", identifier(right), left.duckdb_type),
+                format!("TRY_CAST({} AS {})", identifier(right), left.sql_type),
             )
         };
     format!(
@@ -2535,7 +2423,7 @@ fn numeric_predicate(
         }
     };
     let comparison = comparison.sql();
-    let kind = column.duckdb_type.to_ascii_uppercase();
+    let kind = column.sql_type.to_ascii_uppercase();
     let signed_integer = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"]
         .iter()
         .any(|name| kind.starts_with(name));
@@ -2589,6 +2477,7 @@ fn numeric_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::documents::SortKey;
 
     #[test]
     fn unsorted_tables_read_by_rowid_without_listing_rows() {
@@ -2796,7 +2685,7 @@ mod tests {
     #[ignore = "manual deterministic performance comparison"]
     fn filtered_pivot_performance_comparison() {
         use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig, SlicerDefinition};
-        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::pivot::sql::{EvaluationClock, execute_traced_limited};
         use std::time::Instant;
         for count in [10_000, 100_000, 1_000_000] {
             let extra = (0..20)
@@ -3003,7 +2892,7 @@ mod tests {
         let unpruned = store
             .columns
             .iter()
-            .filter(|column| is_searchable_type(&column.duckdb_type))
+            .filter(|column| is_searchable_type(&column.sql_type))
             .map(|column| {
                 format!(
                     "coalesce(contains(lower(CAST({} AS VARCHAR)), lower($1)), FALSE)",

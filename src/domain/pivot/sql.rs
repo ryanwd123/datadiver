@@ -37,6 +37,8 @@ impl EvaluationClock {
     }
 }
 
+/// The DuckDB-only entry points below are for tests and benchmarks; the app
+/// goes through [`super::execute_query`].
 pub fn execute(
     source: &DuckDbStore,
     config: &QueryConfig,
@@ -899,7 +901,7 @@ fn condition_expression(
     parameters: &mut Vec<Value>,
 ) -> Result<String, String> {
     let column_schema = schema_column(schema, &condition.column)?;
-    let data_type = crate::domain::schema::from_duckdb(&column_schema.duckdb_type);
+    let data_type = crate::domain::schema::from_duckdb(&column_schema.sql_type);
     let column = quote_identifier(&column_schema.storage_name);
     match condition.operation {
         ConditionOp::IsNull => return Ok(format!("{column} IS NULL")),
@@ -954,7 +956,7 @@ fn condition_expression(
     };
     let left = column;
     Ok(
-        if column_schema.duckdb_type == "VARCHAR" && matches!(value, ScalarKey::String(_)) {
+        if column_schema.sql_type == "VARCHAR" && matches!(value, ScalarKey::String(_)) {
             format!("{left} {operator} ?")
         } else {
             format!("{left} {operator} CAST(? AS {cast})")

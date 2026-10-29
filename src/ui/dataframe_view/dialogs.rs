@@ -278,7 +278,7 @@ impl DataFrameView {
 
     /// Reads each column's most frequent values, one column per lock, so
     /// searching is not blocked behind every scan.
-    fn profile_top_values(&mut self, revision: u64, store: std::sync::Arc<std::sync::Mutex<crate::infrastructure::duckdb_store::DuckDbStore>>, names: Vec<String>, index: usize, cx: &mut Cx<Self>) {
+    fn profile_top_values(&mut self, revision: u64, store: std::sync::Arc<std::sync::Mutex<crate::infrastructure::store::Store>>, names: Vec<String>, index: usize, cx: &mut Cx<Self>) {
         if self.information_revision != revision || index >= names.len() {
             return;
         }

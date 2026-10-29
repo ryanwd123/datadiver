@@ -452,7 +452,7 @@ pub(crate) struct SplitDrag {
 }
 
 /// Identifies a query result without keeping it alive.
-type StoreHandle = std::sync::Weak<std::sync::Mutex<crate::infrastructure::duckdb_store::DuckDbStore>>;
+type StoreHandle = std::sync::Weak<std::sync::Mutex<crate::infrastructure::store::Store>>;
 type HeatRanges = std::collections::HashMap<String, (f64, f64)>;
 
 pub struct DataFrameView {

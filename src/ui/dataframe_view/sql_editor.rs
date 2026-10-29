@@ -465,7 +465,7 @@ impl DataFrameView {
             .source
             .schema
             .iter()
-            .map(|column| (column.name.clone(), column.duckdb_type.clone()))
+            .map(|column| (column.name.clone(), column.sql_type.clone()))
             .collect();
         let mut request = SqlRequest {
             prompt: ask.prompt.clone(),

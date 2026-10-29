@@ -9,3 +9,4 @@ pub mod performance;
 pub mod readers;
 pub mod source_database;
 pub mod sql_execution;
+pub mod store;

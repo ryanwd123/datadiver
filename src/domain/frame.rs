@@ -1,8 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use crate::infrastructure::duckdb_store::{
-    CachedRow, ColumnSchema, DuckDbStore, MaterializedViewRows, RowIds, ViewQuery, ViewRowMap,
+use crate::infrastructure::duckdb_store::ViewRowMap;
+use crate::infrastructure::store::{
+    CachedRow, ColumnSchema, MaterializedViewRows, RowIds, Store, ViewQuery,
 };
 
 pub const PAGE_SIZE: usize = 250;
@@ -14,7 +15,7 @@ pub struct ColumnKey(pub String);
 #[derive(Clone)]
 pub struct FrameSnapshot {
     pub(crate) schema: Arc<[ColumnSchema]>,
-    pub store: Arc<Mutex<DuckDbStore>>,
+    pub store: Arc<Mutex<Store>>,
     pub source_revision: u64,
     pub(crate) database_view_revision: Option<u64>,
     pub columns: Arc<[ColumnKey]>,
@@ -28,7 +29,8 @@ pub struct FrameSnapshot {
 }
 
 impl FrameSnapshot {
-    pub fn new(store: DuckDbStore, source_revision: u64) -> Self {
+    pub fn new(store: impl Into<Store>, source_revision: u64) -> Self {
+        let store = store.into();
         let (columns, dtypes) = schema_snapshot(store.schema());
         let persistent_identity = store.persistent_identity();
         let database_view_revision = store.database_view_revision();
@@ -53,7 +55,7 @@ impl FrameSnapshot {
 
 #[derive(Clone)]
 pub struct ResultSnapshot {
-    pub store: Arc<Mutex<DuckDbStore>>,
+    pub store: Arc<Mutex<Store>>,
     /// Display position maps through these to DuckDB's rowid.
     pub row_ids: RowIds,
     pub result_revision: u64,
@@ -145,7 +147,7 @@ impl ResultSnapshot {
     }
 
     pub fn from_store(
-        store: DuckDbStore,
+        store: impl Into<Store>,
         source_revision: u64,
         result_revision: u64,
         generation: u64,
@@ -254,7 +256,7 @@ impl ResultSnapshot {
         let rows = self
             .store
             .lock()
-            .map_err(|_| "DuckDB store lock poisoned".to_owned())?
+            .map_err(|_| "store lock poisoned".to_owned())?
             .fetch_view_page(self.row_map.as_deref(), &self.row_ids, start, PAGE_SIZE)?;
         let rows: Arc<[CachedRow]> = rows.into();
         let mut cache = self
@@ -298,7 +300,7 @@ impl ResultSnapshot {
     ) -> Result<usize, String> {
         self.store
             .lock()
-            .map_err(|_| "DuckDB store lock poisoned".to_owned())?
+            .map_err(|_| "store lock poisoned".to_owned())?
             .export_view(
                 self.row_map.as_deref(),
                 &self.row_ids,
@@ -316,7 +318,7 @@ impl ResultSnapshot {
         // cache to the grid so the pages on screen are not evicted.
         self.store
             .lock()
-            .map_err(|_| "DuckDB store lock poisoned".to_owned())?
+            .map_err(|_| "store lock poisoned".to_owned())?
             .fetch_view_page(self.row_map.as_deref(), &self.row_ids, start, count)
     }
 }
@@ -337,7 +339,7 @@ fn schema_snapshot(schema: &[ColumnSchema]) -> (Arc<[ColumnKey]>, Arc<[String]>)
         .into();
     let dtypes = schema
         .iter()
-        .map(|column| column.duckdb_type.clone())
+        .map(|column| column.sql_type.clone())
         .collect::<Vec<_>>()
         .into();
     (columns, dtypes)
@@ -346,6 +348,7 @@ fn schema_snapshot(schema: &[ColumnSchema]) -> (Arc<[ColumnKey]>, Arc<[String]>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::duckdb_store::DuckDbStore;
     use duckdb::Connection;
 
     fn source() -> DuckDbStore {
@@ -377,6 +380,8 @@ mod tests {
             .store
             .lock()
             .unwrap()
+            .duckdb()
+            .unwrap()
             .materialize_view_rows_from_ids(&[0, 1, 2, 99, 98])
             .unwrap();
         let result = ResultSnapshot::from_view(&frame, rows, schema, 1, 1);
@@ -393,6 +398,8 @@ mod tests {
         let rows = frame
             .store
             .lock()
+            .unwrap()
+            .duckdb()
             .unwrap()
             .materialize_view_rows_from_ids(&[2, 0])
             .unwrap();

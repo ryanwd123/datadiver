@@ -71,7 +71,7 @@ fn prepare(view: &DataFrameView) -> Result<Option<(DocumentDefinition, DocumentD
     sliced.id.clear();
     sliced.name = "Benchmark sliced".into();
     let mut search = None;
-    for column in schema.iter().filter(|c| crate::domain::slicers::supported(&c.duckdb_type)) {
+    for column in schema.iter().filter(|c| crate::domain::slicers::supported(&c.sql_type)) {
         let values = store.slicer_values(&column.name, &[], &[])?;
         if !values.is_empty() && values.len() <= crate::domain::slicers::MAX_UNIQUE_VALUES {
             let selected = values

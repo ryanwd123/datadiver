@@ -1205,11 +1205,11 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 return source.row_count();
             }
             assert!(source.is_database_view());
-            crate::domain::pivot::execute_traced_limited(
+            crate::domain::pivot::sql::execute_traced_limited(
                 &source,
                 &crate::domain::documents::QueryConfig::default(),
                 &[],
-                &crate::domain::pivot::EvaluationClock::system(),
+                &crate::domain::pivot::sql::EvaluationClock::system(),
                 1000,
                 &mut crate::domain::sql::SqlTrace::default(),
             )
@@ -1302,7 +1302,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
     #[test]
     fn user_database_views_are_lazy_limited_and_keep_source_rowid_columns() {
         use crate::domain::documents::{Aggregation, QueryConfig, ScalarKey, SlicerDefinition};
-        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::pivot::sql::{EvaluationClock, execute_traced_limited};
         use crate::domain::sql::SqlTrace;
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
@@ -1433,7 +1433,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         use crate::domain::documents::{
             Aggregation, AggregationOp, Dimension, QueryConfig, SlicerDefinition,
         };
-        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::pivot::sql::{EvaluationClock, execute_traced_limited};
         use crate::domain::sql::SqlTrace;
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
@@ -1520,7 +1520,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
     #[test]
     fn duckdb_tables_scroll_by_their_own_rowid() {
         use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig, SortKey};
-        use crate::domain::pivot::{EvaluationClock, execute_traced_limited};
+        use crate::domain::pivot::sql::{EvaluationClock, execute_traced_limited};
         use crate::domain::sql::SqlTrace;
         use crate::infrastructure::duckdb_store::ViewQuery;
         let home = tempfile::tempdir().unwrap();
@@ -2006,7 +2006,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         use crate::domain::documents::{Aggregation, AggregationOp, QueryConfig};
         use crate::domain::frame::ResultSnapshot;
         use crate::domain::selection::{Cell, Selection};
-        use crate::domain::{pivot, statistics};
+        use crate::domain::{pivot::sql as pivot, statistics};
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
         let mut results = Vec::new();
@@ -2060,7 +2060,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         use crate::domain::documents::{
             Aggregation, AggregationOp, QueryConfig, ScalarKey, SlicerDefinition,
         };
-        use crate::domain::{pivot, sql::SqlTrace};
+        use crate::domain::{pivot::sql as pivot, sql::SqlTrace};
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
         let path = home.path().join("athletes.csv");
