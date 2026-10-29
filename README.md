@@ -4,7 +4,7 @@
 
 A native desktop app for fast data exploration and quick lookups. Open a data file, search and filter rows, build a pivot, etc.
 
-DataDiver is built in Rust and DuckDB, drawing its own Windows UI with Direct2D and DirectWrite. The focus is an efficient, enjoyable workflow: responsive tables, keyboard commands, and reusable views.
+DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws its own Windows UI with Direct2D and DirectWrite. The focus is an efficient, enjoyable workflow: responsive tables, keyboard commands, and reusable views.
 
 ![A pivot of Olympic athletes by season and year, with a Sport slicer and totals](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot1.png)
 ![The SQL editor with Ask AI generating a medal count query](https://raw.githubusercontent.com/ryanwd123/datadiver/main/assets/screenshot2.png)
@@ -14,6 +14,7 @@ DataDiver is built in Rust and DuckDB, drawing its own Windows UI with Direct2D 
 - [A typical workflow](#a-typical-workflow)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Opening data](#opening-data)
+- [Query engines](#query-engines)
 - [Search](#search)
 - [Slicers](#slicers)
 - [Filters and drill-down](#filters-and-drill-down)
@@ -33,7 +34,8 @@ DataDiver is built in Rust and DuckDB, drawing its own Windows UI with Direct2D 
 ## Features
 
 - **Open local data:** CSV, TSV, Excel (`.xlsx`), and Parquet. Add whole folders, paste a table from the clipboard, drop files on the window, or attach a DuckDB or SQLite database.
-- **Browse the database:** a sidebar tree of saved views, cached files, database tables and views, attached databases, and watched files and folders.
+- **Two query engines:** each file is read by Polars, which loads files into memory fast, or DuckDB, with its full SQL in expressions and cards. Polars is the default; choose per file.
+- **Browse the database:** a sidebar tree of saved views, database tables and views, attached databases, and watched files and folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any DuckDB aggregate. Add grand totals and a heat map.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
@@ -87,6 +89,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Shortcut | Action |
 | --- | --- |
 | Ctrl+Shift+P | Command palette |
+| Ctrl+, | Settings |
 | Ctrl+P | Files and views |
 | Ctrl+O | Open file |
 | Ctrl+B | Show or hide database tree |
@@ -128,7 +131,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | < / > | Decrease / increase decimal places |
 | , | Toggle thousands grouping |
 | D | Show or hide cell detail |
-| N | Drop files to add to cache |
+| N | Drop files to watch |
 | I | Information and column profiles |
 | Ctrl+C or C | Copy selection |
 | Ctrl+Shift+C | Copy as… |
@@ -150,13 +153,24 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 
 ## Opening data
 
-- **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too. A file that is not watched opens in query mode: DuckDB reads it in place on every query, nothing is cached, and the row limit sets how many rows the grid shows. Aggregations still read every row. These files are remembered under **Recent files**.
-- **Watched files and folders:** watched sources are cached, so they open in table mode and can be scrolled, sorted, and filtered whole. Press **N** in the grid and drop files on the overlay, or use **Add watched files** in the command palette, to watch single files. **Add folder** watches a whole folder, and its supported files appear under **Ctrl+P** and in the database tree. A watched file opens from the cache however you open it.
+- **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too. A file opens as a table read into memory by its [query engine](#query-engines), so it can be scrolled, sorted, and filtered whole. Opened files are remembered under **Recent files**.
+- **Watched files and folders:** watched files are listed under **Sources** for quick opening; nothing is read until you open one. Press **N** in the grid and drop files on the overlay, or use **Add watched files** in the command palette, to watch single files. **Add folder** watches a whole folder, and its supported files appear under **Ctrl+P** and in the database tree.
 - **Clipboard:** **Ctrl+V** in the grid saves pasted text, such as cells copied from Excel or a web page, as a TSV or CSV file and opens it like any other source. Files copied in Explorer open directly.
-- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows, in query mode unless they are watched. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
-- **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, cached files, tables and views in the profile database and any attached databases, watched files and folders, recent files, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
-- **Deleting from the tree:** **Delete** removes what the selected item stands for. A saved view is archived, a recent file is forgotten, a watched file or folder stops being watched and its cached tables are dropped, and an attached database is detached. A table or view in the profile database is dropped after you confirm. Folders are watched whole, so deleting a file inside a watched folder offers to stop watching the folder; to leave files out, move them out of the folder. Cached tables in the `files` schema are managed from their watched file or folder.
+- **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
+- **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, tables and views in the profile database and any attached databases, watched files and folders, recent files, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
+- **Deleting from the tree:** **Delete** removes what the selected item stands for. A saved view is archived, a recent file is forgotten, a watched file or folder stops being watched, and an attached database is detached. A table or view in the profile database is dropped after you confirm. Folders are watched whole, so deleting a file inside a watched folder offers to stop watching the folder; to leave files out, move them out of the folder.
 - **Favorites:** **Ctrl+Shift+1–9** assigns the current file or view to a slot, and **Ctrl+1–9** opens it.
+
+The top row of the window shows the open file or view, **● Unsaved** when it has changes, and when its file was modified, with the settings that apply to it: the query engine for a file, and **Auto-save** and **Auto-run** for an SQL view.
+
+## Query engines
+
+Every file is read by one engine, and everything you do with it, from search and slicers to group-by, pivots, totals, and export, runs in that engine.
+
+- **Polars** (the default) reads files into memory very quickly, and every window showing an unchanged file shares one copy. SQL cards and custom expressions use Polars SQL, which covers common functions plus the `year()`, `month()`, and `date_trunc()` shorthands.
+- **DuckDB** reads the file into an in-memory table, which is slower for large files, but SQL cards and custom expressions can use all of DuckDB's SQL. While a window shows the file, the SQL editor can query it as `files.<name>`, for example `files.sales_csv`. Nothing is written to the profile database. **Preserve order**, in the top row, keeps rows in file order; turning it off reads large files faster.
+
+Click the engine button in the top row, or use **Choose query engine for this file**, to switch a file. The choice is kept with the file, and saved views of the file follow it. **Settings** (**Ctrl+,**) sets the default engine for files without their own choice. The SQL editor, database tables, and attached databases always use DuckDB.
 
 ## Search
 
@@ -172,9 +186,11 @@ Search words are highlighted in visible cells; column-scoped words are highlight
 
 **Add slicer** (**Z**, or **Space Z**) offers three kinds of card:
 
-- **SQL filter** is always first in the list, and a view can have one. Type any DuckDB condition over the source columns and press **Enter**, for example `amount > 100 AND region <> 'Europe'` or `amount % 2 = 0`. The card is not tied to a column.
+- **SQL filter** is always first in the list, and a view can have one. Type any SQL condition (in the file's [engine](#query-engines)) over the source columns and press **Enter**, for example `amount > 100 AND region <> 'Europe'` or `amount % 2 = 0`. The card is not tied to a column.
 - **Value cards** list a column's values when it has at most 1,000 of them. Click, Ctrl+click, or drag to select. The search icon in the card header opens a filter box: type to narrow the list, press **Enter** to select every matching value, and **Esc** to close it. Values are greyed out when no row matches the other slicers and the `=` / `-` filters, but search does not grey them out.
 - **Condition cards** (listed as *column · condition*) work for any column. Type a condition and press **Enter**. Terms are separated by spaces and must all match: `>=10 <100`, `=North`, `!=0`, `:smith` or a bare word (contains), `-word` (does not contain), and inclusive ranges `10..20`, `2024-01-01..`, `..500`. Numbers compare as numbers and dates as dates. Text ranges ignore case and include every value starting with the upper bound, so `china..italy` includes "Italy". Partial dates cover their whole period, so `2024-10` is all of October and `..2024` runs through December 31, 2024. Comparison values can be relative dates: `today`, `yesterday`, `-30d`, `+2w`, `-6m`, `-1y` (so `-30d..today` is the last 30 days). The card shows the column's smallest and largest value.
+
+Two options above the cards are kept with the file. **Cross filter** greys out values as described above; turning it off shows every value as available and skips those queries, which is faster on big sources. **Available first** lists available values before greyed-out ones.
 
 If a condition or SQL filter has an error, the error shows on its card and the card stops filtering until you fix it. **Ctrl+L** moves through the slicer inputs, and **Ctrl+D** returns to the grid.
 
@@ -221,7 +237,7 @@ Views store the source path and the exploration configuration. They reference th
 
 Press **Ctrl+J** or choose **Open SQL editor** to open a resizable panel below the grid. **Ctrl+Enter** runs selected SQL, or the statement at the cursor; **Run All** executes the script in order. **Stop** interrupts execution. The grid shows the last result set and keeps search, sorting, navigation, and copy/export available without running SQL again.
 
-SQL runs against the active profile database, including imported tables in the `files` schema. Database changes are allowed. Temporary objects and explicit transactions survive between runs in the same SQL document. Run All stops on the first error and follows DuckDB's normal transaction behavior. The row limit caps captured results, including `RETURNING`, without limiting writes; a changed limit applies on the next run.
+SQL runs on DuckDB against the active profile database, and can read files with `read_csv('path')`, `read_parquet('path')`, or, while a window shows a file with the DuckDB engine, `files.<name>`. Database changes are allowed. Temporary objects and explicit transactions survive between runs in the same SQL document. Run All stops on the first error and follows DuckDB's normal transaction behavior. The row limit caps captured results, including `RETURNING`, without limiting writes; a changed limit applies on the next run.
 
 When the script's last statement is a plain query run outside a transaction, the whole result is kept, so slicers, `=` / `-` filters, search, and sort see every row. Other results keep only the rows up to the limit, and slicers and filters explain why they are off.
 
@@ -266,6 +282,7 @@ Press **U** in the grid to go **Back**, or **R** to go **Forward** through files
 
 ## Customization
 
+- **Settings** (**Ctrl+,**): the default query engine, fonts, theme, shortcuts, AI providers, the DuckDB startup script, and the settings folder in one list.
 - **Keymap Editor** (**Ctrl+Shift+K**): rebind any command, per context.
 - **Theme Editor**: adjust the theme's colors.
 - **Font picker** and **Choose editor font**: set the grid font and the monospaced font used by the code editors. **Ctrl+=** and **Ctrl+-** change the size of both.
@@ -304,17 +321,17 @@ Choose one of `--file`, `--view`, or `--rows` per launch. `--home` and `--epheme
 
 ## File formats and local storage
 
-CSV and TSV imports use a header row and automatic type detection. Excel imports read the first worksheet with a header row. Older `.xls` files, `.xlsb`, and `.ods` are not supported. The first Excel import or export may need internet access for DuckDB to download its `excel` extension.
+CSV and TSV files use a header row and automatic type detection. Excel files are read from the first worksheet with a header row. Older `.xls` files, `.xlsb`, and `.ods` are not supported. With the DuckDB engine, the first Excel file or export may need internet access for DuckDB to download its `excel` extension.
 
-Watched files and the files in watched folders are cached in an on-disk DuckDB database. Reopening an unchanged file can reuse its imported data instead of parsing it again. Saved table and query views of a file also read it from the cache. Source changes are detected using file size and modification time. Open windows check on activation and every second, then refresh their grids and pivots when the data changes, including files open in query mode; **Ctrl+R** forces a fresh import when needed.
+Files are read into memory each session; nothing is kept on disk. Source changes are detected using file size and modification time. Open windows check on activation and every second, then refresh their grids and pivots when the data changes; **Ctrl+R** reads the file again.
 
-Each file has one table in the `files` schema: `sales.csv` becomes `files.sales_csv`. Names are lowercase, with punctuation replaced by underscores. Files that map to the same table name are rejected. Reloads replace the table transactionally.
+With the DuckDB engine, each file has one table in the in-memory `files` catalog while a window shows it: `sales.csv` becomes `files.sales_csv`. Names are lowercase, with punctuation replaced by underscores; a second file with the same name gets a number, such as `files.sales_csv_2`.
 
 On Windows, the profile is stored in `%LOCALAPPDATA%\datadiver`; other platforms use `~/.local/share/datadiver`. Custom `--home` profiles store everything in the specified directory. The profile contains:
 
 | Path | Contents |
 | --- | --- |
-| `datadiver.duckdb` | Imported sources and anything you create in SQL |
+| `datadiver.duckdb` | Anything you create in SQL |
 | `settings.json` | Preferences, favorites, and AI providers |
 | `keymap.json`, `theme.json` | Custom shortcuts and theme |
 | `duckdb_startup.sql` | The startup SQL script |
@@ -368,7 +385,7 @@ The source is organized into:
 
 - `src/domain`: data models, pivots, selection, formatting, and copy formats.
 - `src/application`: application state, commands, preferences, and editing workflows.
-- `src/infrastructure`: DuckDB storage, source imports, persistence, and performance instrumentation.
+- `src/infrastructure`: the DuckDB and Polars stores, source reads, persistence, and performance instrumentation.
 - `src/ui`: the table interface, panels, editors, and palettes.
 
 For measured performance results and implementation details, see the [storage comparison](performance/STORAGE.md), [query modes](performance/QUERY_MODES.md), and [table width behavior](performance/TABLE_WIDTHS.md).

@@ -3,48 +3,29 @@
 Status: `[ ]` not started, `[~]` in progress, `[x]` done. Finished items are removed; git history
 has their write-ups.
 
-## Small changes
-- Add an options/settings menu, claude to recommend items to list in settings
-- Command pallete show the shortcut keys on the right like this image
-![pasted-2026-10-18-055647.png](data/pasted-2026-10-18-055647.png)
+## Two query engines: follow-ups
 
-- Font picker missing user fonts, see fix in penmark app:
-    - C:\Users\ryanw\rust_stuff\win_app\src\platform.rs  user_font_files()
-    - C:\Users\ryanw\rust_stuff\win_app\src\render.rs
-- For slicer cross filtering sort the slicer to list the availible items first (optional)
-- add new row at top of UI
-    - move filename, saved status, modified top top row
-    - add check boxes for some per file settings (shown when applicable)
-        - auto save 
-        - preserve order
-        - query engine
-        - Claude to suggest other options
-- add slicer options at top of slicer panel (remember per file)
-        - cross filtering on/off
-        - sort availible - new feature that will put availible items first, and gray'd out items below
-- add a command: reset database connection
-    - equivelent to
-        - db.close()
-        - db = duckdb.connect(file)
-        - db.execute(startup.sql)
-- add comand "new sql query"
+The engines, per-file choice, and Settings list are done (see git history). Still open:
 
-
-## Two query engines
-Still thinking about if I really want to do this...
-- On my test of a 1M row parquet polars reads into memory in 28ms, duckdb reads into tempory table 1.2sec - 1.6sec.
-- I don't like the caching of files into the profile database
-- I still want to keep duckdb to be able to work with duckdb databases
-New design
- - use both polars and duckdb as query engines
- - per file option to choose query engine
- - set default query engine in settings
- - remove concept of caching files into duckdb database
- - keep profile database, rename startup.sql to duckdb_startup.sql
- - 
-
-
-
+- **Engine-aware editors.** The aggregation editor's Functions list, SQL completion, and the
+  generated-SQL preview (`pivot::editor_expression`) all describe DuckDB, even for a Polars file.
+  Polars has its own (`pivot::lazy::editor_expression`); pick by `FrameSnapshot::engine`, and list
+  the functions Polars SQL supports.
+- **Saved selections across engines.** Slicer keys for intervals, times, and time zones are
+  spelled differently by each engine (`domain::slicers::scalar_key` vs
+  `polars::expressions::scalar_key`), so a view saved under one engine can lose those selections
+  under the other. Normalize the keys, or convert them on switch.
+- **Polars scan mode** for files bigger than memory (the IceSlice plan has the design). Today a
+  big file is read whole by either engine; DuckDB tables from an attached database are the way
+  around it.
+- **Reset database connection** detaches databases, reruns the startup script, and replaces the
+  SQL editor's connection, but cannot close the database file: every open DuckDB table holds a
+  connection, and DuckDB refuses a second open of the file in one process. `SET GLOBAL` options
+  and loaded extensions survive a reset.
+- **Settings to consider adding:** default row limit, restore the last session on startup,
+  confirm before closing unsaved views, default slicer options for new files.
+- **Preserve order** is applied with `SET preserve_insertion_order`, which is global in DuckDB, so
+  a read with it off briefly affects queries running in other windows.
 
 ## Improve working with bigger data sources
 - It takes to long to bring up the slicer list on bigger data
