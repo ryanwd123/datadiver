@@ -2,7 +2,7 @@
 //! Settings list.
 
 use super::*;
-use crate::domain::table_preferences::{FileSettings, TablePreferencesPatch};
+use crate::domain::table_preferences::{FileSettings, SlicerOptions, TablePreferencesPatch};
 use crate::infrastructure::source_database::LoadMode;
 use crate::infrastructure::store::Engine;
 use crate::ui::font_picker::FontTarget;
@@ -88,6 +88,32 @@ impl DataFrameView {
             return;
         }
         self.change_file_settings(|file| file.preserve_order = !file.preserve_order, cx);
+    }
+
+    pub(crate) fn toggle_cross_filter(&mut self, cx: &mut Cx<Self>) {
+        self.change_slicer_options(|options| options.cross_filter = !options.cross_filter, cx);
+    }
+
+    pub(crate) fn toggle_available_first(&mut self, cx: &mut Cx<Self>) {
+        self.change_slicer_options(|options| options.available_first = !options.available_first, cx);
+    }
+
+    /// Slicer options change only how cards show their values, so the file is
+    /// not read again. They are kept with the file, or for this window when
+    /// the source is not a file.
+    fn change_slicer_options(&mut self, edit: impl FnOnce(&mut SlicerOptions), cx: &mut Cx<Self>) {
+        edit(&mut self.file_settings.slicers);
+        if let Some(path) = self.settings_file() {
+            let patch = TablePreferencesPatch {
+                file: Some(self.file_settings),
+                ..Default::default()
+            };
+            if let Err(error) = self.table_writer.edit(path, patch) {
+                self.error = Some(format!("Cannot save the slicer options: {error}"));
+            }
+        }
+        self.schedule_search(self.session.search_text.clone(), cx);
+        cx.notify();
     }
 
     pub(crate) fn open_settings(&mut self, cx: &mut Cx<Self>) {

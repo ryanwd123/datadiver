@@ -39,6 +39,8 @@ impl DataFrameView {
             CommandId::Settings => self.open_settings(cx),
             CommandId::QueryEngine => self.open_engine_palette(cx),
             CommandId::TogglePreserveOrder => self.toggle_preserve_order(cx),
+            CommandId::ToggleCrossFilter => self.toggle_cross_filter(cx),
+            CommandId::ToggleAvailableFirst => self.toggle_available_first(cx),
             CommandId::ResetDatabase => self.reset_database_connection(cx),
             CommandId::StartupSql => {
                 if matches!(self.session.identity, SessionIdentity::StartupSql) {

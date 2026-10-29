@@ -133,6 +133,7 @@ mod tests {
                     file: Some(crate::domain::table_preferences::FileSettings {
                         engine: Some(Engine::Polars),
                         preserve_order: false,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },

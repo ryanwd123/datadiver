@@ -34,6 +34,8 @@ pub struct FileSettings {
     pub engine: Option<Engine>,
     /// DuckDB only: keep rows in file order. Off reads large files faster.
     pub preserve_order: bool,
+    #[serde(flatten)]
+    pub slicers: SlicerOptions,
 }
 
 impl Default for FileSettings {
@@ -41,6 +43,27 @@ impl Default for FileSettings {
         Self {
             engine: None,
             preserve_order: true,
+            slicers: SlicerOptions::default(),
+        }
+    }
+}
+
+/// How slicer cards show their values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlicerOptions {
+    /// Gray out values that no row matching the other cards and the view's
+    /// filters has. Off skips those queries, which helps on big sources.
+    pub cross_filter: bool,
+    /// List available values before grayed-out ones.
+    pub available_first: bool,
+}
+
+impl Default for SlicerOptions {
+    fn default() -> Self {
+        Self {
+            cross_filter: true,
+            available_first: false,
         }
     }
 }

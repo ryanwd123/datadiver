@@ -145,6 +145,7 @@ impl DataFrameView {
             definition: candidate_session.computation_definition(),
             query_cache: None,
             slicer_discovery: self.slicer_discovery.clone(),
+            slicer_options: self.file_settings.slicers,
             queued_at: Instant::now(),
             reuse_table: None,
             table_trace: SqlTrace::default(),
@@ -212,6 +213,7 @@ impl DataFrameView {
             definition,
             query_cache,
             slicer_discovery: self.slicer_discovery.clone(),
+            slicer_options: self.file_settings.slicers,
             queued_at: Instant::now(),
             reuse_table: self
                 .table_query
@@ -783,6 +785,7 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
             &request.source,
             definitions,
             value_filters,
+            request.slicer_options,
             slicer_cache.as_ref(),
             request.slicer_discovery.as_deref(),
         ) {

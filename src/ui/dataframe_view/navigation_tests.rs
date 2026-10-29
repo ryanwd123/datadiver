@@ -1145,3 +1145,29 @@ fn settings_switch_the_default_engine_for_files_without_their_own() {
     open(&viewer, FileEntry::Source(path.clone()));
     assert_eq!(engine(&viewer), Engine::DuckDb);
 }
+
+#[test]
+fn slicer_options_are_kept_per_file_without_reading_it_again() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region\nNorth\n").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    let store = viewer.read(|view| view.session.source.store.clone());
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleCrossFilter, cx));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleAvailableFirst, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(!view.file_settings.slicers.cross_filter);
+        assert!(view.file_settings.slicers.available_first);
+        assert!(std::sync::Arc::ptr_eq(&view.session.source.store, &store));
+    });
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    let saved = repository.load_table_preferences(&path).unwrap().file.slicers;
+    assert!(!saved.cross_filter && saved.available_first);
+    // Opening the file again restores them.
+    let other = Viewer::open_in(&viewer.app, empty_frame(), None, None, repository);
+    open(&other, FileEntry::Source(path));
+    assert!(!other.read(|view| view.file_settings.slicers.cross_filter));
+}

@@ -7,6 +7,8 @@ pub enum CommandId {
     Settings,
     QueryEngine,
     TogglePreserveOrder,
+    ToggleCrossFilter,
+    ToggleAvailableFirst,
     StartupSql,
     ResetDatabase,
     Files,
@@ -111,6 +113,18 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::TogglePreserveOrder,
         key: "toggle_preserve_order",
         label: "Preserve row order when DuckDB reads this file",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ToggleCrossFilter,
+        key: "toggle_cross_filter",
+        label: "Slicers: cross filter",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ToggleAvailableFirst,
+        key: "toggle_available_first",
+        label: "Slicers: list available values first",
         default_binding: None,
     },
     Command {

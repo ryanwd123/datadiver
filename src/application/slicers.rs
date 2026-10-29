@@ -1,6 +1,7 @@
 use crate::domain::documents::{SlicerDefinition, ValueFilter};
 use crate::domain::frame::FrameSnapshot;
 use crate::domain::slicers::{self, SlicerCard, SlicerValue};
+use crate::domain::table_preferences::SlicerOptions;
 use crate::infrastructure::store::{ColumnFilter, Interrupt, Store};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,6 +66,7 @@ pub struct SlicerStage {
     pub definitions: Vec<SlicerDefinition>,
     /// The view's `=` / `-` filters, which also narrow slicer availability.
     pub value_filters: Vec<ValueFilter>,
+    pub options: SlicerOptions,
     pub cards: Vec<SlicerCard>,
 }
 
@@ -81,6 +83,7 @@ impl SlicerStage {
         source: &FrameSnapshot,
         definitions: &[SlicerDefinition],
         value_filters: &[ValueFilter],
+        options: SlicerOptions,
         cached: Option<&Self>,
         discovery: Option<&SlicerDiscovery>,
     ) -> Result<Self, String> {
@@ -103,6 +106,7 @@ impl SlicerStage {
             && cached_catalog.is_some()
             && cached.definitions == definitions
             && cached.value_filters == value_filters
+            && cached.options == options
         {
             return Ok(cached.clone());
         }
@@ -123,12 +127,13 @@ impl SlicerStage {
             (None, Some(cached)) => cached.clone(),
             (None, None) => Arc::new(SlicerCatalog::discover(&store, Some(&value_columns), &|| false)?),
         };
-        let cards = catalog.cards(&store, definitions, value_filters);
+        let cards = catalog.cards(&store, definitions, value_filters, options);
         Ok(Self {
             source: source.clone(),
             catalog,
             definitions: definitions.to_vec(),
             value_filters: value_filters.to_vec(),
+            options,
             cards,
         })
     }
@@ -220,13 +225,15 @@ impl SlicerCatalog {
         })
     }
 
-    /// Cards for `definitions`. A value is available when some source row has it
-    /// and matches the other cards' selections and the view's value filters.
+    /// Cards for `definitions`. With cross filtering, a value is available
+    /// when some source row has it and matches the other cards' selections
+    /// and the view's value filters; without it, every value is.
     pub fn cards(
         &self,
         store: &Store,
         definitions: &[SlicerDefinition],
         value_filters: &[ValueFilter],
+        options: SlicerOptions,
     ) -> Vec<SlicerCard> {
         // Condition cards come first so a broken one does not filter value cards.
         let conditions = definitions
@@ -282,7 +289,7 @@ impl SlicerCatalog {
                         .cloned()
                         .collect::<Vec<_>>(),
                 );
-                if error.is_none() {
+                if error.is_none() && options.cross_filter {
                     match store.slicer_values(&definition.column, &filters, value_filters) {
                         Ok(available) => {
                             for value in &mut values {
@@ -306,6 +313,9 @@ impl SlicerCatalog {
                             available: false,
                         });
                     }
+                }
+                if options.available_first {
+                    values.sort_by_key(|value| !value.available);
                 }
                 SlicerCard {
                     sql: false,
@@ -371,7 +381,7 @@ mod tests {
         cached: Option<&SlicerStage>,
     ) -> Result<SlicerStage, String> {
         let discovery = SlicerDiscovery::default();
-        SlicerStage::prepare(source, definitions, value_filters, cached, Some(&discovery))
+        SlicerStage::prepare(source, definitions, value_filters, SlicerOptions::default(), cached, Some(&discovery))
     }
 
     fn sql_frame(sql: &str) -> FrameSnapshot {
@@ -901,7 +911,7 @@ mod tests {
             condition: Some(">15".into()),
         };
         let lazy = |definitions: &[SlicerDefinition], cached: Option<&SlicerStage>| {
-            SlicerStage::prepare(&source, definitions, &[], cached, None).unwrap()
+            SlicerStage::prepare(&source, definitions, &[], SlicerOptions::default(), cached, None).unwrap()
         };
         // Condition and SQL cards discover nothing.
         let stage = lazy(&[condition.clone(), SlicerDefinition::sql_filter()], None);
@@ -923,7 +933,7 @@ mod tests {
         let cancelled = SlicerDiscovery::default();
         cancelled.cancel();
         let stage =
-            SlicerStage::prepare(&source, &definitions, &[], None, Some(&cancelled)).unwrap();
+            SlicerStage::prepare(&source, &definitions, &[], SlicerOptions::default(), None, Some(&cancelled)).unwrap();
         assert_eq!(stage.catalog.examined.as_deref(), Some(&["region".to_owned()][..]));
     }
 
@@ -956,4 +966,63 @@ mod tests {
         // The connection works afterwards.
         assert_eq!(store.slicer_values("n", &[], &[]).unwrap().len(), 1);
     }
+
+    #[test]
+    fn cross_filtering_off_keeps_every_value_available_and_available_first_sorts() {
+        use crate::infrastructure::polars::store::PolarsStore;
+        let duckdb = source();
+        let rows = duckdb.store.lock().unwrap().fetch_row_ids(&[0, 1, 2]).unwrap();
+        // The same rows in both engines.
+        let polars = FrameSnapshot::new(
+            PolarsStore::from_rows(
+                &[
+                    ("region".into(), "VARCHAR".into()),
+                    ("color".into(), "VARCHAR".into()),
+                    ("sales".into(), "BIGINT".into()),
+                ],
+                rows.into_iter().map(|row| {
+                    vec![
+                        Value::Text(row.values[0].clone().unwrap()),
+                        Value::Text(row.values[1].clone().unwrap()),
+                        Value::BigInt(row.values[2].as_deref().unwrap().parse().unwrap()),
+                    ]
+                }),
+            )
+            .unwrap(),
+            1,
+        );
+        // West rows are only Red, so Blue is not available once West is picked.
+        let definitions = [card("region", &["West"]), card("color", &[])];
+        for source in [duckdb, polars] {
+            let colors = |options: SlicerOptions| {
+                let stage = SlicerStage::prepare(&source, &definitions, &[], options, None, None).unwrap();
+                stage.cards[1]
+                    .values
+                    .iter()
+                    .map(|value| (value.label.clone(), value.available))
+                    .collect::<Vec<_>>()
+            };
+            let crossed = colors(SlicerOptions::default());
+            assert_eq!(crossed, [("Blue".to_owned(), false), ("Red".to_owned(), true)]);
+            let independent = colors(SlicerOptions {
+                cross_filter: false,
+                ..SlicerOptions::default()
+            });
+            assert!(independent.iter().all(|(_, available)| *available));
+            let sorted = colors(SlicerOptions {
+                available_first: true,
+                ..SlicerOptions::default()
+            });
+            assert_eq!(sorted, [("Red".to_owned(), true), ("Blue".to_owned(), false)]);
+        }
+        // A cached stage is not reused under other options.
+        let stage = SlicerStage::prepare(&source(), &definitions, &[], SlicerOptions::default(), None, None).unwrap();
+        let other = SlicerOptions {
+            cross_filter: false,
+            ..SlicerOptions::default()
+        };
+        let refreshed = SlicerStage::prepare(&stage.source, &definitions, &[], other, Some(&stage), None).unwrap();
+        assert_eq!(refreshed.options, other);
+    }
+
 }

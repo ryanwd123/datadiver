@@ -63,6 +63,9 @@ pub enum Button {
     // The file row.
     QueryEngine,
     PreserveOrder,
+    // The slicer panel's options.
+    SlicerCrossFilter,
+    SlicerAvailableFirst,
     // Dialog chrome.
     DialogClose,
     DialogOk,

@@ -152,6 +152,27 @@ impl DataFrameView {
         self.drain_grid_events(cx);
     }
 
+    /// Cross filtering and value order, above the slicer cards.
+    fn paint_slicer_options(&self, canvas: &mut Canvas<Hit>, r: Rect) {
+        let font = &self.fonts.small;
+        canvas.fill(rect(r.right() - 1.0, r.y, 1.0, r.h), colors::BORDER);
+        let options = self.file_settings.slicers;
+        let mut items = Row::new(r.inset_xy(12.0, 4.0), 12.0);
+        for (label, checked, hit, tip) in [
+            (
+                "Cross filter",
+                options.cross_filter,
+                Button::SlicerCrossFilter,
+                "Gray out values the other cards and filters rule out; off is faster on big sources",
+            ),
+            ("Available first", options.available_first, Button::SlicerAvailableFirst, "List available values before grayed-out ones"),
+        ] {
+            let slot = items.left(text::measure(label, font).0 + 26.0);
+            checkbox(canvas, slot, label, checked, font, Hit::Button(hit.clone()));
+            canvas.hit_with(slot, Hit::Button(hit), Cursor::Arrow, Some(tip));
+        }
+    }
+
     /// The top row: what is open, whether it is saved, when its file
     /// changed, and the settings that apply to it.
     fn paint_file_row(&mut self, canvas: &mut Canvas<Hit>, r: Rect) {
@@ -350,8 +371,10 @@ impl DataFrameView {
         if has_slicers {
             let width = self.slicer_sidebar.width(canvas.width);
             let (sidebar, rest) = grid_area.split_left(width.min(grid_area.w * 0.6));
+            let (options, cards) = sidebar.split_top(button_height(&fonts.small) + 8.0);
+            self.paint_slicer_options(canvas, options);
             self.slicer_sidebar
-                .paint(canvas, sidebar, &fonts, focus, canvas.width, canvas.height);
+                .paint(canvas, cards, &fonts, focus, canvas.width, canvas.height);
             grid_area = rest;
         }
         if self.cell_detail.is_some() {
