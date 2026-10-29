@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::duckdb_store::{DuckDbStore, ViewRowMap};
+use super::polars::store::PolarsStore;
 use crate::domain::{
     documents::{Dimension, ScalarKey, SortKey, ValueFilter},
     query::Token,
@@ -73,6 +74,25 @@ pub struct ColumnSchema {
     /// spelling for both engines.
     pub sql_type: String,
     pub(crate) storage_name: String,
+    /// The column's type in a Polars store; DuckDB stores leave it out.
+    pub(crate) polars_type: Option<polars::prelude::DataType>,
+}
+
+impl ColumnSchema {
+    pub(crate) fn polars(name: impl Into<String>, dtype: polars::prelude::DataType) -> Self {
+        let name = name.into();
+        Self {
+            storage_name: name.clone(),
+            sql_type: super::polars::expressions::sql_type_name(&dtype),
+            name,
+            polars_type: Some(dtype),
+        }
+    }
+
+    /// The Polars type of a Polars store's column.
+    pub(crate) fn dtype(&self) -> &polars::prelude::DataType {
+        self.polars_type.as_ref().unwrap_or(&polars::prelude::DataType::Null)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -172,6 +192,7 @@ impl Interrupt {
 /// computed from it, stays in that engine.
 pub enum Store {
     DuckDb(DuckDbStore),
+    Polars(PolarsStore),
 }
 
 impl From<DuckDbStore> for Store {
@@ -180,11 +201,18 @@ impl From<DuckDbStore> for Store {
     }
 }
 
+impl From<PolarsStore> for Store {
+    fn from(store: PolarsStore) -> Self {
+        Self::Polars(store)
+    }
+}
+
 /// Calls the same method on whichever engine holds the rows.
 macro_rules! dispatch {
     ($self:ident, $store:ident => $call:expr) => {
         match $self {
             Store::DuckDb($store) => $call,
+            Store::Polars($store) => $call,
         }
     };
 }
@@ -193,12 +221,21 @@ impl Store {
     pub fn engine(&self) -> Engine {
         match self {
             Self::DuckDb(_) => Engine::DuckDb,
+            Self::Polars(_) => Engine::Polars,
         }
     }
 
     pub fn as_duckdb(&self) -> Option<&DuckDbStore> {
         match self {
             Self::DuckDb(store) => Some(store),
+            Self::Polars(_) => None,
+        }
+    }
+
+    pub fn as_polars(&self) -> Option<&PolarsStore> {
+        match self {
+            Self::Polars(store) => Some(store),
+            Self::DuckDb(_) => None,
         }
     }
 
@@ -227,18 +264,23 @@ impl Store {
     pub fn database_view_revision(&self) -> Option<u64> {
         match self {
             Self::DuckDb(store) => store.database_view_revision(),
+            Self::Polars(_) => None,
         }
     }
 
     pub fn persistent_identity(&self) -> Option<super::source_database::PersistentSourceIdentity> {
         match self {
             Self::DuckDb(store) => store.persistent_identity(),
+            Self::Polars(_) => None,
         }
     }
 
-    pub fn interrupt_handle(&self) -> Interrupt {
+    /// Stops this store's running query. Polars cannot stop a query once it
+    /// runs, so its stores have none.
+    pub fn interrupt_handle(&self) -> Option<Interrupt> {
         match self {
-            Self::DuckDb(store) => Interrupt::DuckDb(store.interrupt_handle()),
+            Self::DuckDb(store) => Some(Interrupt::DuckDb(store.interrupt_handle())),
+            Self::Polars(_) => None,
         }
     }
 
@@ -333,6 +375,7 @@ impl Store {
     ) -> Result<Vec<CachedRow>, String> {
         match self {
             Self::DuckDb(store) => store.fetch_view_page(row_map, row_ids, start, count),
+            Self::Polars(store) => store.fetch_view_page(row_ids, start, count),
         }
     }
 
@@ -350,6 +393,7 @@ impl Store {
     ) -> Result<usize, String> {
         match self {
             Self::DuckDb(store) => store.export_view(row_map, row_ids, columns, path, format),
+            Self::Polars(store) => store.export_view(row_ids, columns, path, format),
         }
     }
 
@@ -388,6 +432,9 @@ impl Store {
                     }
                 };
                 store.selection_column_aggregates(row_map, start, end, column_indices, data_types)
+            }
+            Self::Polars(store) => {
+                store.selection_column_aggregates(row_ids, start, end, column_indices, data_types)
             }
         }
     }

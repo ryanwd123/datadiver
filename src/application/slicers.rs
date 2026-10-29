@@ -48,7 +48,7 @@ impl SlicerDiscovery {
             if self.is_cancelled() {
                 return None;
             }
-            *running = Some(store.interrupt_handle());
+            *running = store.interrupt_handle();
         }
         let result = discover();
         if let Ok(mut running) = self.running.lock() {

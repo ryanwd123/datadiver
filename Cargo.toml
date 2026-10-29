@@ -3,7 +3,7 @@ name = "datadiver"
 version = "0.2.0"
 edition = "2024"
 authors = ["Ryan DeWitt"]
-description = "Fast desktop data exploration with DuckDB"
+description = "Fast desktop data exploration with Polars and DuckDB"
 license = "MIT"
 repository = "https://github.com/ryanwd123/datadiver"
 readme = "README.md"
@@ -25,14 +25,32 @@ default = []
 snapshots = []
 
 [dependencies]
+# Reads Excel files for the Polars engine.
+calamine = { version = "0.36", features = ["dates"] }
 chrono = "0.4"
 duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "appender-arrow"] }
+# Polars already builds both; Polars exports use them for .gz and .zst text files.
+flate2 = "1.1"
+polars = { version = "0.55.2", default-features = false, features = [
+    "lazy", "sql", "streaming", "csv", "parquet", "json", "ipc", "decompress",
+    "temporal", "timezones", "dtype-full", "strings", "regex", "concat_str",
+    "is_in", "round_series", "abs", "cum_agg", "mode", "approx_unique", "unique_counts",
+    "cross_join", "semi_anti_join", "list_eval", "list_gather", "list_count", "list_sets",
+    "list_drop_nulls", "propagate_nans", "fmt", "rows", "moment", "rank", "diff", "log",
+    "sign", "trigonometry", "string_pad", "string_reverse", "string_to_integer", "replace",
+    "is_between", "is_first_distinct", "extract_jsonpath", "binary_encoding", "bitwise",
+    "range", "coalesce", "dynamic_group_by", "diagonal_concat", "cse", "product",
+    "interpolate", "repeat_by", "month_start", "month_end", "offset_by", "zip_with", "cov",
+    "top_k", "index_of", "string_normalize", "find_many", "list_to_struct",
+] }
+rust_xlsxwriter = "0.100"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 tempfile = "3"
 # Already built for DuckDB; the platform verifier trusts the Windows store.
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
 windows-numerics = "0.3"
+zstd = "0.13"
 
 [dependencies.windows]
 version = "0.62"

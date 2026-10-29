@@ -1,6 +1,7 @@
 //! Group-by, pivot, and totals over a store, in the store's own engine.
-//! `sql` builds DuckDB SQL.
+//! `sql` builds DuckDB SQL, and `lazy` builds Polars lazy frames.
 
+pub mod lazy;
 pub mod sql;
 
 use crate::domain::documents::{QueryConfig, SlicerDefinition, ValueFilter};
@@ -96,6 +97,17 @@ pub fn execute_query(
             sql::execute_query(source, config, slicers, filters, clock, limit, result_view, trace)
                 .map(Store::from)
         }
+        Store::Polars(source) => {
+            let result_view = match result_view {
+                Some((store, view)) => Some((
+                    store.as_polars().ok_or("the result is not a Polars store")?,
+                    view,
+                )),
+                None => None,
+            };
+            lazy::execute_query(source, config, slicers, filters, clock, limit, result_view, trace)
+                .map(Store::from)
+        }
     }
 }
 
@@ -109,11 +121,13 @@ pub fn execute_totals(
 ) -> Result<TotalsRow, String> {
     match source {
         Store::DuckDb(source) => sql::execute_totals(source, config, slicers, filters, clock),
+        Store::Polars(source) => lazy::execute_totals(source, config, slicers, filters, clock),
     }
 }
 
 pub fn validate_dimensions(source: &Store, config: &QueryConfig) -> Result<(), String> {
     match source {
         Store::DuckDb(source) => sql::validate_dimensions(source, config),
+        Store::Polars(source) => lazy::validate_dimensions(source, config),
     }
 }

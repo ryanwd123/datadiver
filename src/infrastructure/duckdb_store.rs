@@ -416,6 +416,7 @@ impl DuckDbStore {
                         storage_name: name.clone(),
                         name,
                         sql_type: row.get(1)?,
+                        polars_type: None,
                     })
                 })
                 .map_err(|error| error.to_string())?
@@ -566,6 +567,7 @@ impl DuckDbStore {
                     name,
                     sql_type,
                     storage_name,
+                    polars_type: None,
                 })
             })
             .map_err(|error| error.to_string())?
