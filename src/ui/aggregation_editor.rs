@@ -3,6 +3,7 @@ use crate::domain::aggregation_sql::PIVOT_LIMITATIONS_URL;
 use crate::domain::documents::Aggregation;
 use crate::domain::pivot::editor_expression;
 use crate::infrastructure::duckdb_store::ColumnSchema;
+use crate::infrastructure::store::Engine;
 use crate::infrastructure::sql_execution::AggregateFunction;
 use crate::ui::hit::{Button, Hit};
 use crate::ui::input_with_autocompletion;
@@ -59,8 +60,8 @@ pub struct AggregationPanel {
     schema: Vec<ColumnSchema>,
     configured: Vec<Aggregation>,
     pub(crate) command: Palette,
-    /// Searchable reference of DuckDB's aggregate functions, shown in place of
-    /// the column list.
+    /// Searchable reference of the engine's aggregate functions, shown in
+    /// place of the column list.
     pub(crate) functions: Palette,
     /// `None` while the list loads.
     aggregate_functions: Option<Result<Vec<AggregateFunction>, String>>,
@@ -80,11 +81,13 @@ pub struct AggregationPanel {
     pending_action: Option<PanelAction>,
     pub(crate) error: Option<String>,
     pivot: bool,
+    /// The engine of the source the aggregations run on.
+    engine: Engine,
     events: Vec<AggregationPanelEvent>,
 }
 
 impl AggregationPanel {
-    pub fn new(schema: Vec<ColumnSchema>, configured: Vec<Aggregation>, pivot: bool) -> Self {
+    pub fn new(schema: Vec<ColumnSchema>, configured: Vec<Aggregation>, pivot: bool, engine: Engine) -> Self {
         let sql = input_with_autocompletion::sql_columns(schema.iter().map(|column| column.storage_name.clone()));
         let mut panel = Self {
             id: WidgetId::new(),
@@ -108,6 +111,7 @@ impl AggregationPanel {
             pending_action: None,
             error: None,
             pivot,
+            engine,
             events: Vec::new(),
         };
         panel.command.list.empty_text = "No source columns".into();
@@ -171,7 +175,7 @@ impl AggregationPanel {
         };
         self.selected = Some(index);
         self.custom = false;
-        match editor_expression(&aggregation, &self.schema) {
+        match editor_expression(&aggregation, &self.schema, self.engine) {
             Ok(sql) => self.load_inputs(sql),
             Err(error) => {
                 self.load_inputs(String::new());
@@ -743,32 +747,37 @@ impl AggregationPanel {
         }
         let header = column.next(button_height(font));
         let mut header_row = Row::new(header, 8.0);
-        let limitations = header_row.right(button_width("DuckDB pivot limitations", font));
-        button(
-            canvas,
-            limitations,
-            "DuckDB pivot limitations",
-            font,
-            ButtonStyle::Outline,
-            true,
-            Hit::Button(Button::PanelLimitations),
-        );
-        canvas.text(header_row.rest(), "SQL expression", font, colors::FOREGROUND, Align::Left);
+        let duckdb = self.engine == Engine::DuckDb;
+        if duckdb {
+            let limitations = header_row.right(button_width("DuckDB pivot limitations", font));
+            button(
+                canvas,
+                limitations,
+                "DuckDB pivot limitations",
+                font,
+                ButtonStyle::Outline,
+                true,
+                Hit::Button(Button::PanelLimitations),
+            );
+        }
+        let title = format!("{} SQL expression", self.engine.label());
+        canvas.text(header_row.rest(), &title, font, colors::FOREGROUND, Align::Left);
         canvas.text(
             column.next(line),
-            "Use AS to name a column, or keep DuckDB’s default name.",
+            "Use AS to name a column, or keep the default name.",
             &fonts.small,
             colors::MUTED,
             Align::Left,
         );
         if self.pivot {
-            canvas.text(
-                column.next(line),
-                "DuckDB pivot expression rules apply. FILTER is unsupported.",
-                &fonts.small,
-                colors::MUTED,
-                Align::Left,
-            );
+            // Pivots refuse FILTER in both engines, so a view keeps working
+            // when its file switches to DuckDB.
+            let rule = if duckdb {
+                "DuckDB pivot expression rules apply. FILTER is unsupported."
+            } else {
+                "FILTER is unsupported in pivots, as in DuckDB."
+            };
+            canvas.text(column.next(line), rule, &fonts.small, colors::MUTED, Align::Left);
         }
         let editor = column.next(editor_height);
         let sql_id = self.sql.id;

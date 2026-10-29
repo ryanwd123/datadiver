@@ -8,9 +8,22 @@ use crate::domain::documents::{QueryConfig, SlicerDefinition, ValueFilter};
 use crate::domain::sql::SqlTrace;
 use crate::infrastructure::store::{Store, ViewQuery};
 
-pub use sql::{
-    EvaluationClock, TotalsRow, dimension_editor_expression, editor_expression, is_total_column,
-};
+pub use sql::{EvaluationClock, TotalsRow, dimension_editor_expression, is_total_column};
+use crate::domain::documents::Aggregation;
+use crate::infrastructure::store::{ColumnSchema, Engine};
+
+/// An aggregation as SQL for its editor, in `engine`'s dialect, so a
+/// structured aggregation turned into a custom one runs where it came from.
+pub fn editor_expression(
+    aggregation: &Aggregation,
+    schema: &[ColumnSchema],
+    engine: Engine,
+) -> Result<String, String> {
+    match engine {
+        Engine::DuckDb => sql::editor_expression(aggregation, schema),
+        Engine::Polars => lazy::editor_expression(aggregation, schema),
+    }
+}
 
 pub fn execute(
     source: &Store,

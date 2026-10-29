@@ -114,10 +114,11 @@ impl SqlDiagnostics {
             text.push('\n');
         }
         if !self.displayed.statements.is_empty() {
-            text.push_str("-- SQL producing the displayed result\n");
+            // DuckDB SQL, or the plans of a Polars source.
+            text.push_str("-- Queries producing the displayed result\n");
             text.push_str(&self.displayed.text());
         } else {
-            text.push_str("-- No SQL has been published for this session yet.\n");
+            text.push_str("-- No query has been published for this session yet.\n");
         }
         text
     }
@@ -150,7 +151,7 @@ mod tests {
         diagnostics.finish(failed, Some("missing table".into()));
         let text = diagnostics.text();
         assert!(text.contains("Latest failed attempt"));
-        assert!(text.contains("SQL producing the displayed result"));
+        assert!(text.contains("Queries producing the displayed result"));
         assert!(text.contains(&i128::MAX.to_string()));
         assert!(text.contains("-- Parameter 2: Text(\"winter\\nSELECT 'x'\")"));
         assert!(text.contains("-- Error: second line"));

@@ -1171,3 +1171,60 @@ fn slicer_options_are_kept_per_file_without_reading_it_again() {
     open(&other, FileEntry::Source(path));
     assert!(!other.read(|view| view.file_settings.slicers.cross_filter));
 }
+
+#[test]
+fn the_aggregation_editor_speaks_the_files_engine() {
+    use crate::infrastructure::store::Engine;
+    use crate::ui::dataframe_view::dialogs::Dialog;
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,n\nNorth,1\nSouth,2\n").unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path));
+    let population_deviation = Aggregation {
+        sql: None,
+        source_column: "n".into(),
+        operation: AggregationOp::StandardDeviation,
+        name: None,
+        conditions: Vec::new(),
+        percentile: None,
+        interpolation: None,
+        ddof: Some(0),
+    };
+    viewer.update(|view, _| {
+        view.session.start_query_draft("By region".into()).unwrap();
+        view.session
+            .edit_definition(|definition| {
+                definition.view = ViewKind::Query(QueryConfig {
+                    group_by: vec!["region".into()],
+                    aggregations: vec![population_deviation.clone()],
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+    });
+    let inspect = |viewer: &Viewer| {
+        viewer.update(|view, cx| view.open_aggregation_panel(cx));
+        viewer.run_until_parked();
+        viewer.update(|view, _| {
+            let Some(Dialog::Aggregation(panel)) = &mut view.dialog else {
+                panic!("the aggregation editor is open")
+            };
+            panel.select(0);
+            let functions = panel.functions.list.items().iter().map(|item| item.label.clone()).collect::<Vec<_>>();
+            (functions, panel.sql.text().to_owned())
+        })
+    };
+    let (functions, sql) = inspect(&viewer);
+    assert_eq!(engine(&viewer), Engine::Polars);
+    assert!(functions.iter().any(|name| name.starts_with("total")), "{functions:?}");
+    assert!(!functions.iter().any(|name| name.starts_with("arg_max")), "{functions:?}");
+    // Polars SQL has only the sample statistic, scaled to the population.
+    assert!(sql.contains("stddev_samp") && sql.contains("sqrt"), "{sql}");
+    press_each(&viewer, &["escape"]);
+    viewer.update(|view, cx| view.set_file_engine(Engine::DuckDb, cx));
+    viewer.run_until_parked();
+    let (functions, sql) = inspect(&viewer);
+    assert!(functions.iter().any(|name| name.starts_with("arg_max")), "{functions:?}");
+    assert!(sql.starts_with("stddev_pop"), "{sql}");
+}

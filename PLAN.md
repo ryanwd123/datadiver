@@ -7,10 +7,8 @@ has their write-ups.
 
 The engines, per-file choice, and Settings list are done (see git history). Still open:
 
-- **Engine-aware editors.** The aggregation editor's Functions list, SQL completion, and the
-  generated-SQL preview (`pivot::editor_expression`) all describe DuckDB, even for a Polars file.
-  Polars has its own (`pivot::lazy::editor_expression`); pick by `FrameSnapshot::engine`, and list
-  the functions Polars SQL supports.
+- **Scalar function reference.** The aggregation editor lists each engine's aggregates, but
+  custom group-by and pivot expressions have no function list for either engine.
 - **Saved selections across engines.** Slicer keys for intervals, times, and time zones are
   spelled differently by each engine (`domain::slicers::scalar_key` vs
   `polars::expressions::scalar_key`), so a view saved under one engine can lose those selections

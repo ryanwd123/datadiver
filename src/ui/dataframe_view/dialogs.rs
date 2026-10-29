@@ -421,12 +421,17 @@ impl DataFrameView {
     pub(crate) fn open_aggregation_panel(&mut self, cx: &mut Cx<Self>) {
         let config = self.session.query_config();
         let schema = self.session.source.schema.to_vec();
-        let panel = AggregationPanel::new(schema, config.aggregations, !config.pivot_by.is_empty());
+        let engine = self.session.source.engine;
+        let panel = AggregationPanel::new(schema, config.aggregations, !config.pivot_by.is_empty(), engine);
         let id = panel.id;
         let mut focus = None;
         panel.focus_available(&mut focus);
         self.open_dialog(Dialog::Aggregation(panel), focus, cx);
-        cx.spawn(crate::infrastructure::sql_execution::aggregate_functions, move |view: &mut Self, cx, result| {
+        let functions = move || match engine {
+            crate::infrastructure::store::Engine::DuckDb => crate::infrastructure::sql_execution::aggregate_functions(),
+            crate::infrastructure::store::Engine::Polars => Ok(crate::infrastructure::polars::functions::aggregate_functions()),
+        };
+        cx.spawn(functions, move |view: &mut Self, cx, result| {
             if let Some(Dialog::Aggregation(panel)) = &mut view.dialog
                 && panel.id == id
             {

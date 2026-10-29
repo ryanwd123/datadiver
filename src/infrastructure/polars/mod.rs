@@ -3,5 +3,6 @@
 
 pub mod export;
 pub mod expressions;
+pub mod functions;
 pub mod readers;
 pub mod store;

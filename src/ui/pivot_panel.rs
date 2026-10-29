@@ -576,7 +576,7 @@ impl PivotPanel {
         canvas.text(column.next(line), "SQL expression", font, colors::FOREGROUND, Align::Left);
         canvas.text(
             column.next(line),
-            "Use AS to name a column, or keep DuckDB’s default name.",
+            "Use AS to name a column, or keep the default name.",
             &fonts.small,
             colors::MUTED,
             Align::Left,
