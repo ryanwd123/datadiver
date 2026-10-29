@@ -15,6 +15,65 @@ pub struct PathPrompt<'a> {
     pub title: &'a str,
 }
 
+/// Font files installed for this user only, which DirectWrite's system
+/// collection does not list. They are registered under HKCU, by full path or
+/// by a file name in the per-user fonts folder.
+pub fn user_font_files() -> Vec<PathBuf> {
+    use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::*;
+    use windows::core::{PWSTR, w};
+    let mut files = Vec::new();
+    let folder = std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join(r"Microsoft\Windows\Fonts"));
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows NT\CurrentVersion\Fonts"),
+            None,
+            KEY_READ,
+            &mut key,
+        ) != ERROR_SUCCESS
+        {
+            return files;
+        }
+        let mut name = [0u16; 512];
+        let mut data = [0u16; 1024];
+        for index in 0.. {
+            let mut name_len = name.len() as u32;
+            let mut data_len = (data.len() * 2) as u32;
+            let mut kind = 0u32;
+            let result = RegEnumValueW(
+                key,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(&mut kind),
+                Some(data.as_mut_ptr() as *mut u8),
+                Some(&mut data_len),
+            );
+            if result == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+            if result != ERROR_SUCCESS || REG_VALUE_TYPE(kind) != REG_SZ {
+                continue;
+            }
+            let chars = &data[..data_len as usize / 2];
+            let end = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
+            let path = PathBuf::from(String::from_utf16_lossy(&chars[..end]));
+            let path = match &folder {
+                Some(folder) if path.is_relative() => folder.join(path),
+                _ => path,
+            };
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+        let _ = RegCloseKey(key);
+    }
+    files
+}
+
 #[cfg(test)]
 pub use fake::*;
 #[cfg(not(test))]

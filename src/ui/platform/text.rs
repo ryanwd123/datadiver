@@ -283,6 +283,9 @@ pub struct TextSystem {
     cache_len: usize,
     frame: u64,
     families: Option<Vec<String>>,
+    /// The system fonts plus those installed for this user only, which the
+    /// system collection leaves out. Built the first time it is needed.
+    all_fonts: Option<Option<IDWriteFontCollection>>,
 }
 
 thread_local! {
@@ -342,6 +345,7 @@ impl TextSystem {
             cache_len: 0,
             frame: 0,
             families: None,
+            all_fonts: None,
         })
     }
 
@@ -365,11 +369,12 @@ impl TextSystem {
             DWRITE_FONT_STYLE_NORMAL
         };
         let family = HSTRING::from(&*font.family);
+        let collection = self.collection_for(&family);
         let format = unsafe {
             self.factory
                 .CreateTextFormat(
                     &family,
-                    None,
+                    collection.as_ref(),
                     weight,
                     style,
                     DWRITE_FONT_STRETCH_NORMAL,
@@ -506,19 +511,36 @@ impl TextSystem {
         }
     }
 
+    fn system_fonts(&self) -> Option<IDWriteFontCollection> {
+        let mut collection = None;
+        unsafe { self.factory.GetSystemFontCollection(&mut collection, false).ok()? };
+        collection
+    }
+
+    fn all_fonts(&mut self) -> Option<IDWriteFontCollection> {
+        if self.all_fonts.is_none() {
+            self.all_fonts = Some(merged_fonts(&self.factory));
+        }
+        self.all_fonts.clone().flatten()
+    }
+
+    /// The collection to find `family` in: the system one (`None`) unless only
+    /// the per-user fonts have it, so those are not loaded without need.
+    fn collection_for(&mut self, family: &HSTRING) -> Option<IDWriteFontCollection> {
+        if self.system_fonts().is_some_and(|fonts| has_family(&fonts, family)) {
+            None
+        } else {
+            self.all_fonts()
+        }
+    }
+
     pub fn font_families(&mut self) -> Vec<String> {
         if let Some(families) = &self.families {
             return families.clone();
         }
         let mut names = Vec::new();
         unsafe {
-            let mut collection = None;
-            if self
-                .factory
-                .GetSystemFontCollection(&mut collection, false)
-                .is_ok()
-                && let Some(collection) = collection
-            {
+            if let Some(collection) = self.all_fonts().or_else(|| self.system_fonts()) {
                 for index in 0..collection.GetFontFamilyCount() {
                     let Ok(family) = collection.GetFontFamily(index) else {
                         continue;
@@ -546,5 +568,50 @@ impl TextSystem {
         names.dedup();
         self.families = Some(names.clone());
         names
+    }
+}
+
+fn has_family(collection: &IDWriteFontCollection, family: &HSTRING) -> bool {
+    let mut index = 0;
+    let mut exists = windows::core::BOOL::default();
+    unsafe { collection.FindFamilyName(family, &mut index, &mut exists) }.is_ok() && exists.as_bool()
+}
+
+/// The system font set plus the fonts installed for this user only, or
+/// `None` when there are no per-user fonts.
+fn merged_fonts(factory: &IDWriteFactory) -> Option<IDWriteFontCollection> {
+    use windows::core::Interface;
+    let files = super::system::user_font_files();
+    if files.is_empty() {
+        return None;
+    }
+    unsafe {
+        let factory: IDWriteFactory6 = factory.cast().ok()?;
+        let builder = factory.CreateFontSetBuilder().ok()?;
+        builder.AddFontSet(&factory.GetSystemFontSet(false).ok()?).ok()?;
+        for path in files {
+            let _ = builder.AddFontFile(&HSTRING::from(path.as_os_str()));
+        }
+        let set = builder.CreateFontSet().ok()?;
+        IDWriteFactory3::CreateFontCollectionFromFontSet(&factory, &set)
+            .ok()?
+            .cast()
+            .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_user_fonts_join_the_system_fonts() {
+        if super::super::system::user_font_files().is_empty() {
+            return;
+        }
+        let mut system = TextSystem::new().unwrap();
+        let installed = unsafe { system.system_fonts().unwrap().GetFontFamilyCount() };
+        let merged = system.all_fonts().expect("per-user fonts are merged");
+        assert!(unsafe { merged.GetFontFamilyCount() } > installed);
     }
 }
