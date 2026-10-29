@@ -461,6 +461,10 @@ pub fn display_name(sql: &str) -> String {
             }
         }
     }
+    // DuckDB's name for it, so a view's columns are the same in both engines.
+    if output.eq_ignore_ascii_case("count(*)") {
+        return "count_star()".into();
+    }
     output
 }
 
@@ -693,7 +697,7 @@ mod tests {
     #[test]
     fn display_names_drop_quotes_comments_and_spacing() {
         assert_eq!(display_name("sum(\"Score\")"), "sum(Score)");
-        assert_eq!(display_name("count(*) -- rows\n"), "count(*)");
+        assert_eq!(display_name("count(*) -- rows\n"), "count_star()");
         assert_eq!(
             display_name("sum(x)  FILTER (WHERE \"a b\" = 'it''s')"),
             "sum(x) FILTER (WHERE a b = 'it''s')"

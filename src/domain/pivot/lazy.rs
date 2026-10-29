@@ -1359,17 +1359,17 @@ mod tests {
     fn headers_use_aliases_or_the_expression_text() {
         let source = athletes();
         for (expressions, group_headers, pivot_headers) in [
-            (vec!["count(*)"], vec!["Year", "count(*)"], vec!["Year", "F", "M"]),
+            (vec!["count(*)"], vec!["Year", "count_star()"], vec!["Year", "F", "M"]),
             (vec!["count(*) AS Rows"], vec!["Year", "Rows"], vec!["Year", "F_Rows", "M_Rows"]),
             (
                 vec!["sum(\"Score\") AS \"Total score\"", "count(*)"],
-                vec!["Year", "Total score", "count(*)"],
-                vec!["Year", "F_Total score", "F_count(*)", "M_Total score", "M_count(*)"],
+                vec!["Year", "Total score", "count_star()"],
+                vec!["Year", "F_Total score", "F_count_star()", "M_Total score", "M_count_star()"],
             ),
             (
                 vec!["sum(\"Score\") total", "count(*) -- rows\n"],
-                vec!["Year", "total", "count(*)"],
-                vec!["Year", "F_total", "F_count(*)", "M_total", "M_count(*)"],
+                vec!["Year", "total", "count_star()"],
+                vec!["Year", "F_total", "F_count_star()", "M_total", "M_count_star()"],
             ),
         ] {
             for (pivot, expected) in [(false, group_headers), (true, pivot_headers)] {
