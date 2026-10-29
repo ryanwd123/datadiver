@@ -3,6 +3,53 @@
 Status: `[ ]` not started, `[~]` in progress, `[x]` done. Finished items are removed; git history
 has their write-ups.
 
+## Small changes
+- Add an options/settings menu, claude to recommend items to list in settings
+- Command pallete show the shortcut keys on the right like this image
+![pasted-2026-10-18-055647.png](data/pasted-2026-10-18-055647.png)
+
+- Font picker missing user fonts, see fix in penmark app:
+    - C:\Users\ryanw\rust_stuff\win_app\src\platform.rs  user_font_files()
+    - C:\Users\ryanw\rust_stuff\win_app\src\render.rs
+- For slicer cross filtering sort the slicer to list the availible items first (optional)
+- add new row at top of UI
+    - move filename, saved status, modified top top row
+    - add check boxes for some per file settings (shown when applicable)
+        - auto save 
+        - preserve order
+        - query engine
+        - Claude to suggest other options
+- add slicer options at top of slicer panel (remember per file)
+        - cross filtering on/off
+        - sort availible - new feature that will put availible items first, and gray'd out items below
+- add a command: reset database connection
+    - equivelent to
+        - db.close()
+        - db = duckdb.connect(file)
+        - db.execute(startup.sql)
+- add comand "new sql query"
+
+
+## Two query engines
+Still thinking about if I really want to do this...
+- On my test of a 1M row parquet polars reads into memory in 28ms, duckdb reads into tempory table 1.2sec - 1.6sec.
+- I don't like the caching of files into the profile database
+- I still want to keep duckdb to be able to work with duckdb databases
+New design
+ - use both polars and duckdb as query engines
+ - per file option to choose query engine
+ - set default query engine in settings
+ - remove concept of caching files into duckdb database
+ - keep profile database, rename startup.sql to duckdb_startup.sql
+ - 
+
+
+
+
+## Improve working with bigger data sources
+- It takes to long to bring up the slicer list on bigger data
+- make a big parquet file a duckdb table to expierement with (300M lines, 100 cols)
+- remove some calculated values from info panel?
 ## Tier 2: SQL editor
 
 - [ ] **7. Better SQL completion.** Today it completes only tables after FROM/JOIN/PIVOT and columns
