@@ -6,7 +6,7 @@ use crate::ui::hit::{Button, Splitter};
 use crate::ui::platform::{Align, Canvas, Color, Cursor, Rect, rect, text};
 use crate::ui::space_menu::{SpaceMenu, paint_action_menu};
 use crate::ui::status;
-use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors};
+use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, checkbox, colors};
 
 const LIMIT_WARNING: Color = Color::rgb(0xff0000);
 
@@ -36,9 +36,11 @@ impl DataFrameView {
         let bounds = canvas.bounds();
         let row_count = self.session.result.row_count();
         let limit_reached = self.limit_reached();
+        let file_row = rect(bounds.x, bounds.y, bounds.w, button_height(font) + 8.0);
+        self.paint_file_row(canvas, file_row);
         // Header.
         let input_height = Editor::line_box_height(font);
-        let header = rect(bounds.x, bounds.y, bounds.w, input_height + 8.0);
+        let header = rect(bounds.x, file_row.bottom(), bounds.w, input_height + 8.0);
         let mut items = Row::new(header.inset_xy(12.0, 4.0), 8.0);
         let search_width = 320.0_f32.min((items.rest().w * 0.4).max(128.0));
         let search = items.left(search_width);
@@ -71,32 +73,6 @@ impl DataFrameView {
             let r = items.left(text::measure(label, font).0 + 12.0);
             canvas.text(r.offset(8.0, 0.0), label, font, colors::FOREGROUND, Align::Left);
         }
-        let title = self
-            .session
-            .working
-            .as_ref()
-            .map(|view| view.name.clone())
-            .or_else(|| {
-                self.session.source_path.as_deref().map(|path| {
-                    PathBuf::from(path)
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.into())
-                })
-            })
-            .unwrap_or_else(|| "DataDiver".into());
-        if bounds.w >= 1000.0
-            && let Some(modified) = &self.source_modified
-        {
-            let r = items.right(text::measure(modified, font).0 + 4.0);
-            canvas.text(r, modified, font, colors::FOREGROUND, Align::Left);
-        }
-        if self.session.dirty {
-            let r = items.right(text::measure("● Unsaved", font).0 + 4.0);
-            canvas.text(r, "● Unsaved", font, colors::WARNING, Align::Left);
-        }
-        let rest = items.rest();
-        canvas.text(rest, &title, font, colors::FOREGROUND, Align::Right);
         let mut top = header.bottom();
         // Errors.
         for error in [&self.error, &self.table_preferences_error, &self.limit_error].into_iter().flatten() {
@@ -174,6 +150,74 @@ impl DataFrameView {
         self.paint_dialog(canvas, cx);
         // Painting the grid can measure column widths; record them now.
         self.drain_grid_events(cx);
+    }
+
+    /// The top row: what is open, whether it is saved, when its file
+    /// changed, and the settings that apply to it.
+    fn paint_file_row(&mut self, canvas: &mut Canvas<Hit>, r: Rect) {
+        let fonts = self.fonts.clone();
+        let font = &fonts.ui;
+        canvas.fill(rect(r.x, r.bottom() - 1.0, r.w, 1.0), colors::BORDER);
+        let mut items = Row::new(r.inset_xy(12.0, 4.0), 12.0);
+        let title = self
+            .session
+            .working
+            .as_ref()
+            .map(|view| view.name.clone())
+            .or_else(|| self.session.source_path.as_deref().map(|path| source_file_name(std::path::Path::new(path))))
+            .unwrap_or_else(|| "DataDiver".into());
+        // Settings are laid out first, from the right, so the title gives way
+        // when the window is narrow.
+        let check_width = |label: &str| text::measure(label, font).0 + 26.0;
+        if let Some(panel) = &self.sql_panel
+            && self.session.is_sql()
+        {
+            // The startup script already runs whenever the database opens.
+            if !panel.startup_script {
+                let auto_run = items.right(check_width("Auto-run"));
+                checkbox(canvas, auto_run, "Auto-run", panel.auto_run, font, Hit::Button(Button::SqlAutoRun));
+                canvas.hit_with(auto_run, Hit::Button(Button::SqlAutoRun), Cursor::Arrow, Some("Run the whole script each time this view opens"));
+            }
+            let auto_save = items.right(check_width("Auto-save"));
+            checkbox(canvas, auto_save, "Auto-save", panel.auto_save, font, Hit::Button(Button::SqlAutoSave));
+            canvas.hit_with(auto_save, Hit::Button(Button::SqlAutoSave), Cursor::Arrow, Some("Save SQL text after 2 seconds without typing"));
+        } else if self.settings_file().is_some() {
+            let engine = self.session.source.engine;
+            if engine == crate::infrastructure::store::Engine::DuckDb {
+                let preserve = items.right(check_width("Preserve order"));
+                checkbox(canvas, preserve, "Preserve order", self.file_settings.preserve_order, font, Hit::Button(Button::PreserveOrder));
+                canvas.hit_with(
+                    preserve,
+                    Hit::Button(Button::PreserveOrder),
+                    Cursor::Arrow,
+                    Some("Keep rows in file order when DuckDB reads the file; off reads large files faster"),
+                );
+            }
+            let label = format!("{} \u{25be}", engine.label());
+            let width = button_width(&label, font);
+            let slot = items.right(width);
+            let engine_button = rect(slot.x, r.y + (r.h - button_height(font)) / 2.0, width, button_height(font));
+            button(canvas, engine_button, &label, font, ButtonStyle::Outline, true, Hit::Button(Button::QueryEngine));
+            canvas.hit_with(engine_button, Hit::Button(Button::QueryEngine), Cursor::Arrow, Some("The query engine that reads this file"));
+            let caption = items.right(text::measure("Engine", font).0 + 2.0);
+            canvas.text(caption, "Engine", font, colors::MUTED, Align::Left);
+        }
+        let bold = font.semibold();
+        let title_width = (text::measure(&title, &bold).0 + 4.0).min(items.rest().w);
+        canvas.text(items.left(title_width), &title, &bold, colors::FOREGROUND, Align::Left);
+        if self.session.dirty {
+            let width = text::measure("● Unsaved", font).0 + 4.0;
+            if items.rest().w >= width {
+                canvas.text(items.left(width), "● Unsaved", font, colors::WARNING, Align::Left);
+            }
+        }
+        if let Some(modified) = &self.source_modified {
+            let label = format!("Modified {modified}");
+            let width = text::measure(&label, font).0 + 4.0;
+            if items.rest().w >= width {
+                canvas.text(items.left(width), &label, font, colors::MUTED, Align::Left);
+            }
+        }
     }
 
     /// Whether the shown query stopped at the row limit. It is judged by the

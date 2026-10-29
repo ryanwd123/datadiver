@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::table_preferences::TablePreferencesWriter;
+use crate::domain::table_preferences::FileSettings;
 use crate::infrastructure::json_store::ViewRepository;
 use crate::infrastructure::source_database::LoadMode;
 use crate::infrastructure::sources::{ReadOptions, Sources};
@@ -23,6 +24,15 @@ pub fn read_options(
     table_writer: &TablePreferencesWriter,
     path: &Path,
 ) -> ReadOptions {
+    file_read(repository, table_writer, path).0
+}
+
+/// Like [`read_options`], with the file's own settings they come from.
+pub fn file_read(
+    repository: &ViewRepository,
+    table_writer: &TablePreferencesWriter,
+    path: &Path,
+) -> (ReadOptions, FileSettings) {
     let default_engine = repository
         .load_settings()
         .map(|settings| settings.default_engine)
@@ -31,10 +41,11 @@ pub fn read_options(
         .load(path)
         .map(|preferences| preferences.file)
         .unwrap_or_default();
-    ReadOptions {
+    let options = ReadOptions {
         engine: file.engine_or(default_engine),
         preserve_order: file.preserve_order,
-    }
+    };
+    (options, file)
 }
 
 #[cfg(test)]

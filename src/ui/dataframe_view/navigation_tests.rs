@@ -1068,3 +1068,80 @@ fn source_checks_skip_unchanged_files_but_still_see_edits() {
     assert_eq!(rows(), 3);
     assert!(viewer.read(|view| std::sync::Arc::ptr_eq(&view.session.source.store, &store)));
 }
+
+fn engine(viewer: &Viewer) -> crate::infrastructure::store::Engine {
+    viewer.read(|view| view.session.source.store.lock().unwrap().engine())
+}
+
+#[test]
+fn the_engine_button_switches_a_file_between_engines_and_keeps_the_view() {
+    use crate::infrastructure::store::Engine;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,n\nNorth,1\nSouth,2\nNorth,3\n").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert_eq!(engine(&viewer), Engine::Polars);
+    viewer.update(|view, cx| {
+        view.search_input.set_text("north");
+        view.schedule_search("north".into(), cx);
+    });
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
+    // The top row's engine button lists both engines; pick DuckDB.
+    viewer.render();
+    viewer.click(|hit| *hit == Hit::Button(Button::QueryEngine));
+    viewer.run_until_parked();
+    assert!(viewer.has_dialog());
+    press_each(&viewer, &["down", "enter"]);
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.dialog.is_none());
+        assert_eq!(view.session.search_text, "north");
+        assert_eq!(view.session.result.row_count(), 2);
+    });
+    assert_eq!(engine(&viewer), Engine::DuckDb);
+    // The choice is the file's, so opening it again keeps DuckDB.
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    let preferences = repository.load_table_preferences(&path).unwrap();
+    assert_eq!(preferences.file.engine, Some(Engine::DuckDb));
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert_eq!(engine(&viewer), Engine::DuckDb);
+    // Preserve order shows for DuckDB and reads the file again.
+    viewer.render();
+    viewer.click(|hit| *hit == Hit::Button(Button::PreserveOrder));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(!view.file_settings.preserve_order);
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    viewer.update(|view, cx| view.dispatch_command(CommandId::QueryEngine, cx));
+    press_each(&viewer, &["enter"]);
+    viewer.run_until_parked();
+    assert_eq!(engine(&viewer), Engine::Polars);
+    // Preserve order does not apply to Polars.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::TogglePreserveOrder, cx));
+    assert!(viewer.read(|view| view.copy_status.as_deref().unwrap().contains("DuckDB")));
+}
+
+#[test]
+fn settings_switch_the_default_engine_for_files_without_their_own() {
+    use crate::infrastructure::store::Engine;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "n\n1\n").unwrap();
+    let viewer = viewer(repository.clone());
+    press_each(&viewer, &["ctrl-,"]);
+    assert!(viewer.has_dialog());
+    // The first setting is the default engine; Enter switches it in place.
+    press_each(&viewer, &["enter"]);
+    assert!(viewer.has_dialog());
+    assert_eq!(repository.load_settings().unwrap().default_engine, Engine::DuckDb);
+    press_each(&viewer, &["escape"]);
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert_eq!(engine(&viewer), Engine::DuckDb);
+}

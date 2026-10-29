@@ -10,7 +10,7 @@ use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::KeyEvent;
 use crate::ui::platform::{Align, Canvas, Color, Font, Point, Rect, TextOptions, point, rect, text};
 use crate::ui::widgets::editor::Editor;
-use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, checkbox, colors, scroll};
+use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors, scroll};
 
 pub enum SqlPanelEvent {
     Changed(String),
@@ -695,16 +695,8 @@ impl SqlPanel {
             button(canvas, save, "Save", font, ButtonStyle::Outline, true, Hit::Button(Button::SqlSave));
             canvas.hit_with(save, Hit::Button(Button::SqlSave), crate::ui::platform::Cursor::Arrow, Some("Save duckdb_startup.sql for the next database startup"));
         }
-        let auto_save_width = text::measure("Auto-save", font).0 + 26.0;
-        let auto_save = items.left(auto_save_width);
-        checkbox(canvas, auto_save, "Auto-save", self.auto_save, font, Hit::Button(Button::SqlAutoSave));
-        canvas.hit_with(auto_save, Hit::Button(Button::SqlAutoSave), crate::ui::platform::Cursor::Arrow, Some("Save SQL text after 2 seconds without typing"));
-        // The startup script already runs whenever the database opens.
-        if !self.startup_script {
-            let auto_run = items.left(text::measure("Auto-run", font).0 + 26.0);
-            checkbox(canvas, auto_run, "Auto-run", self.auto_run, font, Hit::Button(Button::SqlAutoRun));
-            canvas.hit_with(auto_run, Hit::Button(Button::SqlAutoRun), crate::ui::platform::Cursor::Arrow, Some("Run the whole script each time this view opens"));
-        }
+        // Auto-save and Auto-run are in the window's top row, with the
+        // document's other settings.
         for (label, hit, enabled) in [
             ("Run · Ctrl+Enter", Button::SqlRun, !self.busy),
             ("Run All", Button::SqlRunAll, !self.busy),

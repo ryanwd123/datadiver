@@ -47,6 +47,7 @@ mod action_tests;
 mod commands;
 mod database_tree;
 mod dialogs;
+mod file_settings;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
@@ -199,6 +200,9 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::Forward,
     CommandId::SqlEditor,
     CommandId::NewSqlQuery,
+    CommandId::Settings,
+    CommandId::QueryEngine,
+    CommandId::TogglePreserveOrder,
     CommandId::StartupSql,
     CommandId::ResetDatabase,
     CommandId::Files,
@@ -479,6 +483,8 @@ pub struct DataFrameView {
     pub(crate) repository: ViewRepository,
     pub(crate) database: std::sync::Arc<SourceDatabase>,
     pub(crate) sources: std::sync::Arc<crate::infrastructure::sources::Sources>,
+    /// The open file's own settings, as last read with it.
+    pub(crate) file_settings: crate::domain::table_preferences::FileSettings,
     history_writer: std::sync::Arc<HistoryWriter>,
     table_writer: std::sync::Arc<TablePreferencesWriter>,
     pub(crate) source_modified: Option<String>,
@@ -724,6 +730,7 @@ impl DataFrameView {
             repository,
             database,
             sources,
+            file_settings: Default::default(),
             history_writer,
             table_writer,
             source_modified,

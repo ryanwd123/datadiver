@@ -60,6 +60,9 @@ pub enum Button {
     EditViewActions,
     CacheDropBrowse,
     CacheDropCancel,
+    // The file row.
+    QueryEngine,
+    PreserveOrder,
     // Dialog chrome.
     DialogClose,
     DialogOk,

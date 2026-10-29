@@ -140,6 +140,7 @@ pub enum ActionId {
     SqlEditor,
     Files,
     Commands,
+    Settings,
     Keymap,
     Theme,
     Fonts,
@@ -418,6 +419,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::Application,
         command: Some(CommandId::Commands),
         default_bindings: &["ctrl-shift-p"],
+    },
+    ActionSpec {
+        id: ActionId::Settings,
+        category: ActionCategory::Application,
+        name: "Settings",
+        context: KeyContext::Application,
+        command: Some(CommandId::Settings),
+        default_bindings: &["ctrl-,"],
     },
     ActionSpec {
         id: ActionId::Keymap,

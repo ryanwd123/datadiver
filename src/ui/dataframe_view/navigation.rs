@@ -3,7 +3,7 @@
 use super::*;
 use crate::application::state::ApplicationState;
 use crate::infrastructure::json_store::FavoriteTarget;
-use crate::infrastructure::readers::{read_options, read_source};
+use crate::infrastructure::readers::{file_read, read_source};
 use crate::infrastructure::source_database::LoadMode;
 use crate::infrastructure::sources::SourceLoad;
 use crate::ui::platform::system;
@@ -211,17 +211,19 @@ impl DataFrameView {
         cx.spawn(
             move || {
                 let _span = crate::infrastructure::performance::Span::new("source_check");
+                let mut file = Default::default();
                 let source = if let Some(view) = &database_view {
                     FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
                 } else {
-                    let options = read_options(&repository, &table_writer, &read_path);
+                    let options;
+                    (options, file) = file_read(&repository, &table_writer, &read_path);
                     match sources.load_reusing(&read_path, options, LoadMode::Check, existing.source_identity.as_ref())? {
                         SourceLoad::Reused => existing,
                         SourceLoad::Loaded(store) => FrameSnapshot::new(*store, existing.source_revision + 1),
                     }
                 };
                 let preferences = direct_destination.then(|| table_writer.load(&read_path));
-                Ok::<_, String>((source, source_modified(Some(&read_path.to_string_lossy())), preferences))
+                Ok::<_, String>((source, source_modified(Some(&read_path.to_string_lossy())), preferences, file))
             },
             move |view: &mut Self, cx, read| {
                 if !view.session.accepts(token) {
@@ -230,7 +232,8 @@ impl DataFrameView {
                 view.loading = false;
                 let _transition = crate::infrastructure::performance::Span::new("session_transition");
                 match read {
-                    Ok((source, modified, preferences)) => {
+                    Ok((source, modified, preferences, file)) => {
+                        view.file_settings = file;
                         let previous_preferences_error = view.table_preferences_error.clone();
                         view.table_preferences_error = None;
                         let previous = view.session.clone();
@@ -422,10 +425,12 @@ impl DataFrameView {
         cx.spawn(
             move || match target {
                 SourceTarget::File(path) => {
-                    let options = read_options(&repository, &table_writer, &path);
-                    read_source(&path, &sources, options, mode)
+                    let (options, file) = file_read(&repository, &table_writer, &path);
+                    read_source(&path, &sources, options, mode).map(|store| (store, file))
                 }
-                SourceTarget::DatabaseView(view) => database.load_view(&view).map(Into::into),
+                SourceTarget::DatabaseView(view) => database
+                    .load_view(&view)
+                    .map(|store| (store.into(), Default::default())),
             },
             move |view: &mut Self, cx, result| {
                 if !view.session.accepts(token) {
@@ -433,7 +438,8 @@ impl DataFrameView {
                 }
                 view.loading = false;
                 match result {
-                    Ok(frame) => {
+                    Ok((frame, file)) => {
+                        view.file_settings = file;
                         let source = FrameSnapshot::new(frame, view.session.source.source_revision + 1);
                         view.replace_dataframe_with_reset(source, reset, cx);
                         if let Err(error) = view.record_opened() {

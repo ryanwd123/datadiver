@@ -22,6 +22,8 @@ pub struct FrameSnapshot {
     pub dtypes: Arc<[String]>,
     pub dtype_labels: Option<Arc<[String]>>,
     pub(crate) source_identity: Option<crate::infrastructure::sources::SourceIdentity>,
+    /// The engine holding the rows, read once like the row count.
+    pub engine: crate::infrastructure::store::Engine,
     /// Read once, so the UI never waits on the store lock that a long query on
     /// a worker holds.
     row_count: usize,
@@ -32,6 +34,7 @@ impl FrameSnapshot {
         let store = store.into();
         let (columns, dtypes) = schema_snapshot(store.schema());
         let source_identity = store.source_identity();
+        let engine = store.engine();
         let database_view_revision = store.database_view_revision();
         let row_count = store.row_count();
         Self {
@@ -43,6 +46,7 @@ impl FrameSnapshot {
             dtypes,
             dtype_labels: None,
             source_identity,
+            engine,
             row_count,
         }
     }

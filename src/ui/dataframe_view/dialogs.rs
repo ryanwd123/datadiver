@@ -56,6 +56,8 @@ pub enum PaletteKind {
     ColumnJump,
     ColumnChooser(Vec<String>),
     Fonts(FontTarget, Vec<Option<String>>),
+    Engines,
+    Settings,
 }
 
 pub struct PaletteDialog {
@@ -458,7 +460,7 @@ impl DataFrameView {
         }
     }
 
-    fn palette(&mut self, title: &str, placeholder: &str, items: Vec<Item>, kind: PaletteKind, cx: &mut Cx<Self>) {
+    pub(crate) fn palette(&mut self, title: &str, placeholder: &str, items: Vec<Item>, kind: PaletteKind, cx: &mut Cx<Self>) {
         let mut palette = Palette::new(placeholder);
         palette.set_items(items);
         let id = palette.query.id;
@@ -1043,6 +1045,13 @@ impl DataFrameView {
                     dialog.palette.list.select_item(selected);
                 }
             }
+            PaletteKind::Engines => {
+                if let Some(engine) = crate::infrastructure::store::Engine::ALL.get(index).copied() {
+                    self.close_dialog(cx);
+                    self.set_file_engine(engine, cx);
+                }
+            }
+            PaletteKind::Settings => self.confirm_setting(index, cx),
             PaletteKind::Fonts(target, fonts) => {
                 if let Some(family) = fonts.get(index).cloned() {
                     let target = *target;
