@@ -1,8 +1,10 @@
 //! Column names offered under a single-line input while a `"` is open, and
 //! table names after `@` in the Ask AI prompt.
 
-use crate::domain::query::{ColumnNameQuery, column_name_query, rank_columns, sql_column_name_query};
-use crate::infrastructure::duckdb_store::quote_identifier;
+use diver_sql::Dialect;
+
+use crate::domain::expression_completion::{self, ExpressionCatalog};
+use crate::domain::query::{ColumnNameQuery, column_name_query, rank_columns};
 use crate::ui::hit::Hit;
 use crate::ui::platform::keys::KeyEvent;
 use crate::ui::platform::{Align, Canvas, Font, Rect, rect, text};
@@ -17,7 +19,8 @@ pub enum ColumnSyntax {
     /// The search language: a `"` at a word start, after `-`, or after a
     /// comparison operator opens a name, inserted as `"Column Name"`.
     Search,
-    /// SQL: any `"` outside a string opens an identifier, inserted escaped.
+    /// A SQL expression: a `"` where `diver_sql` expects a column opens it,
+    /// inserted escaped.
     Sql,
     /// `@` opens a table name for the Ask AI prompt; the candidates are
     /// already SQL names and are inserted as `@name `.
@@ -26,7 +29,8 @@ pub enum ColumnSyntax {
 
 struct OpenList {
     range: std::ops::Range<usize>,
-    items: Vec<String>,
+    /// What each row shows, and what accepting it inserts.
+    items: Vec<(String, String)>,
     selected: usize,
 }
 
@@ -34,6 +38,8 @@ pub struct ColumnCompletion {
     syntax: ColumnSyntax,
     /// Candidate names in preference order, such as shown columns first.
     columns: Vec<String>,
+    /// The SQL dialect of `Sql` inputs.
+    dialect: Dialect,
     open: Option<OpenList>,
 }
 
@@ -42,6 +48,7 @@ impl ColumnCompletion {
         Self {
             syntax,
             columns: Vec::new(),
+            dialect: Dialect::DuckDb,
             open: None,
         }
     }
@@ -50,30 +57,45 @@ impl ColumnCompletion {
         self.columns = columns;
     }
 
+    pub fn set_dialect(&mut self, dialect: Dialect) {
+        self.dialect = dialect;
+    }
+
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
 
     #[cfg(test)]
     pub fn items(&self) -> Option<Vec<String>> {
-        self.open.as_ref().map(|open| open.items.clone())
+        self.open
+            .as_ref()
+            .map(|open| open.items.iter().map(|(label, _)| label.clone()).collect())
     }
 
     fn query(&self, text: &str, cursor: usize) -> Option<ColumnNameQuery> {
         match self.syntax {
             ColumnSyntax::Search => column_name_query(text, cursor),
-            ColumnSyntax::Sql => sql_column_name_query(text, cursor),
             ColumnSyntax::Mention => crate::domain::ai::mention_query(text, cursor),
+            ColumnSyntax::Sql => None,
         }
     }
 
     /// Opens, filters, or closes the list for the input's text and cursor.
     pub fn refresh(&mut self, input: &Editor) {
+        if self.syntax == ColumnSyntax::Sql {
+            return self.refresh_sql(input.text(), input.cursor());
+        }
         self.open = self.query(input.text(), input.cursor()).and_then(|query| {
             let names = self.columns.iter().map(String::as_str).collect::<Vec<_>>();
             let items = rank_columns(&names, &query.typed)
                 .into_iter()
-                .map(str::to_owned)
+                .map(|name| {
+                    let insert = match self.syntax {
+                        ColumnSyntax::Mention => format!("@{name} "),
+                        _ => format!("\"{name}\""),
+                    };
+                    (name.to_owned(), insert)
+                })
                 .collect::<Vec<_>>();
             (!items.is_empty()).then_some(OpenList {
                 range: query.range,
@@ -81,6 +103,21 @@ impl ColumnCompletion {
                 selected: 0,
             })
         });
+    }
+
+    /// A SQL input lists columns only inside a `"`: a bare word's list would
+    /// take the Enter that commits the card.
+    fn refresh_sql(&mut self, text: &str, cursor: usize) {
+        let catalog = ExpressionCatalog::new(self.columns.iter().map(|name| (name.clone(), None)));
+        let items = expression_completion::completions(text, cursor, &catalog, self.dialect);
+        self.open = items
+            .first()
+            .filter(|item| text[item.range.clone()].starts_with('"'))
+            .map(|first| OpenList {
+                range: first.range.clone(),
+                items: items.iter().map(|item| (item.label.clone(), item.insert.clone())).collect(),
+                selected: 0,
+            });
     }
 
     pub fn close(&mut self) -> bool {
@@ -120,15 +157,10 @@ impl ColumnCompletion {
         let Some(open) = self.open.take() else {
             return false;
         };
-        let Some(name) = open.items.get(index.unwrap_or(open.selected)) else {
+        let Some((_, inserted)) = open.items.get(index.unwrap_or(open.selected)) else {
             return false;
         };
-        let inserted = match self.syntax {
-            ColumnSyntax::Search => format!("\"{name}\""),
-            ColumnSyntax::Sql => quote_identifier(name),
-            ColumnSyntax::Mention => format!("@{name} "),
-        };
-        input.replace(open.range.clone(), &inserted);
+        input.replace(open.range.clone(), inserted);
         true
     }
 
@@ -156,7 +188,7 @@ impl ColumnCompletion {
         canvas.fill_rounded(menu, 6.0, colors::POPOVER);
         canvas.stroke_rounded(menu, 6.0, colors::BORDER, 1.0);
         canvas.hit(menu, Hit::Surface);
-        for (offset, name) in open.items.iter().enumerate().skip(first).take(VISIBLE_ITEMS) {
+        for (offset, (name, _)) in open.items.iter().enumerate().skip(first).take(VISIBLE_ITEMS) {
             let row = rect(x + 4.0, y + 4.0 + (offset - first) as f32 * row_height, width - 8.0, row_height);
             if offset == open.selected {
                 canvas.fill_rounded(row, 4.0, colors::SELECTED);

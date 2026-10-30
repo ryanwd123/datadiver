@@ -3017,4 +3017,12 @@ fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
     input("g");
     press(&viewer, "tab");
     assert_eq!(aggregation_sql(&viewer), "sum(\"sales\" + \"region\"");
+    // A typed word lists what fits there: keywords that start an expression too.
+    input(" * CA");
+    assert!(menu().is_some_and(|labels| labels.contains(&"CASE".to_string())), "{:?}", menu());
+    // Columns come first, then the aggregate functions the engine has.
+    input("SE WHEN re");
+    let labels = menu().unwrap();
+    assert_eq!(labels[0], "region");
+    assert!(labels.contains(&"regr_count".to_string()), "{labels:?}");
 }

@@ -527,50 +527,6 @@ pub struct ColumnNameQuery {
     pub range: std::ops::Range<usize>,
 }
 
-/// In SQL every `"` outside a `'…'` string opens an identifier.
-pub fn sql_column_name_query(text: &str, cursor: usize) -> Option<ColumnNameQuery> {
-    let mut cursor = cursor.min(text.len());
-    while !text.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    let before = &text.as_bytes()[..cursor];
-    let mut string = false;
-    let mut identifier = None;
-    let mut index = 0;
-    while index < before.len() {
-        match before[index] {
-            b'\'' if identifier.is_none() => string = !string,
-            b'"' if !string => match identifier {
-                None => identifier = Some(index),
-                // `""` inside a name is an escaped quote.
-                Some(_) if before.get(index + 1) == Some(&b'"') => index += 1,
-                Some(_) => identifier = None,
-            },
-            _ => {}
-        }
-        index += 1;
-    }
-    let quote = identifier?;
-    // A doubled `""` inside the name is an escaped quote, not the end.
-    let mut end = cursor;
-    let rest = &text[cursor..];
-    let mut chars = rest.char_indices().peekable();
-    while let Some((offset, ch)) = chars.next() {
-        if ch == '"' {
-            if chars.peek().is_some_and(|(_, next)| *next == '"') {
-                chars.next();
-                continue;
-            }
-            end = cursor + offset + 1;
-            break;
-        }
-    }
-    Some(ColumnNameQuery {
-        typed: text[quote + 1..cursor].replace("\"\"", "\""),
-        range: quote..end,
-    })
-}
-
 /// Where a `"` starts a column name: at the start of a word, after `-`, or
 /// after a comparison operator (`"a">"b"`).
 pub fn column_name_query(text: &str, cursor: usize) -> Option<ColumnNameQuery> {
@@ -665,21 +621,6 @@ mod tests {
             negated,
             word: word.into(),
         })
-    }
-
-    #[test]
-    fn sql_column_name_queries_open_on_any_quote_outside_strings() {
-        let query = |text: &str| sql_column_name_query(text, text.len());
-        assert_eq!(query("sum(\"Sal").unwrap().typed, "Sal");
-        assert_eq!(query("a+\"").unwrap().range, 2..3);
-        assert_eq!(query("region = '\"North"), None);
-        assert_eq!(query("\"a\" > 1 AND \"b\" = 'x' OR \"c").unwrap().typed, "c");
-        assert_eq!(query("\"done\""), None);
-        assert_eq!(query("\"say \"\"hi").unwrap().typed, "say \"hi");
-        // The cursor inside a closed name replaces it whole, escaped quotes included.
-        let text = "max(\"say \"\"hi\"\"\") ";
-        let inside = sql_column_name_query(text, 6).unwrap();
-        assert_eq!(&text[inside.range], "\"say \"\"hi\"\"\"");
     }
 
     #[test]

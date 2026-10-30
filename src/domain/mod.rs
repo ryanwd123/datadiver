@@ -5,6 +5,7 @@ pub mod cell_detail;
 pub mod documents;
 pub mod drill;
 pub mod export;
+pub mod expression_completion;
 pub mod formatting;
 pub mod heatmap;
 pub mod keystroke;

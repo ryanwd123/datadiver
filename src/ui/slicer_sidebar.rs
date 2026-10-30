@@ -60,6 +60,7 @@ pub struct SlicerSidebar {
     conditions: Vec<ConditionInput>,
     /// Column names offered after `"` in condition and SQL cards.
     columns: Vec<String>,
+    dialect: diver_sql::Dialect,
     /// Each value card's list scroll, by column.
     value_scrolls: HashMap<String, (scroll::Scroll, Rect, f32)>,
     /// Each column of cards' scroll, with its area and content height.
@@ -79,6 +80,14 @@ impl SlicerSidebar {
             condition.completion.set_columns(columns.clone());
         }
         self.columns = columns;
+    }
+
+    /// The SQL dialect SQL cards are written in.
+    pub fn set_dialect(&mut self, dialect: diver_sql::Dialect) {
+        for condition in &mut self.conditions {
+            condition.completion.set_dialect(dialect);
+        }
+        self.dialect = dialect;
     }
 
     /// The column names listed under a card's input, while the list is open.
@@ -137,6 +146,7 @@ impl SlicerSidebar {
                 ColumnSyntax::Search
             });
             completion.set_columns(self.columns.clone());
+            completion.set_dialect(self.dialect);
             self.conditions.push(ConditionInput {
                 column: card.column.clone(),
                 input,

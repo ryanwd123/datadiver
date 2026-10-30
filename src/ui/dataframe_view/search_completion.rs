@@ -26,6 +26,8 @@ impl DataFrameView {
         let columns = self.completion_columns();
         self.search_completion.set_columns(columns.clone());
         self.slicer_sidebar.set_columns(columns);
+        let dialect = crate::domain::expression_completion::dialect(self.session.source.engine);
+        self.slicer_sidebar.set_dialect(dialect);
     }
 
     /// The search text changed by typing: refresh its column list and search.

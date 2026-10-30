@@ -317,7 +317,7 @@ impl DataFrameView {
             PivotFieldKind::PivotBy => (config.pivot_by, config.group_by),
         };
         let schema = self.session.source.schema.to_vec();
-        let panel = PivotPanel::new(schema, configured, kind, blocked);
+        let panel = PivotPanel::new(schema, configured, kind, blocked, self.session.source.engine);
         let mut focus = None;
         panel.focus_available(&mut focus);
         self.open_dialog(Dialog::Pivot(panel), focus, cx);

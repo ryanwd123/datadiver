@@ -1,6 +1,7 @@
 use crate::application::pivot_editor::{AggregationEdit, default_aggregation, operation_label};
 use crate::domain::aggregation_sql::PIVOT_LIMITATIONS_URL;
 use crate::domain::documents::Aggregation;
+use crate::domain::expression_completion::{self, ExpressionCatalog};
 use crate::domain::pivot::editor_expression;
 use crate::infrastructure::duckdb_store::ColumnSchema;
 use crate::infrastructure::store::Engine;
@@ -86,9 +87,25 @@ pub struct AggregationPanel {
     events: Vec<AggregationPanelEvent>,
 }
 
+/// The source's columns and the aggregate functions, for completion.
+fn expression_catalog(schema: &[ColumnSchema], functions: &[AggregateFunction]) -> ExpressionCatalog {
+    let mut catalog = ExpressionCatalog::new(schema.iter().map(|c| (c.storage_name.clone(), Some(c.sql_type.clone()))));
+    catalog.functions = functions
+        .iter()
+        .map(|f| diver_sql::FunctionInfo {
+            name: f.name.clone(),
+            schema: None,
+            kind: diver_sql::FunctionKind::Aggregate,
+            signatures: f.signatures.clone(),
+            description: Some(f.description.clone()).filter(|d| !d.is_empty()),
+        })
+        .collect();
+    catalog
+}
+
 impl AggregationPanel {
     pub fn new(schema: Vec<ColumnSchema>, configured: Vec<Aggregation>, pivot: bool, engine: Engine) -> Self {
-        let sql = input_with_autocompletion::sql_columns(schema.iter().map(|column| column.storage_name.clone()));
+        let sql = input_with_autocompletion::sql_expression(expression_catalog(&schema, &[]), expression_completion::dialect(engine));
         let mut panel = Self {
             id: WidgetId::new(),
             command: Palette::new("Find a column"),
@@ -129,6 +146,12 @@ impl AggregationPanel {
     }
 
     pub fn set_functions(&mut self, functions: Result<Vec<AggregateFunction>, String>) {
+        // The list is DuckDB's, so Polars expressions complete columns only.
+        if let (Ok(list), Engine::DuckDb) = (&functions, self.engine) {
+            let catalog = expression_catalog(&self.schema, list);
+            let dialect = expression_completion::dialect(self.engine);
+            self.sql.set_completer(Some(input_with_autocompletion::expression_completer(catalog, dialect)));
+        }
         self.aggregate_functions = Some(functions);
         self.refresh_functions();
     }

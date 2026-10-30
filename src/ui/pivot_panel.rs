@@ -1,5 +1,6 @@
 use crate::application::pivot_editor::{PivotEdit, PivotFieldKind};
-use crate::domain::documents::Dimension;
+use crate::domain::documents::{Dimension, Engine};
+use crate::domain::expression_completion::{self, ExpressionCatalog};
 use crate::domain::pivot::dimension_editor_expression;
 use crate::infrastructure::duckdb_store::ColumnSchema;
 use crate::ui::hit::{Button, Hit};
@@ -70,8 +71,10 @@ impl PivotPanel {
         configured: Vec<Dimension>,
         kind: PivotFieldKind,
         blocked: Vec<Dimension>,
+        engine: Engine,
     ) -> Self {
-        let sql = input_with_autocompletion::sql_columns(schema.iter().map(|column| column.storage_name.clone()));
+        let catalog = ExpressionCatalog::new(schema.iter().map(|c| (c.storage_name.clone(), Some(c.sql_type.clone()))));
+        let sql = input_with_autocompletion::sql_expression(catalog, expression_completion::dialect(engine));
         let mut panel = Self {
             id: WidgetId::new(),
             schema,

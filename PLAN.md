@@ -47,9 +47,12 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
   authority rather than `duckdb_extract_statements`), hovers, signature help, folding and smart
   select. Statement splitting, path detection and the smaller editors' colors use `diver_sql`
   too; the hand-written tokenizer and completer are gone.
-  - Left: the group-by, pivot, and aggregation editors and the condition and SQL cards still use
-    the old widget's `"` column list (`ui::column_completion`); move them to `Entry::Expression`
-    with the file's dialect (DuckDB or Polars) and `Catalog::implicit_columns`.
+  - The group-by, pivot, and aggregation editors complete through
+    `domain::expression_completion` (`Entry::Expression` in the file's dialect, the frame's
+    columns as `Catalog::implicit_columns`, and DuckDB's aggregates in the aggregation editor);
+    SQL cards use it for their `"` list, and the search language keeps its own.
+  - Left: the expression editors are still the old widget; moving them to the hosted editor
+    would bring colors, problems and signature help there too.
   - Left: columns of files and table functions (`FROM 'x.parquet'`, `read_csv(...)`) need a
     background `DESCRIBE` and a way to reopen the list when it finishes.
   - Left: drop tree-sitter-sequel (about 2.4 MB) once brackets and auto-close contexts come
