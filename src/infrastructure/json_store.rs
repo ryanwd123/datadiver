@@ -453,6 +453,17 @@ impl ViewRepository {
         Ok(history)
     }
 
+    /// The settings and history files and the views folder. Every write to
+    /// them replaces a file, which changes its modified time, so watching
+    /// these times catches new views, renames and watched source changes.
+    pub fn state_paths(&self) -> [PathBuf; 3] {
+        [
+            self.paths.config.join("settings.json"),
+            self.paths.data.join("state.json"),
+            self.paths.data.join("views"),
+        ]
+    }
+
     pub fn save_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
         self.update_history(|history| history.primary_window = Some(geometry.clone()))?;
         Ok(())

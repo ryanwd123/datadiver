@@ -1,26 +1,41 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 const MAX_DEPTH: usize = 8;
 const MAX_FILES: usize = 20_000;
 
 pub fn scan_sources(folders: &[PathBuf]) -> Vec<PathBuf> {
+    scan_sources_stamped(folders).0
+}
+
+/// Scans like [`scan_sources`], also returning each folder it read with the
+/// folder's modified time from just before reading it. Adding, removing or
+/// renaming an entry changes that time, so a later look at these times tells
+/// whether scanning again could find different files.
+pub fn scan_sources_stamped(folders: &[PathBuf]) -> (Vec<PathBuf>, Vec<(PathBuf, Option<SystemTime>)>) {
     let mut files = Vec::new();
+    let mut directories = Vec::new();
     let mut seen = HashSet::new();
     for folder in folders {
         if files.len() >= MAX_FILES {
             break;
         }
         let root = folder.canonicalize().unwrap_or_else(|_| folder.clone());
-        scan_directory(&root, 0, &mut seen, &mut files);
+        scan_directory(&root, 0, &mut seen, &mut files, &mut directories);
     }
     files.sort_by(|left, right| {
         left.to_string_lossy()
             .to_lowercase()
             .cmp(&right.to_string_lossy().to_lowercase())
     });
-    files
+    (files, directories)
+}
+
+/// When `path` was last modified, or `None` when it cannot be read.
+pub fn modified(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
 }
 
 fn scan_directory(
@@ -28,10 +43,13 @@ fn scan_directory(
     depth: usize,
     seen: &mut HashSet<String>,
     files: &mut Vec<PathBuf>,
+    directories: &mut Vec<(PathBuf, Option<SystemTime>)>,
 ) {
     if depth > MAX_DEPTH || files.len() >= MAX_FILES {
         return;
     }
+    // Recorded even when the folder is missing, so creating it shows up.
+    directories.push((directory.to_path_buf(), modified(directory)));
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -50,7 +68,7 @@ fn scan_directory(
             continue;
         }
         if metadata.is_dir() {
-            scan_directory(&path, depth + 1, seen, files);
+            scan_directory(&path, depth + 1, seen, files, directories);
         } else if metadata.is_file() && supported_source(&path) {
             let canonical = path.canonicalize().unwrap_or(path);
             let identity = normalized_identity(&canonical);

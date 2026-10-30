@@ -55,12 +55,14 @@ impl View for DataFrameView {
                 true
             }
             Event::Activated(active) => {
+                self.window_active = *active;
                 if let Some(panel) = &mut self.sql_panel {
                     panel.window_active = *active;
                     cx.notify();
                 }
                 if *active {
                     self.check_source(cx);
+                    self.check_database_tree(cx);
                 }
                 false
             }

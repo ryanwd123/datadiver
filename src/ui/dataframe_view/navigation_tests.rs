@@ -1034,6 +1034,56 @@ fn database_tree_refresh_button_lists_new_tables() {
 }
 
 #[test]
+fn database_tree_reads_again_only_when_what_it_lists_may_have_changed() {
+    use crate::application::state::ApplicationState;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let folder = home.path().join("watched");
+    std::fs::create_dir_all(folder.join("nested")).unwrap();
+    std::fs::write(folder.join("nested/first.csv"), "n\n1\n").unwrap();
+    ApplicationState::load(repository.clone())
+        .unwrap()
+        .add_watched_folder(&folder)
+        .unwrap();
+    let viewer = viewer(repository);
+    press_each(&viewer, &["ctrl-b"]);
+    let check = || {
+        viewer.update(|view, cx| view.check_database_tree(cx));
+        viewer.run_until_parked();
+        viewer.read(|view| view.database_tree.refreshes())
+    };
+    let files = || viewer.read(|view| view.database_tree.folder_files());
+    // Opening the tree saved a setting, which may cost one more read.
+    let settled = check();
+    assert_eq!(check(), settled);
+
+    // Saving a listed file in place lists nothing new.
+    std::fs::write(folder.join("nested/first.csv"), "n\n1\n2\n").unwrap();
+    assert_eq!(check(), settled);
+
+    // A new file in a subfolder is listed.
+    std::fs::write(folder.join("nested/second.csv"), "n\n1\n").unwrap();
+    assert_eq!(check(), settled + 1);
+    assert!(files().contains(&std::path::PathBuf::from("nested").join("second.csv")));
+    assert_eq!(check(), settled + 1);
+
+    // So is a change to the database.
+    viewer.read(|view| view.database.invalidate());
+    assert_eq!(check(), settled + 2);
+
+    // The monitor checks only while the window has the keyboard.
+    std::fs::write(folder.join("third.csv"), "n\n1\n").unwrap();
+    viewer.update(|view, _| view.window_active = false);
+    viewer.advance_clock(std::time::Duration::from_secs(1));
+    assert_eq!(viewer.read(|view| view.database_tree.refreshes()), settled + 2);
+    viewer.update(|view, _| view.window_active = true);
+    viewer.advance_clock(std::time::Duration::from_secs(1));
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.database_tree.refreshes()), settled + 3);
+    assert!(files().contains(&std::path::PathBuf::from("third.csv")));
+}
+
+#[test]
 fn source_checks_skip_unchanged_files_but_still_see_edits() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()));

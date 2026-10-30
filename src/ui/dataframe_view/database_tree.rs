@@ -76,6 +76,32 @@ impl DataFrameView {
         .detach();
     }
 
+    /// Refreshes the open tree when what it lists may have changed: SQL or
+    /// an attach changed the database, views or watched sources were saved,
+    /// or files appeared in, left or were renamed in a watched folder. The
+    /// check stats a few files off the UI thread; the tree reads its contents
+    /// again only when one changed, so an idle tree does no reading.
+    pub(crate) fn check_database_tree(&mut self, cx: &mut Cx<Self>) {
+        if !self.database_tree_open || self.tree_check_pending || self.database_tree.is_loading() {
+            return;
+        }
+        let Some(stamp) = self.database_tree.stamp().cloned() else {
+            return;
+        };
+        self.tree_check_pending = true;
+        let database = self.database.clone();
+        cx.spawn(
+            move || stamp.is_stale(&database),
+            |view: &mut Self, cx, stale| {
+                view.tree_check_pending = false;
+                if stale && view.database_tree_open && !view.database_tree.is_loading() {
+                    view.refresh_database_tree(cx);
+                }
+            },
+        )
+        .detach();
+    }
+
     /// Attaches dropped DuckDB and SQLite files read-only, then shows the
     /// last one in the database tree. Writing is left to an explicit ATTACH
     /// in SQL, so a drop can never change a database.

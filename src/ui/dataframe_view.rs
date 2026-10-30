@@ -596,6 +596,10 @@ pub struct DataFrameView {
     geometry_save: Option<Task>,
     source_monitor: Option<Task>,
     source_check_pending: bool,
+    /// Whether this window has the keyboard; the tree checks for changes
+    /// only then, and once more when the window comes back.
+    pub(crate) window_active: bool,
+    pub(crate) tree_check_pending: bool,
     /// The probe from the last check that reused the source, keyed by path and
     /// source revision; an unchanged probe skips the DuckDB catalog queries.
     source_probe: Option<(String, u64, SourceProbe)>,
@@ -849,6 +853,8 @@ impl DataFrameView {
             geometry_save: None,
             source_monitor: None,
             source_check_pending: false,
+            window_active: true,
+            tree_check_pending: false,
             source_probe: None,
             source_refresh_error: None,
             profiles_seen: profiles::revision(),
@@ -876,6 +882,9 @@ impl DataFrameView {
     fn start_source_monitor(&mut self, cx: &mut Cx<Self>) {
         self.source_monitor = Some(cx.timer(Duration::from_secs(1), |view, cx| {
             view.check_source(cx);
+            if view.window_active {
+                view.check_database_tree(cx);
+            }
             view.start_source_monitor(cx);
         }));
     }

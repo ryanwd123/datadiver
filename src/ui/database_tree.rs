@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::application::state::ApplicationState;
 use crate::domain::documents::{DatabaseView, DocumentDefinition, RelationKind, ViewKind};
-use crate::infrastructure::catalog::scan_sources;
+use crate::infrastructure::catalog::{modified, scan_sources_stamped};
 use crate::infrastructure::json_store::ViewRepository;
 use crate::infrastructure::source_database::SourceDatabase;
 use crate::ui::hit::{Button, Hit};
@@ -51,7 +52,7 @@ pub enum DatabaseTreeEvent {
 }
 
 /// Everything the tree lists, read on the background executor.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeData {
     pub views: Vec<DocumentDefinition>,
     pub relations: Vec<DatabaseView>,
@@ -64,8 +65,39 @@ pub struct TreeData {
     pub recent: Vec<PathBuf>,
 }
 
+/// What a read of [`TreeData`] depended on: the database's revision and the
+/// modified times of the profile's state files and of every folder scanned.
+/// Checking it costs a few file stats, far less than reading the tree again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TreeStamp {
+    database: u64,
+    paths: Vec<(PathBuf, Option<SystemTime>)>,
+}
+
+impl TreeStamp {
+    /// Whether a new read could differ from the one this stamp was taken
+    /// for. Saving a file in place leaves its folder's time alone, so only
+    /// files appearing, disappearing or being renamed count.
+    pub fn is_stale(&self, database: &SourceDatabase) -> bool {
+        self.database != database.revision() || self.paths.iter().any(|(path, seen)| modified(path) != *seen)
+    }
+}
+
 impl TreeData {
-    pub fn load(repository: ViewRepository, database: &SourceDatabase) -> Result<Self, String> {
+    /// Reads the tree's contents with a stamp taken before each part is read,
+    /// so a change made during the read makes the stamp stale.
+    pub fn load(repository: ViewRepository, database: &SourceDatabase) -> Result<(Self, TreeStamp), String> {
+        let mut stamp = TreeStamp {
+            database: database.revision(),
+            paths: repository
+                .state_paths()
+                .into_iter()
+                .map(|path| {
+                    let time = modified(&path);
+                    (path, time)
+                })
+                .collect(),
+        };
         let state = ApplicationState::load(repository).map_err(|error| error.to_string())?;
         let mut views = state.views;
         views.sort_by_key(|view| view.name.to_lowercase());
@@ -76,7 +108,9 @@ impl TreeData {
             .map(|folder| {
                 let folder = PathBuf::from(folder);
                 let root = folder.canonicalize().unwrap_or_else(|_| folder.clone());
-                let files = scan_sources(std::slice::from_ref(&root))
+                let (files, directories) = scan_sources_stamped(std::slice::from_ref(&root));
+                stamp.paths.extend(directories);
+                let files = files
                     .into_iter()
                     .filter_map(|file| file.strip_prefix(&root).ok().map(Path::to_path_buf))
                     .collect();
@@ -109,14 +143,15 @@ impl TreeData {
                 !watched.iter().any(|folder| key.starts_with(folder)) && seen.insert(key)
             })
             .collect();
-        Ok(Self {
+        let data = Self {
             views,
             relations: database.relations()?,
             functions: database.metadata_functions()?,
             folders,
             watched_files,
             recent,
-        })
+        };
+        Ok((data, stamp))
     }
 }
 
@@ -422,6 +457,8 @@ pub struct DatabaseTree {
     pub(crate) tree: Tree,
     pub(crate) filter: Editor,
     data: TreeData,
+    /// What `data` was read from, once a read has landed.
+    stamp: Option<TreeStamp>,
     targets: HashMap<String, TreeTarget>,
     deletable: HashMap<String, DeleteTarget>,
     expanded: HashSet<String>,
@@ -447,6 +484,7 @@ impl DatabaseTree {
             tree: Tree::new(),
             filter,
             data: TreeData::default(),
+            stamp: None,
             targets: HashMap::new(),
             deletable: HashMap::new(),
             expanded: OPEN_GROUPS.iter().map(|id| (*id).to_owned()).collect(),
@@ -470,17 +508,31 @@ impl DatabaseTree {
         self.revision
     }
 
-    /// Shows a read, keeping folders open and the selection.
-    pub fn finish_refresh(&mut self, revision: u64, data: Result<TreeData, String>) {
+    /// Whether a refresh is under way.
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// What the shown contents were read from, to check for changes.
+    pub fn stamp(&self) -> Option<&TreeStamp> {
+        self.stamp.as_ref()
+    }
+
+    /// Shows a read, keeping folders open and the selection. A read that
+    /// lists the same items leaves the tree exactly as it was.
+    pub fn finish_refresh(&mut self, revision: u64, data: Result<(TreeData, TreeStamp), String>) {
         if self.revision != revision {
             return;
         }
         self.loading = false;
         match data {
-            Ok(data) => {
+            Ok((data, stamp)) => {
                 self.error = None;
-                self.data = data;
-                self.rebuild();
+                if self.stamp.is_none() || data != self.data {
+                    self.data = data;
+                    self.rebuild();
+                }
+                self.stamp = Some(stamp);
                 if let Some(catalog) = self.reveal.take() {
                     let id = format!("db:{catalog}");
                     if let Some(index) = self.tree.index_of(&id) {
@@ -520,6 +572,18 @@ impl DatabaseTree {
         let index = self.tree.index_of(id);
         assert!(index.is_some(), "no tree item {id}");
         self.tree.set_selected_index(index);
+    }
+
+    /// How many refreshes have started.
+    #[cfg(test)]
+    pub(crate) fn refreshes(&self) -> u64 {
+        self.revision
+    }
+
+    /// The files listed under each watched folder.
+    #[cfg(test)]
+    pub(crate) fn folder_files(&self) -> Vec<PathBuf> {
+        self.data.folders.iter().flat_map(|(_, files)| files.clone()).collect()
     }
 
     #[cfg(test)]
