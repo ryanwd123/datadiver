@@ -54,6 +54,7 @@ mod platform;
 mod render;
 pub mod search;
 pub mod selection;
+pub mod service;
 pub mod syntax;
 pub mod text;
 pub mod theme;
@@ -70,6 +71,7 @@ pub use decorations::{DecorationId, DecorationOptions, Severity, Stickiness};
 pub use theme::Paint;
 pub use widgets::suggest::{CompletionContext, CompletionItem, CompletionKind, CompletionProvider};
 pub use editor::Mods;
+pub use service::{Diagnostic, LanguageService, SignatureHelp};
 pub use window::{Decoration, Editor, TextEdit};
 
 /// Editor options; [`Options::default`] matches Monaco's defaults where they

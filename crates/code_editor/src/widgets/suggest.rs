@@ -53,6 +53,9 @@ pub struct CompletionItem {
     pub range: Option<std::ops::Range<usize>>,
     /// Open the list again after accepting (a folder, to list what is inside).
     pub retrigger: bool,
+    /// Orders items that match equally well, and the whole list before
+    /// anything is typed (lower first; items without one go last).
+    pub sort_text: Option<String>,
 }
 
 impl CompletionItem {
@@ -86,6 +89,12 @@ pub trait CompletionProvider {
     /// Characters that open the popup when typed (like `.`).
     fn trigger_characters(&self) -> Vec<char> {
         Vec::new()
+    }
+
+    /// Whether the editor adds the language's keywords and the text's words
+    /// to these items. A provider that knows what fits the caret says no.
+    fn extra_words(&self) -> bool {
+        true
     }
 }
 
@@ -149,8 +158,13 @@ impl Suggest {
             .collect();
         let items = &self.items;
         scored.sort_by(|(sa, a), (sb, b)| {
-            let (la, lb) = (&items[a.item].label, &items[b.item].label);
-            sb.cmp(sa).then(la.len().cmp(&lb.len())).then(la.to_lowercase().cmp(&lb.to_lowercase()))
+            let (ia, ib) = (&items[a.item], &items[b.item]);
+            let (la, lb) = (&ia.label, &ib.label);
+            let rank = |it: &CompletionItem| (it.sort_text.is_none(), it.sort_text.clone());
+            sb.cmp(sa)
+                .then_with(|| rank(ia).cmp(&rank(ib)))
+                .then(la.len().cmp(&lb.len()))
+                .then(la.to_lowercase().cmp(&lb.to_lowercase()))
         });
         self.rows = scored.into_iter().map(|(_, r)| r).collect();
         self.selected = 0;

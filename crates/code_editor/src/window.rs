@@ -41,6 +41,12 @@ const TIMER_SCROLL: usize = 2;
 /// One-shot: reparse a big file after typing pauses.
 const TIMER_PARSE: usize = 3;
 const PARSE_DELAY_MS: u32 = 40;
+/// One-shot: ask the language service for problems after typing pauses.
+const TIMER_DIAGNOSE: usize = 4;
+const DIAGNOSE_DELAY_MS: u32 = 500;
+/// One-shot: the mouse rested (hosts that translate their own input).
+const TIMER_HOVER: usize = 5;
+const HOVER_DELAY_MS: u32 = 400;
 /// From WinUser.h; windows-rs only has these with the Win32_UI_Controls feature.
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -74,6 +80,8 @@ pub(crate) struct Shell {
     /// A key the keymap handled; its WM_CHAR / WM_SYSCHAR is dropped.
     swallow_char: Cell<bool>,
     tracking: Cell<bool>,
+    /// Where the mouse last moved, for the hover timer.
+    hover_at: Cell<(f32, f32)>,
     /// When the input being handled arrived, for tracing input-to-frame time.
     input_at: Cell<Option<Instant>>,
     first_frame: Cell<bool>,
@@ -481,6 +489,17 @@ fn handle(shell: &Rc<Shell>, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option
                     shell.set_timer(TIMER_PARSE, None);
                     st.parse_deferred();
                 }
+                TIMER_DIAGNOSE => {
+                    shell.set_timer(TIMER_DIAGNOSE, None);
+                    st.refresh_diagnostics();
+                }
+                TIMER_HOVER => {
+                    shell.set_timer(TIMER_HOVER, None);
+                    if st.drag.is_none() {
+                        let (x, y) = shell.hover_at.get();
+                        st.hover(x, y);
+                    }
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -506,8 +525,9 @@ fn handle(shell: &Rc<Shell>, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option
             unsafe {
                 let _ = RevokeDragDrop(hwnd);
             }
-            shell.set_timer(TIMER_BLINK, None);
-            shell.set_timer(TIMER_SCROLL, None);
+            for timer in [TIMER_BLINK, TIMER_SCROLL, TIMER_DIAGNOSE, TIMER_HOVER] {
+                shell.set_timer(timer, None);
+            }
             LRESULT(0)
         }
         _ => return None,
@@ -552,6 +572,9 @@ fn apply_effects(shell: &Shell, st: &mut State) {
     // Rearmed by every edit, so it fires once typing pauses.
     if fx.reparse {
         shell.set_timer(TIMER_PARSE, Some(PARSE_DELAY_MS));
+    }
+    if fx.diagnose {
+        shell.set_timer(TIMER_DIAGNOSE, Some(DIAGNOSE_DELAY_MS));
     }
 }
 
@@ -759,6 +782,7 @@ impl Editor {
             clicks: Cell::new((Instant::now(), 0, 0, 0)),
             swallow_char: Cell::new(false),
             tracking: Cell::new(false),
+            hover_at: Cell::new((0.0, 0.0)),
             input_at: Cell::new(None),
             first_frame: Cell::new(true),
         }))
@@ -973,6 +997,7 @@ impl Editor {
 
     /// A key press. Returns whether the editor used it; the host gets the rest.
     pub fn key_down(&self, chord: Chord) -> bool {
+        self.shell.set_timer(TIMER_HOVER, None);
         let r = self.with(|s| {
             s.hide_tooltip();
             s.key(chord)
@@ -994,6 +1019,7 @@ impl Editor {
 
     /// A left button press; `clicks` counts double and triple clicks.
     pub fn mouse_down(&self, x: f32, y: f32, mods: Mods, clicks: u32) {
+        self.shell.set_timer(TIMER_HOVER, None);
         self.with(|s| {
             s.set_focus(true);
             s.hide_tooltip();
@@ -1013,6 +1039,11 @@ impl Editor {
                 if s.tooltip.as_ref().is_some_and(|t| (t.0 - x).abs() > 4.0 || (t.1 - y).abs() > 4.0) {
                     s.hide_tooltip();
                 }
+                // The tooltip shows once the mouse rests.
+                if s.tooltip.is_none() {
+                    shell.hover_at.set((x, y));
+                    shell.set_timer(TIMER_HOVER, Some(HOVER_DELAY_MS));
+                }
             }
         });
     }
@@ -1023,6 +1054,7 @@ impl Editor {
     }
 
     pub fn mouse_leave(&self) {
+        self.shell.set_timer(TIMER_HOVER, None);
         self.with(|s| {
             s.mouse_leave();
             s.hide_tooltip();
@@ -1031,6 +1063,7 @@ impl Editor {
 
     /// Wheel notches (positive: away from the user, or right when horizontal).
     pub fn wheel(&self, notches: f32, horizontal: bool, mods: Mods) {
+        self.shell.set_timer(TIMER_HOVER, None);
         self.with(|s| {
             s.hide_tooltip();
             s.wheel(notches, horizontal, mods);
@@ -1069,6 +1102,45 @@ impl Editor {
             }
         };
         context_menu(&self.shell, lparam);
+    }
+
+    /// What the mouse resting at (x, y) DIPs shows, if anything, as the hover
+    /// timer would; for hosts and tests that drive it themselves.
+    pub fn hover_now(&self, x: f32, y: f32) -> Option<String> {
+        self.with(|s| {
+            s.hover(x, y);
+            s.tooltip.as_ref().map(|t| t.2.clone())
+        })
+    }
+
+    /// The signature popup's contents, while it is open.
+    pub fn signature(&self) -> Option<crate::SignatureHelp> {
+        self.read(|s| s.signature.clone())
+    }
+
+    /// Sets the host's language features (`None` goes back to the grammar).
+    pub fn set_language_service(&self, service: Option<Rc<dyn crate::LanguageService>>) {
+        self.with(|s| s.set_service(service));
+    }
+
+    /// Asks the language service for problems now rather than after the pause.
+    pub fn refresh_diagnostics(&self) {
+        self.shell.set_timer(TIMER_DIAGNOSE, None);
+        self.with(|s| s.refresh_diagnostics());
+    }
+
+    /// The underlined problems as (start, end, message), by offset.
+    pub fn diagnostics(&self) -> Vec<(usize, usize, String)> {
+        self.read(|s| {
+            let mut out: Vec<_> = s
+                .decorations
+                .in_range(0, s.doc.buffer.len())
+                .filter(|t| t.options.squiggle.is_some())
+                .map(|t| (t.start, t.end, t.options.hover.clone().unwrap_or_default()))
+                .collect();
+            out.sort();
+            out
+        })
     }
 
     /// The labels the suggest popup shows, in order, while it is open.

@@ -72,6 +72,8 @@ pub enum Action {
     FindPrevious,
     GoToLine,
     TriggerSuggest,
+    /// Shows the signature of the call around the caret.
+    TriggerParameterHints,
     Fold,
     Unfold,
     FoldAll,
@@ -278,6 +280,7 @@ const DEFAULTS: &[(u16, bool, bool, bool, Action)] = {
         (ch(b'G'), true, false, false, GoToLine),
         (k(VK_SPACE), true, false, false, TriggerSuggest),
         (ch(b'I'), true, false, false, TriggerSuggest),
+        (k(VK_SPACE), true, true, false, TriggerParameterHints),
         (k(VK_OEM_4), true, true, false, Fold),
         (k(VK_OEM_6), true, true, false, Unfold),
         (ch(b'Z'), false, false, true, ToggleWordWrap),

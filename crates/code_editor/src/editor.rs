@@ -26,8 +26,9 @@ use crate::widgets::suggest::{self, CompletionContext, CompletionItem, Completio
 use crate::widgets::{Focus, Rect};
 use crate::syntax::{self, Context, HighlightCache, Span, Syntax};
 use crate::text::{self, Buffer, Change, Edit, Transaction};
-use crate::decorations::Decorations;
-use crate::theme::{Paint, Palette, Theme};
+use crate::decorations::{DecorationId, DecorationOptions, Decorations};
+use crate::service::{LanguageService, SignatureHelp};
+use crate::theme::{Ink, Paint, Palette, Theme};
 use crate::view::{LineMap, Region, View};
 use crate::{ContentChange, Event, Options};
 
@@ -59,6 +60,8 @@ pub(crate) struct Effects {
     pub ime: bool,
     /// Reparse soon (a big file's reparse waits for a pause in typing).
     pub reparse: bool,
+    /// Ask the language service for problems once typing pauses.
+    pub diagnose: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -66,6 +69,26 @@ pub(crate) enum Unit {
     Char,
     Word,
     Line,
+}
+
+/// Whether `off` is in a string or comment by the service's colors. A string
+/// left open at the end of the text still holds its end.
+fn host_context(spans: &[Span], b: &Buffer, off: usize) -> Context {
+    let i = spans.partition_point(|s| s.1 < off);
+    for &(a, e, ink) in spans[i..].iter().take_while(|s| s.0 < off) {
+        match ink {
+            Ink::Comment if a < off && off <= e => return Context::Comment,
+            Ink::String if a < off && off < e => return Context::String,
+            Ink::String if off == e => {
+                let closed = e - a >= 2 && matches!(b.slice(e - 1, e).as_str(), "'" | "\"" | "$");
+                if !closed {
+                    return Context::String;
+                }
+            }
+            _ => {}
+        }
+    }
+    Context::Code
 }
 
 pub(crate) enum Drag {
@@ -162,6 +185,14 @@ pub(crate) struct State {
     pub tooltip: Option<(f32, f32, String)>,
     /// Where typing goes: the text or one of the overlay inputs.
     pub focus: Focus,
+    /// The host's own language features.
+    pub service: Option<Rc<dyn LanguageService>>,
+    /// The service's colors by text version (`None`: it left them to the grammar).
+    host_hl: Option<(u64, Option<Rc<[Span]>>)>,
+    /// The service's problems, as decorations.
+    diagnostics: Vec<DecorationId>,
+    /// The signature popup, while it is open.
+    pub signature: Option<SignatureHelp>,
 }
 
 impl State {
@@ -210,6 +241,10 @@ impl State {
             suggest_dead: None,
             tooltip: None,
             focus: Focus::Text,
+            service: None,
+            host_hl: None,
+            diagnostics: Vec::new(),
+            signature: None,
         })
     }
 
@@ -302,6 +337,9 @@ impl State {
 
     /// Parses if needed and computes highlight spans for `lines` (model lines).
     pub fn ensure_highlight(&mut self, lines: std::ops::Range<usize>) {
+        if self.host_spans().is_some() {
+            return;
+        }
         self.ensure_syntax();
         let version = self.doc.buffer.version;
         let Some(syn) = &mut self.syntax else {
@@ -326,8 +364,36 @@ impl State {
         };
     }
 
+    /// The service's colors for the current text, asked once per version.
+    fn host_spans(&mut self) -> Option<Rc<[Span]>> {
+        let service = self.service.clone()?;
+        let version = self.doc.buffer.version;
+        if let Some((v, spans)) = &self.host_hl
+            && *v == version
+        {
+            return spans.clone();
+        }
+        let text = self.snapshot();
+        let spans: Option<Rc<[Span]>> = service
+            .highlight(&text)
+            .map(|spans| spans.into_iter().map(|(r, ink)| (r.start, r.end, ink)).collect());
+        self.host_hl = Some((version, spans.clone()));
+        spans
+    }
+
     /// Colored ranges of model line `line`.
     pub fn line_spans(&mut self, line: usize) -> Vec<Span> {
+        if let Some(spans) = self.host_spans() {
+            let b = &self.doc.buffer;
+            let (ls, le) = (b.line_start(line), b.line_end(line));
+            let first = spans.partition_point(|s| s.1 <= ls);
+            return spans[first..]
+                .iter()
+                .take_while(|s| s.0 < le)
+                .map(|&(a, e, ink)| (a.max(ls) - ls, e.min(le) - ls, ink))
+                .filter(|s| s.0 < s.1)
+                .collect();
+        }
         self.ensure_syntax();
         let version = self.doc.buffer.version;
         if let Some(s) = self.hl.get(version, line) {
@@ -541,12 +607,44 @@ impl State {
     /// Fold regions with headers in `first..=last`: from the grammar, or by
     /// indentation without one.
     pub fn fold_regions(&mut self, first: usize, last: usize) -> Vec<(usize, usize)> {
+        if let Some(service) = self.service.clone() {
+            let text = self.snapshot();
+            if let Some(ranges) = service.folding_ranges(&text) {
+                return self.fold_lines(&ranges, first, last);
+            }
+        }
         self.parse_now();
         let b = &self.doc.buffer;
         match &self.syntax {
             Some(s) if s.is_current() => s.fold_ranges(b.rope(), first, last),
             _ => crate::indent::fold_ranges(b, first, last, self.opts.tab_size.max(1)),
         }
+    }
+
+    /// Byte ranges as fold regions (header line, last folded line) with headers
+    /// in `first..=last`. A line holding only a range's closer stays visible.
+    fn fold_lines(&self, ranges: &[std::ops::Range<usize>], first: usize, last: usize) -> Vec<(usize, usize)> {
+        let b = &self.doc.buffer;
+        let len = b.len();
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for r in ranges {
+            let header = b.line_of(r.start.min(len));
+            let mut end = b.line_of(r.end.min(len));
+            if end > header + 1 {
+                let closer = b.line(end).trim().chars().next();
+                if b.line(end).trim().len() <= 1 && closer.is_some_and(|c| ")]}".contains(c)) {
+                    end -= 1;
+                }
+            }
+            if end > header && (first..=last).contains(&header) {
+                match out.iter_mut().find(|f| f.0 == header) {
+                    Some(f) => f.1 = f.1.max(end),
+                    None => out.push((header, end)),
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 
     pub fn is_folded(&self, header: usize) -> bool {
@@ -679,6 +777,9 @@ impl State {
         self.fx.ime = true;
         self.caret_on = true;
         self.invalidate();
+        if self.signature.is_some() {
+            self.update_signature(false);
+        }
     }
 
     pub fn set_sels(&mut self, sels: Selections) {
@@ -729,6 +830,9 @@ impl State {
         }
         self.decorations.apply(&changes);
         self.tooltip = None;
+        if self.service.is_some() && !changes.is_empty() {
+            self.fx.diagnose = true;
+        }
         self.auto_closed = self
             .auto_closed
             .iter()
@@ -750,6 +854,8 @@ impl State {
                     .collect(),
             });
         }
+        // Completion and the signature popup read the new colors.
+        self.host_spans();
         if self.suggest.open {
             self.update_suggest();
         }
@@ -786,7 +892,14 @@ impl State {
         }
     }
 
+    /// What kind of text `off` is in: by the language service's colors (kept
+    /// current by every edit), or the grammar.
     pub fn context_at(&self, off: usize) -> Context {
+        if let Some((v, Some(spans))) = &self.host_hl
+            && *v == self.doc.buffer.version
+        {
+            return host_context(spans, &self.doc.buffer, off);
+        }
         self.syntax.as_ref().map_or(Context::Code, |s| s.context_at(off))
     }
 
@@ -797,7 +910,8 @@ impl State {
             _ => &[],
         };
         if pairs.is_empty() {
-            return self.type_text(c.encode_utf8(&mut [0; 4]));
+            self.type_text(c.encode_utf8(&mut [0; 4]));
+            return self.typed_for_signature(c);
         }
         self.parse_now();
         let in_text = |off: usize| self.context_at(off) != Context::Code;
@@ -813,6 +927,14 @@ impl State {
         self.edit(o, EditKind::Typing);
         self.auto_closed.extend(new_pairs);
         self.typed_for_suggest(c);
+        self.typed_for_signature(c);
+    }
+
+    /// `(` and `,` open the signature popup; `)` may close it.
+    fn typed_for_signature(&mut self, c: char) {
+        if matches!(c, '(' | ',') {
+            self.update_signature(true);
+        }
     }
 
     // ---- Completion ----
@@ -878,7 +1000,8 @@ impl State {
             items.retain(|it| it.range.as_ref().is_some_and(|r| r.start == ranged));
             return self.show_ranged(items, ranged);
         }
-        if trigger.is_none() {
+        let words = self.provider.as_ref().is_none_or(|p| p.extra_words());
+        if trigger.is_none() && words {
             if let Some(l) = self.lang {
                 items.extend(l.keywords.iter().map(|k| CompletionItem::new(*k, CompletionKind::Keyword)));
             }
@@ -992,6 +1115,9 @@ impl State {
             if item.retrigger {
                 self.open_ranged();
             }
+            if insert.ends_with('(') {
+                self.update_signature(true);
+            }
             return;
         }
         let n = head - self.suggest.word_start;
@@ -1005,6 +1131,9 @@ impl State {
             commands::Replace::caret_after(start.min(s.start()), s.end(), insert.clone())
         });
         self.edit(o, EditKind::Other);
+        if insert.ends_with('(') {
+            self.update_signature(true);
+        }
     }
 
     /// Keys while the popup is open. `None` lets the key through.
@@ -1439,7 +1568,16 @@ impl State {
         // A hit past the end of a line is not over its last character.
         let at_end = off == self.doc.buffer.line_end(self.doc.buffer.line_of(off))
             && x - self.view.text_x() + self.view.scroll_x > self.x_of(off) + self.view.char_w;
-        let msg = if at_end { None } else { self.decorations.hover_at(off).map(str::to_string) };
+        let mut msg = if at_end { None } else { self.decorations.hover_at(off).map(str::to_string) };
+        if !at_end && let Some(service) = self.service.clone() {
+            let text = self.snapshot();
+            if let Some(h) = service.hover(&text, off).filter(|h| !h.trim().is_empty()) {
+                msg = Some(match msg {
+                    Some(m) => format!("{m}\n\n{h}"),
+                    None => h,
+                });
+            }
+        }
         if let Some(m) = msg {
             self.tooltip = Some((x, y, m));
             self.invalidate();
@@ -1469,6 +1607,7 @@ impl State {
         }
         out.extend(self.find.frame(v.width));
         out.extend(self.suggest_frame());
+        out.extend(self.signature_box().map(|b| b.0));
         out
     }
 
@@ -1583,6 +1722,8 @@ impl State {
     /// syntax nodes (or the line and the whole text without a grammar).
     fn expand_selection(&mut self) {
         self.parse_now();
+        let service = self.service.clone();
+        let text = service.as_ref().map(|_| self.snapshot());
         let b = &self.doc.buffer;
         let syn = self.syntax.as_ref().filter(|s| s.is_current());
         let new = self.doc.sels.map(|s| {
@@ -1592,9 +1733,18 @@ impl State {
             {
                 return Selection::new(wa, we);
             }
-            let grown = match syn {
-                Some(syn) => syn.expand(a, e),
-                None => {
+            let hosted = service
+                .as_ref()
+                .zip(text.as_deref())
+                .and_then(|(service, text)| service.selection_ranges(text, a));
+            let grown = match (hosted, syn) {
+                (Some(ranges), _) => ranges
+                    .into_iter()
+                    .find(|r| r.start <= a && r.end >= e && (r.start, r.end) != (a, e))
+                    .map(|r| (r.start, r.end))
+                    .or(Some((0, b.len()))),
+                (None, Some(syn)) => syn.expand(a, e),
+                (None, None) => {
                     let l0 = b.line_start(b.line_of(a));
                     let l1 = b.line_end(b.line_of(e));
                     if (l0, l1) != (a, e) { Some((l0, l1)) } else { Some((0, b.len())) }
@@ -1772,7 +1922,11 @@ impl State {
 
     /// Whether Escape has something to do: an overlay, extra carets, a selection.
     fn can_cancel(&self) -> bool {
-        self.goto.is_some() || self.find.open || self.doc.sels.len() > 1 || !self.doc.sels.primary().is_empty()
+        self.goto.is_some()
+            || self.find.open
+            || self.signature.is_some()
+            || self.doc.sels.len() > 1
+            || !self.doc.sels.primary().is_empty()
     }
 
     pub fn run(&mut self, a: Action) {
@@ -1793,6 +1947,7 @@ impl State {
                 }
             }
             Action::TriggerSuggest => self.open_suggest(None, true),
+            Action::TriggerParameterHints => self.update_signature(true),
             Action::Fold => self.fold_at_caret(),
             Action::Unfold => {
                 let line = buf.line_of(sels.primary().head);
@@ -1858,6 +2013,7 @@ impl State {
             Action::FindPrevious => self.find_next(false),
             Action::GoToLine => self.open_goto(),
             Action::Cancel if self.goto.is_some() => self.goto_close(false),
+            Action::Cancel if self.signature.is_some() => self.close_signature(),
             Action::Cancel if self.find.open => self.close_find(),
             Action::Cancel if self.doc.sels.len() > 1 => {
                 let mut s = self.doc.sels.clone();
@@ -2375,11 +2531,85 @@ impl State {
         }
     }
 
+    // ---- The host's language service ----
+
+    pub fn set_service(&mut self, service: Option<Rc<dyn LanguageService>>) {
+        self.service = service;
+        self.host_hl = None;
+        self.host_spans();
+        self.hl = HighlightCache::default();
+        self.refresh_diagnostics();
+        self.invalidate();
+    }
+
+    /// Replaces the underlined problems with the service's for the current text.
+    pub fn refresh_diagnostics(&mut self) {
+        let found = match self.service.clone() {
+            Some(service) => service.diagnostics(&self.snapshot()),
+            None => Vec::new(),
+        };
+        if found.is_empty() && self.diagnostics.is_empty() {
+            return;
+        }
+        let b = &self.doc.buffer;
+        let len = b.len();
+        let new = found
+            .into_iter()
+            .map(|d| {
+                let (mut a, mut e) = (b.floor_char(d.range.start.min(len)), b.floor_char(d.range.end.min(len)));
+                // An empty range (a missing token) underlines the character after
+                // it, or before it at the end of a line.
+                if a == e {
+                    if e < b.line_end(b.line_of(e)) {
+                        e += b.char_at(e).map_or(1, char::len_utf8);
+                    } else if a > b.line_start(b.line_of(a)) {
+                        a -= b.char_before(a).map_or(1, char::len_utf8);
+                    }
+                }
+                let options = DecorationOptions {
+                    squiggle: Some(d.severity),
+                    hover: Some(d.message),
+                    ..Default::default()
+                };
+                (a, e, options)
+            })
+            .collect();
+        let old = std::mem::take(&mut self.diagnostics);
+        self.diagnostics = self.decorations.delta(&old, new);
+        self.invalidate();
+    }
+
+    /// Asks the service for the call around the caret. Without `open`, only
+    /// keeps an open popup up to date.
+    pub fn update_signature(&mut self, open: bool) {
+        if !open && self.signature.is_none() {
+            return;
+        }
+        let head = self.doc.sels.primary().head;
+        let help = match self.service.clone() {
+            Some(service) if self.doc.sels.len() == 1 && self.context_at(head) == Context::Code => {
+                service.signature_help(&self.snapshot(), head)
+            }
+            _ => None,
+        };
+        if help != self.signature {
+            self.signature = help;
+            self.invalidate();
+        }
+    }
+
+    pub fn close_signature(&mut self) {
+        if self.signature.take().is_some() {
+            self.invalidate();
+        }
+    }
+
     // ---- Focus and caret ----
 
     pub fn set_focus(&mut self, focused: bool) {
         if !focused {
             self.close_suggest();
+            self.close_signature();
         }
         if self.focused != focused {
             self.focused = focused;
@@ -2413,6 +2643,11 @@ impl State {
         });
         self.auto_closed.clear();
         self.decorations.clear();
+        self.diagnostics.clear();
+        self.host_hl = None;
+        self.host_spans();
+        self.signature = None;
+        self.refresh_diagnostics();
         self.detect_indentation();
         self.start_syntax();
         if self.opts.word_wrap && self.render.fonts.is_some() {
@@ -2997,6 +3232,114 @@ mod suggest_tests {
         key(&mut st, VK_RETURN);
         assert_eq!(shown(&st), "FROM 'data/a.parquet|'");
         assert!(!st.suggest.open);
+    }
+
+    /// A toy service: `sel` is a keyword, `'…'` a string, `bad` a problem,
+    /// `x` has a hover, and `f(` takes two arguments.
+    struct Toy;
+
+    impl LanguageService for Toy {
+        fn highlight(&self, text: &str) -> Option<Vec<(std::ops::Range<usize>, Ink)>> {
+            let mut out: Vec<_> = text.match_indices("sel").map(|(i, _)| (i..i + 3, Ink::Keyword)).collect();
+            if let Some(a) = text.find('\'') {
+                let e = text[a + 1..].find('\'').map_or(text.len(), |e| a + e + 2);
+                out.push((a..e, Ink::String));
+            }
+            out.sort_by_key(|r| r.0.start);
+            Some(out)
+        }
+
+        fn diagnostics(&self, text: &str) -> Vec<crate::Diagnostic> {
+            text.match_indices("bad")
+                .map(|(i, _)| crate::Diagnostic {
+                    range: i..i + 3,
+                    severity: crate::Severity::Error,
+                    message: "bad word".into(),
+                })
+                .collect()
+        }
+
+        fn hover(&self, text: &str, offset: usize) -> Option<String> {
+            (text.get(offset..offset + 1) == Some("x")).then(|| "the x column".into())
+        }
+
+        fn signature_help(&self, text: &str, offset: usize) -> Option<SignatureHelp> {
+            let open = text[..offset].rfind("f(")?;
+            if text[open..offset].contains(')') {
+                return None;
+            }
+            let arg = text[open..offset].matches(',').count();
+            let label = "f(a, b)".to_string();
+            let active = [2..3, 5..6].get(arg).cloned();
+            Some(SignatureHelp { label, active, documentation: None })
+        }
+
+        fn folding_ranges(&self, text: &str) -> Option<Vec<std::ops::Range<usize>>> {
+            Some(text.find('(').zip(text.rfind(')')).map(|(a, e)| a..e + 1).into_iter().collect())
+        }
+    }
+
+    #[test]
+    fn a_language_service_colors_underlines_hovers_and_shows_signatures() {
+        let mut st = state(None, "sel x, bad 'str|");
+        st.set_service(Some(Rc::new(Toy)));
+        assert_eq!(st.line_spans(0), vec![(0, 3, Ink::Keyword), (11, 15, Ink::String)]);
+        // An unclosed string holds its end; a closed one does not.
+        assert_eq!(st.context_at(15), Context::String);
+        assert_eq!(st.context_at(5), Context::Code);
+        // Problems come with the service and move with edits.
+        let squiggles = |st: &State| {
+            st.decorations.in_range(0, st.doc.buffer.len()).map(|t| (t.start, t.end)).collect::<Vec<_>>()
+        };
+        assert_eq!(squiggles(&st), vec![(7, 10)]);
+        st.doc.sels = Selections::single(Selection::cursor(0));
+        st.type_text("  ");
+        assert_eq!(squiggles(&st), vec![(9, 12)]);
+        assert!(st.fx.diagnose);
+        assert_eq!(st.decorations.hover_at(10), Some("bad word"));
+
+        // The signature popup follows the argument being typed and closes at `)`.
+        let mut st = state(None, "|");
+        st.set_service(Some(Rc::new(Toy)));
+        type_in(&mut st, "f(");
+        assert_eq!(st.signature.as_ref().and_then(|s| s.active.clone()), Some(2..3));
+        type_in(&mut st, "1,");
+        assert_eq!(st.signature.as_ref().and_then(|s| s.active.clone()), Some(5..6));
+        assert!(st.can_cancel());
+        type_in(&mut st, "2)");
+        assert_eq!(st.signature, None);
+        st.run(Action::Move(Motion::Left, false));
+        st.run(Action::TriggerParameterHints);
+        assert!(st.signature.is_some());
+        st.run(Action::Cancel);
+        assert_eq!(st.signature, None);
+
+        // Folding from the service: the closer's own line stays visible.
+        let mut st = state(None, "f(\n  1,\n  2\n)|");
+        st.set_service(Some(Rc::new(Toy)));
+        assert_eq!(st.fold_regions(0, 3), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn providers_that_know_the_context_get_no_extra_words() {
+        struct Exact;
+        impl CompletionProvider for Exact {
+            fn complete(&self, _: &CompletionContext) -> Vec<CompletionItem> {
+                ["beta", "alpha"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| CompletionItem { sort_text: Some(i.to_string()), ..CompletionItem::new(*l, CompletionKind::Field) })
+                    .collect()
+            }
+            fn extra_words(&self) -> bool {
+                false
+            }
+        }
+        let mut st = state(Some("sql"), "gamma\n|");
+        st.provider = Some(Rc::new(Exact));
+        st.run(Action::TriggerSuggest);
+        // The provider's order holds before anything is typed.
+        assert_eq!(labels(&st), vec!["beta", "alpha"]);
     }
 
     #[test]
