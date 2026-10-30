@@ -89,9 +89,30 @@ pub type ResultView<'a> = (&'a Store, &'a ViewQuery);
 
 /// Like [`execute_filtered`], but with `result_view` the result search and sort
 /// run inside the query, so they see every result row instead of only the
-/// first `limit`. The result is in the source's engine.
+/// first `limit`. The result is in the source's engine, and its `cut_at` says
+/// whether the query had more than `limit` rows.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_query(
+    source: &Store,
+    config: &QueryConfig,
+    slicers: &[SlicerDefinition],
+    filters: &[ValueFilter],
+    clock: &EvaluationClock,
+    limit: u64,
+    result_view: Option<ResultView<'_>>,
+    trace: &mut SqlTrace,
+) -> Result<Store, String> {
+    // One row past the limit shows whether the query goes on.
+    let fetch = limit.saturating_add(1).min(i64::MAX as u64);
+    let mut store = execute_engine_query(source, config, slicers, filters, clock, fetch, result_view, trace)?;
+    if store.row_count() as u64 > limit {
+        store.cut_to(limit as usize)?;
+    }
+    Ok(store)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_engine_query(
     source: &Store,
     config: &QueryConfig,
     slicers: &[SlicerDefinition],
@@ -181,6 +202,36 @@ mod parity_tests {
             .collect::<Vec<_>>();
         rows.sort();
         (names, rows)
+    }
+
+    #[test]
+    fn results_are_cut_only_when_the_query_has_more_rows_than_the_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("regions.csv");
+        std::fs::write(&path, "region,amount\nNorth,1\nSouth,2\nEast,3\nWest,4\nNorth,5\n").unwrap();
+        let config = QueryConfig {
+            group_by: vec![Dimension::Column("region".into())],
+            aggregations: vec![aggregation("amount", AggregationOp::Sum)],
+            ..Default::default()
+        };
+        let clock = EvaluationClock::system();
+        for engine in Engine::ALL {
+            let source = sources
+                .load(&path, ReadOptions { engine, ..ReadOptions::default() }, LoadMode::Check)
+                .unwrap();
+            let run = |limit| execute_filtered(&source, &config, &[], &[], &clock, limit, &mut SqlTrace::default()).unwrap();
+            let ordered = |store: &Store| {
+                let ids = store.initial_row_ids().unwrap();
+                store.fetch_row_ids(&ids).unwrap().into_iter().map(|row| row.values).collect::<Vec<_>>()
+            };
+            // Four groups fit a limit of four exactly.
+            let whole = run(4);
+            assert_eq!((whole.row_count(), whole.cut_at()), (4, None), "{engine:?}");
+            let cut = run(3);
+            assert_eq!((cut.row_count(), cut.cut_at()), (3, Some(3)), "{engine:?}");
+            assert_eq!(ordered(&cut), ordered(&whole)[..3], "{engine:?}");
+        }
     }
 
     #[test]

@@ -196,10 +196,6 @@ pub(crate) fn local_archive_time(unix_ms: u128) -> String {
         .unwrap_or_else(|| "Unknown date".into())
 }
 
-/// Whether a query result stopped at the row limit and may be missing rows.
-pub(crate) fn query_limit_reached(result_rows: usize, query_limit: u64) -> bool {
-    result_rows as u64 >= query_limit
-}
 
 pub(crate) fn source_modified(path: Option<&str>) -> Option<String> {
     let path = path?;

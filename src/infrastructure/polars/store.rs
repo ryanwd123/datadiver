@@ -34,7 +34,7 @@ pub struct PolarsStore {
     columns: Vec<ColumnSchema>,
     row_count: usize,
     identity: Option<FrameIdentity>,
-    /// The row limit a file read stopped at, leaving rows of the file unread.
+    /// The row limit a file read or query result stopped at, leaving rows out.
     cut_at: Option<usize>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
@@ -120,6 +120,17 @@ impl PolarsStore {
 
     pub fn cut_at(&self) -> Option<usize> {
         self.cut_at
+    }
+
+    /// Keeps the first `rows` rows of a query result and notes that the
+    /// query had more.
+    pub fn cut_to(&mut self, rows: usize) -> Result<(), String> {
+        if self.row_count > rows {
+            self.frame = Arc::new(self.frame.slice(0, rows));
+            self.row_count = rows;
+            self.cut_at = Some(rows);
+        }
+        Ok(())
     }
 
     /// Polars stores always hold every row, unlike DuckDB views read only

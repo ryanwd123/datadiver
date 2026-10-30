@@ -81,6 +81,8 @@ pub struct DuckDbStore {
     retired_view_row_maps: Arc<Mutex<Vec<String>>>,
     /// Set when the store's table is dropped with the store.
     owned_table: Option<OwnedTable>,
+    /// The row limit a query result stopped at, leaving rows out.
+    result_cut_at: Option<usize>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -364,6 +366,7 @@ impl DuckDbStore {
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -397,6 +400,7 @@ impl DuckDbStore {
             row_count,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -504,6 +508,7 @@ impl DuckDbStore {
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -548,7 +553,25 @@ impl DuckDbStore {
     }
 
     pub fn cut_at(&self) -> Option<usize> {
-        self.persistent.as_ref().and_then(|backing| backing.cut_at)
+        self.result_cut_at
+            .or_else(|| self.persistent.as_ref().and_then(|backing| backing.cut_at))
+    }
+
+    /// Keeps the first `rows` rows of a query result and notes that the
+    /// query had more. Results are tables whose rowids follow their order.
+    pub fn cut_to(&mut self, rows: usize) -> Result<(), String> {
+        if self.row_count <= rows {
+            return Ok(());
+        }
+        if self.relation.is_some() || self.persistent.as_ref().is_some_and(|backing| backing.source_version.is_some()) {
+            return Err("only query results can be cut at the row limit".into());
+        }
+        self.connection
+            .execute(&format!("DELETE FROM {} WHERE rowid >= ?", self.table_sql), params![rows as i64])
+            .map_err(|error| error.to_string())?;
+        self.row_count = rows;
+        self.result_cut_at = Some(rows);
+        Ok(())
     }
 
     pub fn persistent_identity(&self) -> Option<super::source_database::PersistentSourceIdentity> {

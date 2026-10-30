@@ -217,15 +217,11 @@ impl DataFrameView {
         if self.session.is_sql() {
             return !self.busy && !self.loading && self.error.is_none() && self.sql_result_truncated;
         }
-        let query_rows = self
-            .query_cache
-            .as_ref()
-            .map_or(self.session.result.row_count(), |cache| cache.frame.row_count());
+        let query_cut = self.query_cache.as_ref().is_some_and(|cache| cache.frame.cut_at.is_some());
         !self.busy
             && !self.loading
             && self.error.is_none()
-            && (self.session.source.cut_at.is_some()
-                || !self.is_table() && query_limit_reached(query_rows, self.query_limit))
+            && (self.session.source.cut_at.is_some() || !self.is_table() && query_cut)
     }
 
     fn paint_status(&mut self, canvas: &mut Canvas<Hit>, r: Rect, row_count: usize, limit_reached: bool) {

@@ -249,13 +249,18 @@ impl Store {
         }
     }
 
-    /// Which read of a file this store holds, when it holds one.
-    /// The row limit a file read into memory stopped at, when the file has
-    /// more rows than that.
+    /// The row limit a file read into memory or a query result stopped at,
+    /// when the file or query has more rows than that.
     pub fn cut_at(&self) -> Option<usize> {
         dispatch!(self, store => store.cut_at())
     }
 
+    /// Keeps the first `rows` rows of a query result; see [`Self::cut_at`].
+    pub fn cut_to(&mut self, rows: usize) -> Result<(), String> {
+        dispatch!(self, store => store.cut_to(rows))
+    }
+
+    /// Which read of a file this store holds, when it holds one.
     pub fn source_identity(&self) -> Option<super::sources::SourceIdentity> {
         use super::sources::SourceIdentity;
         match self {

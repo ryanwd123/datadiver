@@ -701,7 +701,7 @@ impl DataFrameView {
             || self
                 .query_cache
                 .as_ref()
-                .is_some_and(|cache| query_limit_reached(cache.frame.row_count(), self.query_limit));
+                .is_some_and(|cache| cache.frame.cut_at.is_some());
         let footer = crate::ui::grid::GridFooter {
             // Totals cover every group, including any search or the limit hides.
             label: if narrowed {
@@ -722,7 +722,7 @@ impl DataFrameView {
             return None;
         };
         let cache = self.query_cache.as_ref()?;
-        if !query_limit_reached(cache.frame.row_count(), self.query_limit) {
+        if cache.frame.cut_at.is_none() {
             return None;
         }
         let tokens = query::parse(&self.session.search_text).ok()?;
@@ -847,7 +847,7 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
             // A result that stopped at the limit is missing rows, so
             // search and sort rerun inside the query to see all of them.
             // The unnarrowed result stays cached for the next request.
-            let narrowed = if query_limit_reached(pivot_store.row_count(), request.query_limit)
+            let narrowed = if pivot_store.cut_at().is_some()
                 && (!view.tokens.is_empty() || !view.sort.is_empty())
             {
                 let source_store = request
