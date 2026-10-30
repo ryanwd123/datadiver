@@ -3,7 +3,8 @@ pub enum CommandId {
     Back,
     Forward,
     SqlEditor,
-    NewSqlQuery,
+    NewSqlSource,
+    NewSqlScript,
     Settings,
     ViewOptions,
     QueryEngine,
@@ -164,9 +165,15 @@ pub const COMMANDS: &[Command] = &[
         default_binding: None,
     },
     Command {
-        id: CommandId::NewSqlQuery,
-        key: "new_sql_query",
-        label: "New SQL query",
+        id: CommandId::NewSqlSource,
+        key: "new_sql_source",
+        label: "New SQL source",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::NewSqlScript,
+        key: "new_sql_script",
+        label: "New SQL script",
         default_binding: None,
     },
     Command {

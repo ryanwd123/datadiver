@@ -1133,23 +1133,28 @@ fn ask_ai_at_mentions_complete_and_send_only_those_tables() {
 }
 
 #[test]
-fn new_sql_query_replaces_sql_text_after_confirming() {
+fn new_sql_source_and_script_replace_sql_text_after_confirming() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlQuery, cx));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlSource, cx));
     viewer.run_until_parked();
     // An empty SQL draft has nothing to lose, so it is replaced without asking.
     assert!(!viewer.has_dialog());
     assert!(viewer.read(|view| view.session.is_sql()));
+    assert!(!sql_config(&viewer).script);
+    assert_eq!(viewer.read(|view| view.session.working.as_ref().unwrap().name.clone()), "SQL source");
     edit_sql(&viewer, "SELECT 1");
-    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlQuery, cx));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlScript, cx));
     viewer.render();
     assert!(viewer.has_dialog());
     click(&viewer, Button::DialogOk);
     assert!(!viewer.has_dialog());
     assert_eq!(sql_text(&viewer), "");
     assert_eq!(sql_config(&viewer).text, "");
+    assert!(sql_config(&viewer).script);
     assert!(editor_focused(&viewer));
+    // A script is a scratchpad: grouping it builds nothing.
+    assert!(!viewer.read(|view| view.sql_source_session()));
 }
 
 #[test]

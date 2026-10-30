@@ -204,44 +204,46 @@ FROM apples a";
         }
     }
 
-    /// Starts an empty SQL draft, replacing the working document even when it
-    /// is already SQL.
-    pub(crate) fn new_sql_query(&mut self, cx: &mut Cx<Self>) {
+    /// Starts an empty SQL source, or with `script` a SQL script, replacing
+    /// the working document even when it is already SQL.
+    pub(crate) fn new_sql(&mut self, script: bool, cx: &mut Cx<Self>) {
         let empty_sql = matches!(
             self.session.working.as_ref().map(|d| &d.view),
             Some(ViewKind::Sql(config)) if config.text.trim().is_empty()
         );
+        let kind = if script { "SQL script" } else { "SQL source" };
         if self.session.dirty && !empty_sql {
             self.confirm(
-                "Start a new SQL query?".into(),
-                "The current view has unsaved changes. A new query replaces the working document.".into(),
-                "New SQL query".into(),
+                format!("Start a new {kind}?"),
+                format!("The current view has unsaved changes. A new {kind} replaces the working document."),
+                format!("New {kind}"),
                 false,
-                dialogs::ConfirmAction::NewSqlQuery,
+                dialogs::ConfirmAction::NewSql { script },
                 cx,
             );
         } else {
-            self.begin_new_sql_query(cx);
+            self.begin_new_sql(script, cx);
         }
     }
 
-    pub(crate) fn begin_new_sql_query(&mut self, cx: &mut Cx<Self>) {
-        self.start_sql_session(true, cx);
+    pub(crate) fn begin_new_sql(&mut self, script: bool, cx: &mut Cx<Self>) {
+        self.start_sql_session(Some(script), cx);
     }
 
     pub(crate) fn begin_sql_editor(&mut self, cx: &mut Cx<Self>) {
-        self.start_sql_session(false, cx);
+        self.start_sql_session(None, cx);
     }
 
-    /// Opens the SQL editor, on a new draft unless the working document is
-    /// already SQL and `fresh` is off.
-    fn start_sql_session(&mut self, fresh: bool, cx: &mut Cx<Self>) {
-        if fresh || !self.session.is_sql() {
+    /// Opens the SQL editor: on a new SQL source, or with `Some(true)` a new
+    /// SQL script, unless `new` is `None` and the working document is already SQL.
+    fn start_sql_session(&mut self, new: Option<bool>, cx: &mut Cx<Self>) {
+        let new = new.or((!self.session.is_sql()).then_some(false));
+        if let Some(script) = new {
             self.rollback_navigation(cx);
             self.autosave_table_preferences(cx);
             self.remember_navigation_current();
             self.reset_sql_editor();
-            self.session.start_sql_draft();
+            self.session.start_sql_draft(script);
             self.computation.invalidate(self.session.token());
             self.loading = false;
             self.debouncing = false;

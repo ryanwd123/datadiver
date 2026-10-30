@@ -260,7 +260,7 @@ Save SQL with **Ctrl+S**. A saved SQL is a **SQL source**: it is listed under **
 
 A **SQL script** is a scratchpad for statements you run now and then, such as maintenance or one-off checks. Scripts are listed under **SQL scripts** in the database tree and in **Ctrl+P**, and open in the editor; views are not built on them. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 
-**New SQL query** in the command palette starts an empty SQL draft, even when the editor is already open.
+**New SQL source** and **New SQL script** in the command palette start an empty one in the editor, even when the editor is already open.
 
 **Open startup SQL script** in the command palette edits `duckdb_startup.sql`, which runs whenever the profile database opens. Use it for settings and attachments you always want, for example:
 

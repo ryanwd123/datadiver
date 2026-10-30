@@ -165,9 +165,14 @@ impl WindowSession {
             .is_some_and(|d| matches!(d.view, ViewKind::Sql(_)))
     }
 
-    pub fn start_sql_draft(&mut self) {
-        let mut draft = DocumentDefinition::draft_table("SQL query".into(), String::new());
-        draft.view = ViewKind::Sql(SqlConfig::default());
+    /// Starts an unsaved SQL source, or with `script` a SQL script.
+    pub fn start_sql_draft(&mut self, script: bool) {
+        let name = if script { "SQL script" } else { "SQL source" };
+        let mut draft = DocumentDefinition::draft_table(name.into(), String::new());
+        draft.view = ViewKind::Sql(SqlConfig {
+            script,
+            ..SqlConfig::default()
+        });
         self.working = Some(draft);
         self.identity = SessionIdentity::DraftSql;
         self.source_path = None;
@@ -871,7 +876,7 @@ mod tests {
         assert!(session.navigation_entry().is_none());
         session.start_query_draft("Synthetic pivot".into()).unwrap();
         assert!(session.navigation_entry().is_none());
-        session.start_sql_draft();
+        session.start_sql_draft(false);
         assert!(session.navigation_entry().is_some());
     }
 

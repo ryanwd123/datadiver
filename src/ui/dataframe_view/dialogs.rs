@@ -31,7 +31,8 @@ fn command_item((command, label, shortcut): &(&'static crate::application::comma
 #[derive(Clone, Debug)]
 pub enum ConfirmAction {
     OpenSqlEditor,
-    NewSqlQuery,
+    /// A new SQL script, or else a new SQL source.
+    NewSql { script: bool },
     DropRelation(crate::domain::documents::DatabaseView),
     RemoveWatchedFolder(PathBuf),
 }
@@ -221,7 +222,7 @@ impl DataFrameView {
     fn run_confirmed(&mut self, action: ConfirmAction, cx: &mut Cx<Self>) {
         match action {
             ConfirmAction::OpenSqlEditor => self.begin_sql_editor(cx),
-            ConfirmAction::NewSqlQuery => self.begin_new_sql_query(cx),
+            ConfirmAction::NewSql { script } => self.begin_new_sql(script, cx),
             ConfirmAction::DropRelation(relation) => {
                 let database = self.database.clone();
                 self.run_tree_delete(move || database.drop_relation(&relation), cx);
