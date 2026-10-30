@@ -296,6 +296,16 @@ pub fn execute_query(
                 rank(upper)
             ));
             format!("avg({ranked})")
+        } else if aggregation.operation == AggregationOp::UniqueValuesList {
+            // Each value's first row in the cell carries it with its row; a
+            // map ordered by row then lists the values without lambdas,
+            // which PIVOT does not allow.
+            let first = internal_name(format!("__qp_query_first_{index}"));
+            let cell = group_by.iter().chain(&pivot_by).cloned().collect::<Vec<_>>().join(", ");
+            ranks.push(format!(
+                "CASE WHEN {measure} IS NOT NULL AND row_number() OVER (PARTITION BY {cell}, {measure} ORDER BY {row_id}) = 1 THEN {{'r': {row_id}, 'v': {measure}}} END AS {first}"
+            ));
+            format!("map_values(map_from_entries(list_sort(list_distinct(list({first})))))")
         } else if aggregation.operation == AggregationOp::RowCount && !condition.is_empty() {
             format!("count({measure})")
         } else {
@@ -912,8 +922,15 @@ fn aggregate_expression(
         }
         AggregationOp::ValuesList => format!("list({source} ORDER BY {row_id})"),
         AggregationOp::UniqueValuesList => {
-            let list = format!("list({source} ORDER BY {row_id}){}", filter(parameters, false));
-            return Ok(format!("list_distinct({list})"));
+            // The first row of each value, in row order, as Polars keeps them;
+            // `list_distinct` would scramble the order.
+            let rows = format!(
+                "list({{'v': {source}, 'r': {row_id}}} ORDER BY {source}, {row_id}){}",
+                filter(parameters, false)
+            );
+            return Ok(format!(
+                "coalesce(list_transform([{rows}], lambda l: list_transform(list_sort(list_transform(list_filter(l, lambda e, i: e.v IS NOT NULL AND (i = 1 OR l[i - 1].v IS DISTINCT FROM e.v)), lambda e: {{'r': e.r, 'v': e.v}})), lambda e: e.v))[1], [])"
+            ));
         }
         AggregationOp::SqlExpression => return Err("SQL expression is missing".into()),
     };

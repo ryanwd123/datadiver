@@ -235,6 +235,66 @@ mod parity_tests {
     }
 
     #[test]
+    fn unique_values_keep_first_seen_order_across_engines() {
+        use crate::domain::documents::{Condition, ConditionOp, ConditionValue};
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("visits.csv");
+        // Values repeat out of sorted order, with nulls, and Gold never has
+        // a second-half row.
+        let mut text = String::from("team,half,city\n");
+        for n in 0..60 {
+            let team = ["Red", "Blue", "Gold"][n % 3];
+            let half = if team == "Gold" { "First" } else { ["First", "Second"][n % 2] };
+            let city = if n % 7 == 3 { String::new() } else { ["Oslo", "Lima", "Kyiv", "Bern", "Doha"][(n * 7919) % 5].into() };
+            text.push_str(&format!("{team},{half},{city}\n"));
+        }
+        std::fs::write(&path, text).unwrap();
+        let load = |engine| {
+            sources
+                .load(&path, ReadOptions { engine, ..ReadOptions::default() }, LoadMode::Check)
+                .unwrap()
+        };
+        let (duckdb, polars) = (load(Engine::DuckDb), load(Engine::Polars));
+        let mut cities = aggregation("city", AggregationOp::UniqueValuesList);
+        cities.name = Some("cities".into());
+        let mut second = cities.clone();
+        second.name = Some("second half".into());
+        second.conditions = vec![Condition {
+            column: "half".into(),
+            operation: ConditionOp::Equal,
+            values: vec![ConditionValue::Literal(ScalarKey::String("Second".into()))],
+        }];
+        let clock = EvaluationClock::system();
+        for pivot_by in [vec![], vec![Dimension::Column("half".into())]] {
+            let config = QueryConfig {
+                group_by: vec![Dimension::Column("team".into())],
+                pivot_by,
+                aggregations: vec![cities.clone(), second.clone()],
+                ..Default::default()
+            };
+            let run = |store: &Store| execute_filtered(store, &config, &[], &[], &clock, 1000, &mut SqlTrace::default()).unwrap();
+            let duckdb_rows = rows(&run(&duckdb));
+            assert_eq!(duckdb_rows, rows(&run(&polars)), "{config:?}");
+            if config.pivot_by.is_empty() {
+                // Not sorted: first-seen order differs from it.
+                let red = &duckdb_rows.1.iter().find(|row| row[0].as_deref() == Some("Red")).unwrap()[1];
+                assert_ne!(red.as_deref(), Some("[Bern, Doha, Kyiv, Lima, Oslo]"));
+                let custom = QueryConfig {
+                    aggregations: config
+                        .aggregations
+                        .iter()
+                        .map(|a| Aggregation::sql_expression(editor_expression(a, duckdb.schema(), Engine::DuckDb).unwrap(), None))
+                        .collect(),
+                    ..config.clone()
+                };
+                let edited = execute_filtered(&duckdb, &custom, &[], &[], &clock, 1000, &mut SqlTrace::default()).unwrap();
+                assert_eq!(rows(&edited), duckdb_rows, "editor SQL");
+            }
+        }
+    }
+
+    #[test]
     fn percentiles_match_across_engines_for_every_interpolation() {
         use crate::domain::documents::{Condition, ConditionOp, ConditionValue, Interpolation};
         let home = tempfile::tempdir().unwrap();
