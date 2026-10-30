@@ -250,6 +250,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::ViewOptions,
     CommandId::QueryEngine,
     CommandId::TogglePreserveOrder,
+    CommandId::ToggleScan,
     CommandId::ToggleCrossFilter,
     CommandId::ToggleAvailableFirst,
     CommandId::StartupSql,

@@ -1119,6 +1119,46 @@ fn source_checks_skip_unchanged_files_but_still_see_edits() {
     assert!(viewer.read(|view| std::sync::Arc::ptr_eq(&view.session.source.store, &store)));
 }
 
+#[test]
+fn read_mode_scans_a_file_in_place_and_reads_it_into_memory_again() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,n
+North,1
+South,2
+North,3
+").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    let scanned = |viewer: &Viewer| viewer.read(|view| view.session.source.store.lock().unwrap().is_database_view());
+    assert!(!scanned(&viewer));
+    viewer.view_option(super::view_options::ViewOption::ReadMode);
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.dialog.is_none());
+        assert_eq!(view.query_file().as_deref(), Some(path.to_string_lossy().as_ref()));
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    assert!(scanned(&viewer));
+    // The choice is the file's, so opening it again scans it.
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    assert!(repository.load_table_preferences(&path).unwrap().file.scan);
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert!(scanned(&viewer));
+    // The command switches back, and the file is read into memory.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleScan, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.query_file().is_none());
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    assert!(!scanned(&viewer));
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
+}
+
 fn engine(viewer: &Viewer) -> crate::infrastructure::store::Engine {
     viewer.read(|view| view.session.source.store.lock().unwrap().engine())
 }

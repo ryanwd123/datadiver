@@ -12,6 +12,7 @@ pub(crate) enum ViewOption {
     AutoRun,
     Engine,
     PreserveOrder,
+    ReadMode,
     CrossFilter,
     AvailableFirst,
 }
@@ -43,7 +44,21 @@ impl DataFrameView {
             let engine = super::sql_editor::sql_engine_label(self.sql_engine());
             rows.push((ViewOption::Engine, "Engine", format!("{engine} · Enter switches"), None));
         }
+        if self.query_file().is_some() {
+            rows.push((
+                ViewOption::ReadMode,
+                "Read mode",
+                "Scan: DuckDB reads the file in place on every query · Enter reads it into memory".into(),
+                None,
+            ));
+        }
         if self.settings_file().is_some() {
+            rows.push((
+                ViewOption::ReadMode,
+                "Read mode",
+                "In memory · Enter scans the file in place instead, for files too big to hold".into(),
+                None,
+            ));
             // The file's setting changes before the file is read again.
             let engine = self.file_settings.engine.unwrap_or(self.session.source.engine);
             rows.push((ViewOption::Engine, "Query engine", format!("{} · Enter switches", engine.label()), None));
@@ -113,6 +128,12 @@ impl DataFrameView {
                 self.set_file_engine(engine, cx);
             }
             ViewOption::PreserveOrder => self.toggle_preserve_order(cx),
+            ViewOption::ReadMode => {
+                // The file opens again, so the list closes rather than show the old mode.
+                self.close_dialog(cx);
+                self.toggle_scan(cx);
+                return;
+            }
             ViewOption::CrossFilter => self.toggle_cross_filter(cx),
             ViewOption::AvailableFirst => self.toggle_available_first(cx),
         }

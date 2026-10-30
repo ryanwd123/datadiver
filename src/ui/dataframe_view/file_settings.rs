@@ -108,6 +108,34 @@ impl DataFrameView {
         self.change_file_settings(|file| file.preserve_order = !file.preserve_order, cx);
     }
 
+    /// The file open now, read into memory or scanned in place.
+    pub(crate) fn read_mode_file(&self) -> Option<PathBuf> {
+        self.settings_file().or_else(|| self.query_file().map(PathBuf::from))
+    }
+
+    /// Switches the open file between reading it into memory and scanning it
+    /// in place, keeps the choice with the file, and opens it again that way.
+    pub(crate) fn toggle_scan(&mut self, cx: &mut Cx<Self>) {
+        let Some(path) = self.read_mode_file() else {
+            self.copy_status = Some("Scanning in place applies to files".into());
+            cx.notify();
+            return;
+        };
+        // A scanned file's view may not have read its settings, so start from the saved ones.
+        let mut file = self.table_writer.load(&path).map(|preferences| preferences.file).unwrap_or_default();
+        file.scan = self.query_file().is_none();
+        let patch = TablePreferencesPatch {
+            file: Some(file),
+            ..Default::default()
+        };
+        if let Err(error) = self.table_writer.edit(path.clone(), patch) {
+            self.error = Some(format!("Cannot save the file settings: {error}"));
+            cx.notify();
+            return;
+        }
+        self.navigate_to_file(FileEntry::Source(path), true, false, false, cx);
+    }
+
     pub(crate) fn toggle_cross_filter(&mut self, cx: &mut Cx<Self>) {
         self.change_slicer_options(|options| options.cross_filter = !options.cross_filter, cx);
     }

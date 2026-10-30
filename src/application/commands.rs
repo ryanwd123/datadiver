@@ -12,6 +12,7 @@ pub enum CommandId {
     ViewOptions,
     QueryEngine,
     TogglePreserveOrder,
+    ToggleScan,
     ToggleCrossFilter,
     ToggleAvailableFirst,
     StartupSql,
@@ -153,6 +154,12 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::TogglePreserveOrder,
         key: "toggle_preserve_order",
         label: "Preserve row order when DuckDB reads this file",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ToggleScan,
+        key: "toggle_scan",
+        label: "Read mode: scan this file in place or read it into memory",
         default_binding: None,
     },
     Command {

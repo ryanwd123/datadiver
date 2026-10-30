@@ -221,6 +221,7 @@ impl DataFrameView {
             move || {
                 let _span = crate::infrastructure::performance::Span::new("source_check");
                 let mut file = Default::default();
+                let mut scanned = false;
                 let source = if let Some(id) = &sql_source {
                     FrameSnapshot::new(sql_source_rows(&repository, &database, id)?, existing.source_revision + 1)
                 } else if let Some(view) = &database_view {
@@ -228,13 +229,20 @@ impl DataFrameView {
                 } else {
                     let options;
                     (options, file) = file_read(&repository, &table_writer, &read_path);
-                    match sources.load_reusing(&read_path, options, LoadMode::Check, existing.source_identity.as_ref())? {
-                        SourceLoad::Reused => existing,
-                        SourceLoad::Loaded(store) => FrameSnapshot::new(*store, existing.source_revision + 1),
+                    if direct_destination && file.scan {
+                        // A file set to scan opens as a query read in place.
+                        scanned = true;
+                        let scan = crate::domain::documents::DatabaseView::file(read_path.to_string_lossy());
+                        FrameSnapshot::new(database.load_view(&scan)?, existing.source_revision + 1)
+                    } else {
+                        match sources.load_reusing(&read_path, options, LoadMode::Check, existing.source_identity.as_ref())? {
+                            SourceLoad::Reused => existing,
+                            SourceLoad::Loaded(store) => FrameSnapshot::new(*store, existing.source_revision + 1),
+                        }
                     }
                 };
-                let preferences = direct_destination.then(|| table_writer.load(&read_path));
-                Ok::<_, String>((source, source_modified(Some(&read_path.to_string_lossy())), preferences, file))
+                let preferences = (direct_destination && !scanned).then(|| table_writer.load(&read_path));
+                Ok::<_, String>((source, source_modified(Some(&read_path.to_string_lossy())), preferences, file, scanned))
             },
             move |view: &mut Self, cx, read| {
                 if !view.session.accepts(token) {
@@ -243,7 +251,7 @@ impl DataFrameView {
                 view.loading = false;
                 let _transition = crate::infrastructure::performance::Span::new("session_transition");
                 match read {
-                    Ok((source, modified, preferences, file)) => {
+                    Ok((source, modified, preferences, file, scanned)) => {
                         view.file_settings = file;
                         let previous_preferences_error = view.table_preferences_error.clone();
                         view.table_preferences_error = None;
@@ -259,6 +267,11 @@ impl DataFrameView {
                         let destination = match entry {
                             FileEntry::View(definition) => view.session.navigate_to_view(Ok(source), definition),
                             FileEntry::StartupSql => unreachable!("startup SQL uses SQL navigation"),
+                            FileEntry::Source(_) if scanned => {
+                                let scan = crate::domain::documents::DatabaseView::file(path.to_string_lossy());
+                                view.session
+                                    .navigate_to_view(Ok(source), DocumentDefinition::draft_database_view(scan))
+                            }
                             FileEntry::Source(_) => view
                                 .session
                                 .navigate_to_raw(Ok(source), Some(path.to_string_lossy().into_owned()))
