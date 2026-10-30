@@ -1283,8 +1283,11 @@ mod tests {
                     .iter()
                     .map(|s| s.label.as_str())
                     .collect::<Vec<_>>(),
-                ["asin", "\"ISBN10\""]
+                ["asin", "ISBN10"]
             );
+            // Mixed case needs no quotes: DuckDB matches it ignoring case.
+            let run = service.run(&format!("SELECT a.{} FROM {relation} AS a", suggestions[1].insert_text), 10);
+            assert!(run.error.is_none(), "{:?}", run.error);
         }
         // Functions come with their signatures, and macros the script made too.
         let round = catalog.functions.iter().find(|f| f.name == "round").unwrap();

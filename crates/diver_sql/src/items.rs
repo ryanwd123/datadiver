@@ -507,13 +507,15 @@ fn columns_of(
     }
 }
 
-/// Whether DuckDB needs `name` quoted: anything but plain lowercase words, and reserved words.
+/// Whether DuckDB needs `name` quoted: anything but plain words, and reserved
+/// words. Case does not count, as DuckDB matches unquoted names ignoring case
+/// and keeps the case they are written in.
 pub fn needs_quotes(name: &str) -> bool {
     let mut chars = name.chars();
     let plain = chars
         .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     !plain
         || Kw::lookup(name).is_some_and(|kw| {
             kw.category() != KwCategory::Unreserved && kw.category() != KwCategory::Contextual
@@ -542,7 +544,9 @@ mod tests {
         assert_eq!(quote_if_needed("order date"), "\"order date\"");
         assert_eq!(quote_if_needed("select"), "\"select\"");
         assert_eq!(quote_if_needed("year"), "year");
-        assert_eq!(quote_if_needed("Mixed"), "\"Mixed\"");
+        assert_eq!(quote_if_needed("Mixed"), "Mixed");
+        assert_eq!(quote_if_needed("ID"), "ID");
+        assert_eq!(quote_if_needed("SELECT"), "\"SELECT\"");
         assert_eq!(quote_if_needed("x\"y"), "\"x\"\"y\"");
         assert_eq!(quote_if_needed("1st"), "\"1st\"");
     }
