@@ -235,6 +235,107 @@ mod parity_tests {
     }
 
     #[test]
+    fn percentiles_match_across_engines_for_every_interpolation() {
+        use crate::domain::documents::{Condition, ConditionOp, ConditionValue, Interpolation};
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("scores.csv");
+        // Groups of different sizes, with nulls, so (n - 1) * q lands on and
+        // between ranks.
+        let mut text = String::from("team,half,score\n");
+        for n in 0..47 {
+            let team = ["Red", "Blue", "Gold"][n % 3];
+            let half = ["First", "Second"][n % 2];
+            let score = if n % 9 == 4 { String::new() } else { ((n * 37) % 23).to_string() };
+            text.push_str(&format!("{team},{half},{score}\n"));
+        }
+        std::fs::write(&path, text).unwrap();
+        let load = |engine| {
+            sources
+                .load(&path, ReadOptions { engine, ..ReadOptions::default() }, LoadMode::Check)
+                .unwrap()
+        };
+        let (duckdb, polars) = (load(Engine::DuckDb), load(Engine::Polars));
+        let clock = EvaluationClock::system();
+        for interpolation in [
+            Interpolation::Linear,
+            Interpolation::Lower,
+            Interpolation::Higher,
+            Interpolation::Nearest,
+            Interpolation::Midpoint,
+        ] {
+            for percentile in [0.0, 10.0, 50.0, 95.0, 100.0] {
+                let mut score = aggregation("score", AggregationOp::Percentile);
+                score.percentile = Some(percentile);
+                score.interpolation = Some(interpolation.clone());
+                score.name = Some("all".into());
+                // The same percentile again, over only the first half.
+                let mut first_half = score.clone();
+                first_half.name = Some("first half".into());
+                first_half.conditions = vec![Condition {
+                    column: "half".into(),
+                    operation: ConditionOp::Equal,
+                    values: vec![ConditionValue::Literal(ScalarKey::String("First".into()))],
+                }];
+                for pivot_by in [vec![], vec![Dimension::Column("half".into())]] {
+                    let config = QueryConfig {
+                        group_by: vec![Dimension::Column("team".into())],
+                        pivot_by,
+                        aggregations: vec![score.clone(), first_half.clone()],
+                        totals: true,
+                        ..Default::default()
+                    };
+                    let run = |store: &Store| {
+                        execute_filtered(store, &config, &[], &[], &clock, 1000, &mut SqlTrace::default()).unwrap()
+                    };
+                    let case = format!("{interpolation:?} {percentile} pivot {}", !config.pivot_by.is_empty());
+                    // Linear interpolation may round its last digit differently.
+                    let same = |a: &[Option<String>], b: &[Option<String>]| {
+                        a.len() == b.len()
+                            && a.iter().zip(b).all(|(a, b)| match (a, b) {
+                                (Some(a), Some(b)) => match (a.parse::<f64>(), b.parse::<f64>()) {
+                                    (Ok(a), Ok(b)) => (a - b).abs() < 1e-9,
+                                    _ => a == b,
+                                },
+                                _ => a == b,
+                            })
+                    };
+                    let (names, left) = rows(&run(&duckdb));
+                    let (other, right) = rows(&run(&polars));
+                    assert_eq!(names, other, "{case}");
+                    assert!(
+                        left.len() == right.len() && left.iter().zip(&right).all(|(a, b)| same(a, b)),
+                        "{case}\n{left:?}\n{right:?}"
+                    );
+                    if config.pivot_by.is_empty() {
+                        // The SQL the aggregation editor shows gives the same values.
+                        let custom = QueryConfig {
+                            aggregations: config
+                                .aggregations
+                                .iter()
+                                .map(|a| {
+                                    let sql = editor_expression(a, duckdb.schema(), Engine::DuckDb).unwrap();
+                                    Aggregation::sql_expression(sql, None)
+                                })
+                                .collect(),
+                            ..config.clone()
+                        };
+                        let edited = execute_filtered(&duckdb, &custom, &[], &[], &clock, 1000, &mut SqlTrace::default());
+                        assert_eq!(rows(&edited.unwrap()).1, left, "editor SQL {case}");
+                    }
+                    let totals = |store: &Store| {
+                        let row = execute_totals(store, &config, &[], &[], &clock).unwrap();
+                        row.into_iter().unzip::<_, _, Vec<_>, Vec<_>>()
+                    };
+                    let ((names, left), (other, right)) = (totals(&duckdb), totals(&polars));
+                    assert_eq!(names, other, "totals {case}");
+                    assert!(same(&left, &right), "totals {case}\n{left:?}\n{right:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn group_by_pivot_slicers_search_and_totals_match_across_engines() {
         let home = tempfile::tempdir().unwrap();
         let sources = Sources::for_profile(home.path());

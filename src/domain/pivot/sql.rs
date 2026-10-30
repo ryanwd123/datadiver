@@ -237,6 +237,8 @@ pub fn execute_query(
         projection.push(format!("rowid AS {row_id}"));
     }
     let mut using_parameters = Vec::new();
+    // Windows over the pivot's input, for values PIVOT cannot aggregate itself.
+    let mut ranks = Vec::new();
     for (index, aggregation) in config.aggregations.iter().enumerate() {
         if let Some(sql) = &aggregation.sql {
             expressions.push(format!("{}\n", named_expression(sql.clone(), aggregation)));
@@ -280,18 +282,32 @@ pub fn execute_query(
             ));
             measure
         };
-        let expression =
-            if aggregation.operation == AggregationOp::RowCount && !condition.is_empty() {
-                format!("count({measure})")
-            } else {
-                aggregate_expression(
-                    aggregation,
-                    &measure,
-                    &row_id,
-                    match_order.as_deref(),
-                    &mut using_parameters,
-                )?
+        let expression = if let Some((quantile, lower, upper)) = order_statistic(aggregation)? {
+            // PIVOT takes one aggregate per value, so each cell's ranks come
+            // from windows over its rows; the values at them are averaged.
+            let ranked = internal_name(format!("__qp_query_rank_{index}"));
+            let cell = group_by.iter().chain(&pivot_by).cloned().collect::<Vec<_>>().join(", ");
+            let rank = |round: &str| {
+                format!("{round}((count({measure}) OVER (PARTITION BY {cell}) - 1) * {quantile})")
             };
+            ranks.push(format!(
+                "CASE WHEN {measure} IS NOT NULL AND row_number() OVER (PARTITION BY {cell}, {measure} IS NULL ORDER BY {measure}) - 1 BETWEEN {} AND {} THEN {measure} END AS {ranked}",
+                rank(lower),
+                rank(upper)
+            ));
+            format!("avg({ranked})")
+        } else if aggregation.operation == AggregationOp::RowCount && !condition.is_empty() {
+            format!("count({measure})")
+        } else {
+            aggregate_expression(
+                aggregation,
+                &measure,
+                &row_id,
+                match_order.as_deref(),
+                None,
+                &mut using_parameters,
+            )?
+        };
         expressions.push(named_expression(expression, aggregation));
     }
     if expressions.is_empty() {
@@ -302,11 +318,18 @@ pub fn execute_query(
     } else {
         format!(",\n        {}", projection.join(",\n        "))
     };
-    let input_sql = format!(
+    let mut input_sql = format!(
         "SELECT\n        *{extra}\n    FROM {}{}",
         from_sql,
         where_sql.replacen(" WHERE ", "\n    WHERE ", 1)
     );
+    if !ranks.is_empty() {
+        // The ranks read the measures computed inside and bind nothing.
+        input_sql = format!(
+            "SELECT\n        *,\n        {}\n    FROM (\n    {input_sql}\n    ) AS __qp_ranked",
+            ranks.join(",\n        ")
+        );
+    }
     parameters.extend(where_values.clone());
     parameters.extend(using_parameters);
     // Per-row totals come from the same rows grouped without the pivot.
@@ -562,26 +585,18 @@ fn grouped_select(
         let column = quote_identifier(
             &schema_column(source.schema(), &aggregation.source_column)?.storage_name,
         );
-        let expression =
-            aggregate_expression(aggregation, &column, "rowid", None, &mut parameters)?;
+        let mut condition_values = Vec::new();
         let conditions = aggregation
             .conditions
             .iter()
             .map(|condition| {
-                condition_expression(source.schema(), condition, clock, &mut parameters)
+                condition_expression(source.schema(), condition, clock, &mut condition_values)
             })
             .collect::<Result<Vec<_>, _>>()?
             .join(" AND ");
-        let filter = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!(" FILTER (WHERE {conditions})")
-        };
-        let expression = if aggregation.operation == AggregationOp::UniqueValuesList {
-            format!("list_distinct(list({column} ORDER BY rowid){filter})")
-        } else {
-            format!("{expression}{filter}")
-        };
+        let condition = (!conditions.is_empty()).then_some((conditions.as_str(), condition_values.as_slice()));
+        let expression =
+            aggregate_expression(aggregation, &column, "rowid", None, condition, &mut parameters)?;
         expressions.push(named_expression(expression, aggregation));
     }
     let mut projection = dimensions[..group_count]
@@ -763,8 +778,7 @@ pub fn editor_expression(
         return Ok(named_expression(sql.clone(), aggregation));
     }
     let column = quote_identifier(&schema_column(schema, &aggregation.source_column)?.storage_name);
-    let mut parameters = Vec::new();
-    let expression = aggregate_expression(aggregation, &column, "rowid", None, &mut parameters)?;
+    let mut condition_values = Vec::new();
     let conditions = aggregation
         .conditions
         .iter()
@@ -773,21 +787,14 @@ pub fn editor_expression(
                 schema,
                 condition,
                 &EvaluationClock::system(),
-                &mut parameters,
+                &mut condition_values,
             )
         })
         .collect::<Result<Vec<_>, _>>()?
         .join(" AND ");
-    let filter = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" FILTER (WHERE {conditions})")
-    };
-    let expression = if aggregation.operation == AggregationOp::UniqueValuesList {
-        format!("list_distinct(list({column} ORDER BY rowid){filter})")
-    } else {
-        format!("{expression}{filter}")
-    };
+    let condition = (!conditions.is_empty()).then_some((conditions.as_str(), condition_values.as_slice()));
+    let mut parameters = Vec::new();
+    let expression = aggregate_expression(aggregation, &column, "rowid", None, condition, &mut parameters)?;
     inline_parameters(&expression, &parameters)
         .map(|expression| named_expression(expression, aggregation))
 }
@@ -834,8 +841,39 @@ fn aggregate_expression(
     source: &str,
     row_id: &str,
     match_order: Option<&str>,
+    condition: Option<(&str, &[Value])>,
     parameters: &mut Vec<Value>,
 ) -> Result<String, String> {
+    // The FILTER clause of one aggregate call, binding the condition's values
+    // where it is written so parameters stay in text order.
+    let filter = |parameters: &mut Vec<Value>, non_null: bool| {
+        let mut parts = Vec::new();
+        if non_null {
+            parts.push(format!("{source} IS NOT NULL"));
+        }
+        if let Some((sql, values)) = condition {
+            parts.push(format!("({sql})"));
+            parameters.extend(values.iter().cloned());
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" FILTER (WHERE {})", parts.join(" AND "))
+        }
+    };
+    if let Some((quantile, lower, upper)) = order_statistic(aggregation)? {
+        // The values at the lower and upper rank, averaged, as Polars picks them.
+        let sorted = format!("list_sort(list({source}){})", filter(parameters, true));
+        let rank = |parameters: &mut Vec<Value>, round: &str| {
+            format!(
+                "CAST({round}((count({source}){} - 1) * {quantile}) AS BIGINT) + 1",
+                filter(parameters, false)
+            )
+        };
+        let first = rank(parameters, lower);
+        let last = rank(parameters, upper);
+        return Ok(format!("list_avg(list_slice({sorted}, {first}, {last}))"));
+    }
     let operation = match aggregation.operation {
         AggregationOp::Sum => format!("sum({source})"),
         AggregationOp::Mean => format!("avg({source})"),
@@ -868,30 +906,41 @@ fn aggregate_expression(
             }
         }
         AggregationOp::Percentile => {
-            let percentile = aggregation.percentile.unwrap_or(50.0);
-            if !(0.0..=100.0).contains(&percentile) {
-                return Err("percentile must be between 0 and 100".into());
-            }
-            let function = match aggregation
-                .interpolation
-                .as_ref()
-                .unwrap_or(&Interpolation::Linear)
-            {
-                Interpolation::Nearest | Interpolation::Lower | Interpolation::Higher => {
-                    "quantile_disc"
-                }
-                Interpolation::Linear | Interpolation::Midpoint => "quantile_cont",
-            };
-            parameters.push(Value::Double(percentile / 100.0));
-            format!("{function}({source}, CAST(? AS DOUBLE))")
+            // Only linear interpolation reaches here; see `order_statistic`.
+            parameters.push(Value::Double(aggregation.percentile.unwrap_or(50.0) / 100.0));
+            format!("quantile_cont({source}, CAST(? AS DOUBLE))")
         }
         AggregationOp::ValuesList => format!("list({source} ORDER BY {row_id})"),
         AggregationOp::UniqueValuesList => {
-            format!("list_distinct(list({source} ORDER BY {row_id}))")
+            let list = format!("list({source} ORDER BY {row_id}){}", filter(parameters, false));
+            return Ok(format!("list_distinct({list})"));
         }
         AggregationOp::SqlExpression => return Err("SQL expression is missing".into()),
     };
-    Ok(operation)
+    Ok(format!("{operation}{}", filter(parameters, false)))
+}
+
+/// For a percentile other than linear: its quantile as SQL and the functions
+/// that round `(n - 1) * quantile` down and up to the ranks it reads, as
+/// Polars does. DuckDB's `quantile_disc` reads rank `ceil(n * quantile) - 1`
+/// instead, which differs.
+fn order_statistic(aggregation: &Aggregation) -> Result<Option<(String, &'static str, &'static str)>, String> {
+    if aggregation.operation != AggregationOp::Percentile {
+        return Ok(None);
+    }
+    let percentile = aggregation.percentile.unwrap_or(50.0);
+    if !(0.0..=100.0).contains(&percentile) {
+        return Err("percentile must be between 0 and 100".into());
+    }
+    let (lower, upper) = match aggregation.interpolation.as_ref().unwrap_or(&Interpolation::Linear) {
+        Interpolation::Linear => return Ok(None),
+        Interpolation::Lower => ("floor", "floor"),
+        Interpolation::Higher => ("ceil", "ceil"),
+        Interpolation::Nearest => ("round", "round"),
+        Interpolation::Midpoint => ("floor", "ceil"),
+    };
+    // Text parses to exactly the double Polars computes.
+    Ok(Some((format!("CAST('{:?}' AS DOUBLE)", percentile / 100.0), lower, upper)))
 }
 
 fn condition_expression(
