@@ -551,14 +551,19 @@ fn sql_alias_completion_triggers_on_dot_and_inserts_only_column() {
     viewer.update(|view, cx| view.open_sql_editor(cx));
     viewer.run_until_parked();
     panel(&viewer, |panel| {
-        *panel.catalog.write().unwrap() = vec![crate::domain::sql_editor::Relation {
-            catalog: "db".into(),
-            schema: "main".into(),
-            name: "apples".into(),
-            columns: vec!["color".into()],
-            is_view: false,
-            current_database: true,
-        }];
+        *panel.catalog.write().unwrap() = crate::domain::sql_editor::SqlCatalog {
+            relations: vec![crate::domain::sql_editor::Relation {
+                catalog: "db".into(),
+                schema: "main".into(),
+                name: "apples".into(),
+                columns: vec!["color".into()],
+                is_view: false,
+                current_database: true,
+                ..Default::default()
+            }],
+            current_database: "db".into(),
+            ..Default::default()
+        };
     });
     place(&viewer, "SELECT a\nFROM apples a", 8..8);
     viewer.input(".");
@@ -566,7 +571,7 @@ fn sql_alias_completion_triggers_on_dot_and_inserts_only_column() {
     viewer.render();
     assert_eq!(completion_labels(&viewer).unwrap()[0], "color");
     press(&viewer, "enter");
-    let expected = "SELECT a.\"color\"\nFROM apples a";
+    let expected = "SELECT a.color\nFROM apples a";
     assert_eq!(sql_text(&viewer), expected);
     assert!(viewer.read(|view| view.session.dirty));
     assert_eq!(sql_config(&viewer).text, expected);

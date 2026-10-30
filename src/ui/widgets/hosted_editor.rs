@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 
-use code_editor::{Action, Chord, CompletionProvider, Editor, Event, Mods, Options, Theme};
+use code_editor::{Action, Chord, CompletionProvider, Editor, Event, LanguageService, Mods, Options, Theme};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
@@ -28,9 +28,14 @@ pub struct HostedEditor {
 }
 
 impl HostedEditor {
-    /// A SQL editor painted into `host`'s frames. Without a window (headless
-    /// tests) it still edits; it just never asks for a repaint.
-    pub fn sql(host: Option<HWND>, completions: impl CompletionProvider + 'static) -> Self {
+    /// A SQL editor painted into `host`'s frames, with the host's completions
+    /// and language features. Without a window (headless tests) it still
+    /// edits; it just never asks for a repaint.
+    pub fn sql(
+        host: Option<HWND>,
+        completions: impl CompletionProvider + 'static,
+        language: impl LanguageService + 'static,
+    ) -> Self {
         let options = Options {
             // Lines stay lines: the panel is narrow and SQL is easier to read unwrapped.
             word_wrap: false,
@@ -39,6 +44,7 @@ impl HostedEditor {
         let editor = Editor::create_hosted(host.unwrap_or_default(), options, Theme::Light).expect("create the SQL editor");
         editor.set_language("sql");
         editor.set_completion_provider(completions);
+        editor.set_language_service(Some(Rc::new(language)));
         let changed = Rc::new(Cell::new(false));
         let flag = changed.clone();
         editor.on_event(move |_, event| {
@@ -93,6 +99,26 @@ impl HostedEditor {
     /// Whether the text changed since the last call.
     pub fn take_changed(&self) -> bool {
         self.changed.replace(false)
+    }
+
+    /// The underlined problems as (start, end, message), checked now.
+    pub fn diagnostics(&self) -> Vec<(usize, usize, String)> {
+        self.editor.refresh_diagnostics();
+        self.editor.diagnostics()
+    }
+
+    /// The hover text at a window position, as resting the mouse there shows.
+    pub fn hover_text(&self, pos: Point) -> Option<String> {
+        let (x, y) = self.local(pos);
+        self.editor.hover_now(x, y)
+    }
+
+    /// The signature popup's label and its highlighted argument.
+    pub fn signature(&self) -> Option<(String, Option<String>)> {
+        self.editor.signature().map(|s| {
+            let active = s.active.and_then(|r| s.label.get(r)).map(str::to_string);
+            (s.label, active)
+        })
     }
 
     pub fn trigger_suggest(&mut self) {

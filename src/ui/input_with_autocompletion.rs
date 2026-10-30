@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::domain::sql_editor::{self, Relation};
+use crate::domain::sql_editor::{self, SqlCatalog};
 use crate::infrastructure::path_completion::{self, PathRoots};
 use crate::ui::widgets::editor::{Completer, CompletionItem, Editor};
 
@@ -19,7 +19,7 @@ pub fn sql_columns(words: impl IntoIterator<Item = impl Into<String>>) -> Editor
 }
 
 /// The SQL panel's completions: tables, columns, and file paths.
-pub fn sql_catalog(catalog: Arc<RwLock<Vec<Relation>>>, path_roots: Arc<RwLock<PathRoots>>) -> impl code_editor::CompletionProvider {
+pub fn sql_catalog(catalog: Arc<RwLock<SqlCatalog>>, path_roots: Arc<RwLock<PathRoots>>) -> impl code_editor::CompletionProvider {
     SqlCompletionProvider { catalog, path_roots }
 }
 
@@ -53,7 +53,7 @@ pub fn path_completions(text: &str, offset: usize, roots: &RwLock<PathRoots>) ->
 }
 
 struct SqlCompletionProvider {
-    catalog: Arc<RwLock<Vec<Relation>>>,
+    catalog: Arc<RwLock<SqlCatalog>>,
     path_roots: Arc<RwLock<PathRoots>>,
 }
 
@@ -71,31 +71,64 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                     detail: item.detail,
                     kind: CompletionKind::Text,
                     range: Some(item.range),
+                    sort_text: None,
                 })
                 .collect();
         }
+        let Ok(catalog) = self.catalog.read() else {
+            return Vec::new();
+        };
+        let items = sql_editor::completions(cx.text, cx.offset, &catalog);
+        // A plain word lets the editor filter what fits the caret; a quoted
+        // name replaces its own range, so the list is filtered here.
         let word_start = cx.offset - cx.prefix.len();
-        self.catalog
-            .read()
-            .map(|catalog| {
-                sql_editor::completions(cx.text, cx.offset, &catalog)
-                    .into_iter()
-                    .map(|completion| CompletionItem {
-                        label: completion.label,
-                        insert_text: Some(completion.insert),
-                        kind: CompletionKind::Field,
-                        // A plain word lets the editor filter and add keywords; a
-                        // quoted name replaces its own range.
-                        range: (completion.range.start != word_start).then_some(completion.range),
-                        ..Default::default()
-                    })
-                    .collect()
+        let quoted = items.first().is_some_and(|item| usize::from(item.replace_range.start()) != word_start);
+        let typed = items
+            .first()
+            .map(|item| {
+                let start = usize::from(item.replace_range.start()).min(cx.offset);
+                cx.text[start..cx.offset].trim_start_matches('"').to_lowercase()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        items
+            .into_iter()
+            .filter(|item| !quoted || item.label.trim_matches('"').to_lowercase().contains(&typed))
+            .enumerate()
+            .map(|(rank, item)| CompletionItem {
+                kind: completion_kind(item.kind),
+                range: quoted.then(|| usize::from(item.replace_range.start())..usize::from(item.replace_range.end())),
+                // diver_sql ranks columns in scope first, keywords last.
+                sort_text: Some(format!("{:04}{rank:05}", item.sort_key)),
+                detail: item.detail,
+                insert_text: Some(item.insert_text),
+                label: item.label,
+                retrigger: false,
+            })
+            .collect()
     }
 
     fn trigger_characters(&self) -> Vec<char> {
         vec!['.', '\'', '"', '/', '\\']
+    }
+
+    /// diver_sql offers the keywords that fit the caret.
+    fn extra_words(&self) -> bool {
+        false
+    }
+}
+
+fn completion_kind(kind: diver_sql::ItemKind) -> code_editor::CompletionKind {
+    use code_editor::CompletionKind;
+    use diver_sql::ItemKind;
+    match kind {
+        ItemKind::Keyword | ItemKind::Operator => CompletionKind::Keyword,
+        ItemKind::Column => CompletionKind::Field,
+        ItemKind::Alias => CompletionKind::Variable,
+        ItemKind::Cte | ItemKind::Table | ItemKind::View | ItemKind::Type => CompletionKind::Class,
+        ItemKind::Schema | ItemKind::Database => CompletionKind::Module,
+        ItemKind::Function | ItemKind::TableFunction => CompletionKind::Function,
+        ItemKind::Setting | ItemKind::Extension | ItemKind::Pragma => CompletionKind::Constant,
+        ItemKind::File | ItemKind::Folder => CompletionKind::Text,
     }
 }
 

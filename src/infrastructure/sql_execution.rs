@@ -21,7 +21,7 @@ use crate::domain::ai::{
     relation_name,
 };
 use crate::domain::sql_editor::{
-    Relation, is_filterable_query, may_mutate, returns_rows, statements,
+    Relation, SqlCatalog, is_filterable_query, may_mutate, returns_rows, statements,
 };
 
 /// An in-memory database attached to the profile for complete SQL results.
@@ -55,7 +55,7 @@ pub struct SqlRun {
     pub truncated: bool,
     pub error: Option<String>,
     pub status: String,
-    pub catalog: Vec<Relation>,
+    pub catalog: SqlCatalog,
     pub path_roots: PathRoots,
     /// The result holds every row of a query, so slicers and value filters
     /// can narrow it; otherwise it holds at most the row limit.
@@ -90,13 +90,14 @@ impl SqlExecution {
                     is_view: row.get(3)?,
                     current_database: row.get(4)?,
                     columns: Vec::new(),
+                    column_types: Vec::new(),
                 })
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         relations.retain(|r| !r.name.starts_with("__qp_") && !r.name.starts_with("__dd_"));
-        let mut columns = self.connection.prepare("SELECT database_name, schema_name, table_name, column_name FROM duckdb_columns() WHERE NOT internal ORDER BY column_index").map_err(|e| e.to_string())?;
+        let mut columns = self.connection.prepare("SELECT database_name, schema_name, table_name, column_name, data_type FROM duckdb_columns() WHERE NOT internal ORDER BY column_index").map_err(|e| e.to_string())?;
         let rows = columns
             .query_map([], |row| {
                 Ok((
@@ -104,19 +105,149 @@ impl SqlExecution {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
         for row in rows {
-            let (catalog, schema, table, column) = row.map_err(|e| e.to_string())?;
+            let (catalog, schema, table, column, data_type) = row.map_err(|e| e.to_string())?;
             if let Some(r) = relations
                 .iter_mut()
                 .find(|r| r.catalog == catalog && r.schema == schema && r.name == table)
             {
                 r.columns.push(column);
+                r.column_types.push(data_type);
             }
         }
         Ok(relations)
+    }
+
+    /// Everything the SQL editor completes and checks against: relations,
+    /// databases and schemas, functions with their signatures, settings and
+    /// extensions.
+    pub fn sql_catalog(&self) -> Result<SqlCatalog, String> {
+        let strings = |sql: &str| -> Result<Vec<String>, String> {
+            let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())
+        };
+        let mut schemas = self
+            .connection
+            .prepare("SELECT database_name, schema_name FROM duckdb_schemas() WHERE schema_name NOT IN ('information_schema', 'pg_catalog') AND database_name NOT IN ('system', 'temp') ORDER BY 1, 2")
+            .map_err(|e| e.to_string())?;
+        let schemas = schemas
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut settings = self
+            .connection
+            .prepare("SELECT name, description FROM duckdb_settings() ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let settings = settings
+            .query_map([], |row| {
+                Ok(diver_sql::SettingInfo {
+                    name: row.get(0)?,
+                    description: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let hidden = |name: &String| name.starts_with("__dd_") || name.starts_with("__qp_");
+        Ok(SqlCatalog {
+            relations: self.catalog()?,
+            current_database: self.default_catalog()?,
+            databases: strings("SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY 1")?
+                .into_iter()
+                .filter(|name| !hidden(name))
+                .collect(),
+            schemas: schemas.into_iter().filter(|(d, _)| !hidden(d)).collect(),
+            functions: self.functions()?,
+            settings,
+            extensions: strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?,
+        })
+    }
+
+    /// Functions and macros by name, with up to a dozen signatures each like
+    /// `round(x DOUBLE, precision INTEGER) -> DOUBLE`. Operators are left out.
+    fn functions(&self) -> Result<Vec<diver_sql::FunctionInfo>, String> {
+        use diver_sql::FunctionKind;
+        const MAX_SIGNATURES: usize = 12;
+        let sql = "SELECT function_name, schema_name, function_type, array_to_string(parameters, chr(31)), array_to_string(parameter_types, chr(31)), varargs, return_type, description FROM duckdb_functions() WHERE function_type <> 'pragma' AND regexp_matches(function_name, '^[A-Za-z_][A-Za-z0-9_]*$') ORDER BY function_name, schema_name";
+        let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out: Vec<diver_sql::FunctionInfo> = Vec::new();
+        for row in rows {
+            let (name, schema, kind, names, types, varargs, returns, description) =
+                row.map_err(|e| e.to_string())?;
+            let split = |list: Option<String>| -> Vec<String> {
+                list.filter(|l| !l.is_empty())
+                    .map(|l| l.split('\u{1f}').map(str::to_string).collect())
+                    .unwrap_or_default()
+            };
+            let (names, types) = (split(names), split(types));
+            let arguments = names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    // Built-ins name many arguments col0, col1, ...: the type says more.
+                    let generic = name.strip_prefix("col").is_some_and(|n| n.parse::<u32>().is_ok());
+                    match types.get(i).filter(|t| !t.is_empty() && t.as_str() != "ANY") {
+                        Some(t) if generic => t.clone(),
+                        Some(t) => format!("{name} {t}"),
+                        None => name.clone(),
+                    }
+                })
+                .chain(varargs.filter(|v| !v.is_empty()).map(|v| format!("{v}...")))
+                .collect::<Vec<_>>();
+            let returns = returns
+                .filter(|r| !r.is_empty() && kind != "table" && kind != "table_macro")
+                .map(|r| format!(" -> {r}"))
+                .unwrap_or_default();
+            let signature = format!("{name}({}){returns}", arguments.join(", "));
+            let same = out
+                .last()
+                .is_some_and(|f| f.name == name && f.schema == schema);
+            if !same {
+                out.push(diver_sql::FunctionInfo {
+                    name,
+                    schema,
+                    kind: match kind.as_str() {
+                        "aggregate" => FunctionKind::Aggregate,
+                        "window" => FunctionKind::Window,
+                        "table" | "table_macro" => FunctionKind::Table,
+                        "macro" => FunctionKind::Macro,
+                        _ => FunctionKind::Scalar,
+                    },
+                    signatures: Vec::new(),
+                    description: None,
+                });
+            }
+            let function = out.last_mut().expect("pushed above");
+            if function.signatures.len() < MAX_SIGNATURES && !function.signatures.contains(&signature) {
+                function.signatures.push(signature);
+            }
+            if function.description.is_none() {
+                function.description = description.filter(|d| !d.is_empty());
+            }
+        }
+        Ok(out)
     }
 
     /// The database unqualified names resolve to.
@@ -306,7 +437,7 @@ impl SqlExecution {
             truncated: false,
             error: None,
             status: String::new(),
-            catalog: Vec::new(),
+            catalog: SqlCatalog::default(),
             path_roots: PathRoots::default(),
             complete: false,
         };
@@ -369,7 +500,7 @@ impl SqlExecution {
         if mutated {
             self.database.invalidate();
         }
-        run.catalog = self.catalog().unwrap_or_default();
+        run.catalog = self.sql_catalog().unwrap_or_default();
         run.path_roots = self.path_roots();
         run.status = format!(
             "{} statement{} completed in {:.2}s{}",
@@ -993,27 +1124,25 @@ mod tests {
         );
         assert!(run.error.is_none(), "{:?}", run.error);
         let inserts = |service: &SqlExecution| {
-            let catalog = service.catalog().unwrap();
+            let catalog = service.sql_catalog().unwrap();
             let mut inserts = completions("SELECT * FROM orders", 20, &catalog)
                 .into_iter()
-                .map(|c| c.insert)
+                .filter(|c| c.label.contains("orders"))
+                .map(|c| c.insert_text)
                 .collect::<Vec<_>>();
             inserts.sort();
             inserts
         };
-        assert_eq!(
-            inserts(&service),
-            ["\"main\".\"orders\"", "\"shop\".\"main\".\"orders\""]
-        );
-        let qty = service.run("SELECT * FROM \"shop\".\"main\".\"orders\"", 10);
+        assert_eq!(inserts(&service), ["orders", "shop.orders"]);
+        let qty = service.run("SELECT * FROM shop.orders", 10);
         assert!(qty.error.is_none(), "{:?}", qty.error);
         assert_eq!(qty.result.unwrap().schema()[0].name, "qty");
         // After USE, the profile's tables are the ones that need the database.
         let profile = service.default_catalog().unwrap();
         assert!(service.run("USE shop", 10).error.is_none());
         let inserts = inserts(&service);
-        assert!(inserts.contains(&"\"main\".\"orders\"".to_owned()));
-        assert!(inserts.contains(&format!("\"{profile}\".\"main\".\"orders\"")));
+        assert!(inserts.contains(&"orders".to_owned()));
+        assert!(inserts.contains(&format!("{}.orders", diver_sql::quote_if_needed(&profile))), "{inserts:?}");
     }
     #[test]
     fn database_catalog_completes_files_tables_and_view_alias_columns() {
@@ -1023,16 +1152,21 @@ mod tests {
         assert!(run.error.is_none(), "{:?}", run.error);
         let columns = service.connection.query_row("SELECT count(*) FROM duckdb_columns() WHERE database_name = 'files' AND table_name = 'amazon_book_parquet' AND NOT internal", [], |row| row.get::<_, i64>(0)).unwrap();
         assert_eq!(columns, 2);
-        let catalog = service.catalog().unwrap();
+        let catalog = service.sql_catalog().unwrap();
         let table = catalog
+            .relations
             .iter()
             .find(|r| r.catalog == "files" && r.name == "amazon_book_parquet")
             .unwrap();
         assert_eq!(table.columns, ["asin", "ISBN10"]);
-        let suggestions = completions("SELECT * FROM amazon", 20, &catalog);
+        assert_eq!(table.column_types, ["VARCHAR", "VARCHAR"]);
+        let suggestions = completions("SELECT * FROM amazon", 20, &catalog)
+            .into_iter()
+            .filter(|c| c.label.contains("amazon"))
+            .collect::<Vec<_>>();
         assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].insert, "\"files\".\"main\".\"amazon_book_parquet\"");
-        let run = service.run(&format!("SELECT * FROM {}", suggestions[0].insert), 10);
+        assert_eq!(suggestions[0].insert_text, "files.amazon_book_parquet");
+        let run = service.run(&format!("SELECT * FROM {}", suggestions[0].insert_text), 10);
         assert!(run.error.is_none(), "{:?}", run.error);
         for relation in ["files.amazon_book_parquet", "main.book_view"] {
             let text = format!("SELECT a.\nFROM {relation} AS a");
@@ -1042,9 +1176,13 @@ mod tests {
                     .iter()
                     .map(|s| s.label.as_str())
                     .collect::<Vec<_>>(),
-                ["asin", "ISBN10"]
+                ["asin", "\"ISBN10\""]
             );
         }
+        // Functions come with their signatures, and macros the script made too.
+        let round = catalog.functions.iter().find(|f| f.name == "round").unwrap();
+        assert!(round.signatures.iter().any(|s| s.starts_with("round(") && s.contains(" -> ")), "{:?}", round.signatures);
+        assert!(catalog.settings.iter().any(|s| s.name == "threads"));
         assert!(
             service
                 .run(
@@ -1052,6 +1190,7 @@ mod tests {
                     10
                 )
                 .catalog
+                .relations
                 .iter()
                 .any(
                     |r| r.name == "amazon_book_parquet" && r.columns == ["asin", "ISBN10", "title"]
@@ -1117,6 +1256,7 @@ mod tests {
         assert!(run.error.is_none(), "{:?}", run.error);
         assert!(
             run.catalog
+                .relations
                 .iter()
                 .any(|r| r.name == "fruit_view" && r.is_view && r.columns == ["id"])
         );

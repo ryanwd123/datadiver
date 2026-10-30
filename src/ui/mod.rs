@@ -18,6 +18,7 @@ pub mod pivot_panel;
 pub mod platform;
 pub mod slicer_sidebar;
 pub mod space_menu;
+mod sql_language;
 mod sql_panel;
 mod status;
 pub mod theme_editor;

@@ -947,6 +947,7 @@ dependencies = [
  "calamine",
  "chrono",
  "code_editor",
+ "diver_sql",
  "duckdb",
  "embed-resource",
  "flate2",

@@ -1,6 +1,9 @@
-//! Colors for SQL text, from the SQL editor's tokenizer.
+//! Colors for SQL text in the smaller editors, from `diver_sql`'s highlighting.
+//! The text may be a script or a lone expression (`sum(x) > 3`); whichever
+//! reading parses better colors it.
 
-use crate::domain::sql_editor::{TokenKind, tokenize};
+use diver_sql::{Entry, HighlightClass, ParseOptions};
+
 use crate::ui::platform::Color;
 
 pub const KEYWORD: Color = Color::rgb(0x0b57d0);
@@ -10,59 +13,39 @@ pub const COMMENT: Color = Color::rgb(0x2f7d32);
 pub const IDENTIFIER: Color = Color::rgb(0x1f2328);
 pub const FUNCTION: Color = Color::rgb(0x795e26);
 
-const KEYWORDS: &[&str] = &[
-    "all", "alter", "analyze", "and", "any", "array", "as", "asc", "attach", "between", "by",
-    "call", "case", "cast", "check", "checkpoint", "collate", "column", "commit", "constraint",
-    "copy", "create", "cross", "cube", "current_date", "current_time", "current_timestamp",
-    "database", "default", "delete", "desc", "describe", "detach", "distinct", "drop", "else",
-    "end", "except", "exclude", "exists", "explain", "export", "extension", "false", "filter",
-    "first", "following", "for", "foreign", "from", "full", "function", "glob", "group",
-    "grouping", "having", "if", "ilike", "import", "in", "index", "inner", "insert", "install",
-    "intersect", "interval", "into", "is", "isnull", "join", "key", "last", "lateral", "left",
-    "like", "limit", "load", "macro", "materialized", "natural", "not", "notnull", "null",
-    "nulls", "offset", "on", "or", "order", "outer", "over", "partition", "pivot", "pivot_longer",
-    "pivot_wider", "pragma", "preceding", "primary", "qualify", "range", "recursive",
-    "references", "rename", "replace", "returning", "right", "rollback", "rollup", "row", "rows",
-    "sample", "schema", "select", "semi", "sequence", "set", "setof", "show", "similar", "some",
-    "summarize", "table", "temp", "temporary", "then", "to", "transaction", "true", "try_cast",
-    "type", "unbounded", "union", "unique", "unpivot", "update", "use", "using", "vacuum",
-    "values", "view", "when", "where", "window", "with", "within", "begin", "anti", "asof",
-    "positional", "struct", "map", "union_by_name", "by_name", "only",
-];
-
-fn is_keyword(word: &str) -> bool {
-    KEYWORDS.iter().any(|keyword| keyword.eq_ignore_ascii_case(word))
-}
-
 /// Colored byte ranges of `text`.
 pub fn runs(text: &str) -> Vec<(usize, usize, Color)> {
-    let tokens = tokenize(text);
-    let mut runs = Vec::with_capacity(tokens.len());
-    for (index, token) in tokens.iter().enumerate() {
-        let range = token.range.clone();
-        let color = match &token.kind {
-            TokenKind::Comment => COMMENT,
-            TokenKind::Literal => STRING,
-            TokenKind::Quoted(_) => IDENTIFIER,
-            TokenKind::Word(word) => {
-                if word.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-                    NUMBER
-                } else if is_keyword(word) {
-                    KEYWORD
-                } else if tokens
-                    .get(index + 1)
-                    .is_some_and(|next| next.kind == TokenKind::Symbol('('))
-                {
-                    FUNCTION
-                } else {
-                    continue;
-                }
-            }
-            TokenKind::Symbol(_) => continue,
+    // Problems count unknown statements too, which an expression reads as.
+    let script = diver_sql::parse(text);
+    let script_problems = diver_sql::diagnostics(&script).len();
+    let parse = if script_problems == 0 {
+        script
+    } else {
+        let options = ParseOptions {
+            entry: Entry::Expression,
+            ..Default::default()
         };
-        runs.push((range.start, range.end, color));
-    }
-    runs
+        let expression = diver_sql::parse_with(text, options);
+        if diver_sql::diagnostics(&expression).len() < script_problems {
+            expression
+        } else {
+            script
+        }
+    };
+    diver_sql::highlight(&parse)
+        .into_iter()
+        .filter_map(|(range, class)| {
+            let color = match class {
+                HighlightClass::Keyword => KEYWORD,
+                HighlightClass::String | HighlightClass::FilePath => STRING,
+                HighlightClass::Number => NUMBER,
+                HighlightClass::Comment => COMMENT,
+                HighlightClass::Function | HighlightClass::Aggregate => FUNCTION,
+                _ => return None,
+            };
+            Some((usize::from(range.start()), usize::from(range.end()), color))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -83,5 +66,16 @@ mod tests {
         assert!(colored.contains(&("FROM", KEYWORD)));
         assert!(colored.contains(&("-- note", COMMENT)));
         assert!(!colored.iter().any(|(text, _)| *text == "t"));
+    }
+
+    #[test]
+    fn expressions_color_as_expressions() {
+        let text = "sum(x) FILTER (WHERE y > 1)";
+        let colored = runs(text)
+            .into_iter()
+            .map(|(start, end, color)| (&text[start..end], color))
+            .collect::<Vec<_>>();
+        assert!(colored.contains(&("sum", FUNCTION)), "{colored:?}");
+        assert!(colored.contains(&("WHERE", KEYWORD)), "{colored:?}");
     }
 }

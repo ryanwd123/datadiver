@@ -1,166 +1,66 @@
+//! A SQL script as the SQL panel sees it: its statements and what they do,
+//! file paths being typed, and the catalog `diver_sql` completes, highlights
+//! and checks against.
+
 use std::ops::Range;
 
-use crate::infrastructure::duckdb_store::quote_identifier;
+use diver_sql::{
+    Catalog, ColumnInfo, CompletionItem, Expected, FunctionInfo, ItemKind, RelationSource,
+    SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize,
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TokenKind {
-    Word(String),
-    Quoted(String),
-    Literal,
-    Comment,
-    Symbol(char),
+/// A token with its byte range and parenthesis depth.
+struct Token {
+    kind: SyntaxKind,
+    range: Range<usize>,
+    depth: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct SqlToken {
-    pub kind: TokenKind,
-    pub range: Range<usize>,
-    pub scope: usize,
-}
-
-impl SqlToken {
-    fn identifier(&self) -> Option<&str> {
-        match &self.kind {
-            TokenKind::Word(word) | TokenKind::Quoted(word) => Some(word),
-            _ => None,
-        }
-    }
-
-    pub fn keyword(&self, word: &str) -> bool {
-        matches!(&self.kind, TokenKind::Word(value) if value.eq_ignore_ascii_case(word))
-    }
-}
-
-/// Tolerates incomplete SQL so execution selection and completion share the same boundaries.
-pub fn tokenize(text: &str) -> Vec<SqlToken> {
-    let mut tokens = Vec::new();
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    let mut scopes = vec![0];
-    let mut next_scope = 1;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_whitespace() {
-            i += 1;
+/// The script's tokens without whitespace and comments.
+fn tokens(text: &str) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let mut depth = 0usize;
+    for token in diver_sql::tokenize(text) {
+        let range = at..at + usize::from(token.len);
+        at = range.end;
+        if token.kind.is_trivia() {
             continue;
         }
-        let start = i;
-        let kind = if bytes[i..].starts_with(b"--") {
-            i += 2;
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            TokenKind::Comment
-        } else if bytes[i..].starts_with(b"/*") {
-            i += 2;
-            let mut depth = 1;
-            while i < bytes.len() && depth > 0 {
-                if bytes[i..].starts_with(b"/*") {
-                    depth += 1;
-                    i += 2;
-                } else if bytes[i..].starts_with(b"*/") {
-                    depth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            TokenKind::Comment
-        } else if matches!(bytes[i], b'\'' | b'"') {
-            let quote = bytes[i];
-            i += 1;
-            let content = i;
-            let mut content_end = bytes.len();
-            while i < bytes.len() {
-                if bytes[i] == quote {
-                    if bytes.get(i + 1) == Some(&quote) {
-                        i += 2;
-                        continue;
-                    }
-                    content_end = i;
-                    i += 1;
-                    break;
-                }
-                // DuckDB escape strings use E'...'.
-                if quote == b'\''
-                    && start > 0
-                    && matches!(bytes[start - 1], b'e' | b'E')
-                    && bytes[i] == b'\\'
-                {
-                    i = (i + 2).min(bytes.len());
-                } else {
-                    i += 1;
-                }
-            }
-            if quote == b'"' {
-                TokenKind::Quoted(text[content..content_end].replace("\"\"", "\""))
-            } else {
-                TokenKind::Literal
-            }
-        } else if bytes[i] == b'$' && dollar_delimiter(&text[i..]).is_some() {
-            let delimiter = dollar_delimiter(&text[i..]).unwrap();
-            i += delimiter.len();
-            i = text[i..]
-                .find(delimiter)
-                .map_or(bytes.len(), |end| i + end + delimiter.len());
-            TokenKind::Literal
-        } else {
-            let ch = text[i..].chars().next().unwrap();
-            if ch.is_alphanumeric() || ch == '_' {
-                i += ch.len_utf8();
-                while i < bytes.len() {
-                    let ch = text[i..].chars().next().unwrap();
-                    if !(ch.is_alphanumeric() || ch == '_' || ch == '$') {
-                        break;
-                    }
-                    i += ch.len_utf8();
-                }
-                TokenKind::Word(text[start..i].into())
-            } else {
-                i += ch.len_utf8();
-                TokenKind::Symbol(ch)
-            }
-        };
-        if kind == TokenKind::Symbol(')') && scopes.len() > 1 {
-            scopes.pop();
+        if token.kind == SyntaxKind::R_PAREN {
+            depth = depth.saturating_sub(1);
         }
-        let scope = *scopes.last().unwrap();
-        tokens.push(SqlToken {
-            kind: kind.clone(),
-            range: start..i,
-            scope,
+        out.push(Token {
+            kind: token.kind,
+            range,
+            depth,
         });
-        if kind == TokenKind::Symbol('(') {
-            scopes.push(next_scope);
-            next_scope += 1;
+        if token.kind == SyntaxKind::L_PAREN {
+            depth += 1;
         }
     }
-    tokens
+    out
 }
 
-fn dollar_delimiter(text: &str) -> Option<&str> {
-    let end = text[1..].find('$')? + 1;
-    let tag = &text[1..end];
-    if !tag.chars().all(|c| c.is_alphanumeric() || c == '_')
-        || tag.starts_with(|c: char| c.is_ascii_digit())
-    {
-        return None;
-    }
-    Some(&text[..=end])
+fn is_word(text: &str, token: &Token, word: &str) -> bool {
+    token.kind == SyntaxKind::IDENT && text[token.range.clone()].eq_ignore_ascii_case(word)
 }
 
+/// The statements of a script: each runs from the end of the previous `;` to
+/// its own `;` (included), so comments before a statement belong to it.
+/// Statements of only comments are left out.
 pub fn statements(text: &str) -> Vec<Range<usize>> {
-    let tokens = tokenize(text);
     let mut ranges = Vec::new();
     let mut start = 0;
     let mut has_sql = false;
-    for token in tokens {
-        if token.kind == TokenKind::Symbol(';') && token.scope == 0 {
+    for token in tokens(text) {
+        if token.kind == SyntaxKind::SEMICOLON && token.depth == 0 {
             if has_sql {
                 ranges.push(start..token.range.end);
             }
             start = token.range.end;
             has_sql = false;
-        } else if token.kind != TokenKind::Comment {
+        } else {
             has_sql = true;
         }
     }
@@ -177,26 +77,25 @@ pub fn current_statement(text: &str, cursor: usize) -> Option<Range<usize>> {
         .find(|range| range.start <= cursor && cursor <= range.end)
 }
 
+/// The first word of a statement, past opening parentheses.
+fn first_word(tokens: &[Token]) -> Option<&Token> {
+    tokens.iter().find(|t| t.kind != SyntaxKind::L_PAREN)
+}
+
 pub fn returns_rows(sql: &str) -> bool {
-    let tokens = tokenize(sql);
-    let top = tokens
-        .iter()
-        .filter(|t| t.scope == 0 && t.kind != TokenKind::Comment)
-        .collect::<Vec<_>>();
-    if top.iter().any(|t| t.keyword("returning")) {
+    let tokens = tokens(sql);
+    let top = tokens.iter().filter(|t| t.depth == 0).collect::<Vec<_>>();
+    if top.iter().any(|t| is_word(sql, t, "returning")) {
         return true;
     }
-    let Some(first) = tokens
-        .iter()
-        .find(|t| !matches!(t.kind, TokenKind::Comment | TokenKind::Symbol('(')))
-    else {
+    let Some(first) = first_word(&tokens) else {
         return false;
     };
-    if first.keyword("with") {
+    if is_word(sql, first, "with") {
         return !top.iter().any(|t| {
             ["insert", "update", "delete", "merge"]
                 .iter()
-                .any(|w| t.keyword(w))
+                .any(|w| is_word(sql, t, w))
         });
     }
     [
@@ -214,370 +113,211 @@ pub fn returns_rows(sql: &str) -> bool {
         "call",
     ]
     .iter()
-    .any(|w| first.keyword(w))
+    .any(|w| is_word(sql, first, w))
 }
 
 pub fn may_mutate(sql: &str) -> bool {
-    let tokens = tokenize(sql);
     !returns_rows(sql)
-        || tokens.iter().any(|t| {
-            t.scope == 0
+        || tokens(sql).iter().any(|t| {
+            t.depth == 0
                 && ["insert", "update", "delete", "merge", "call", "pragma"]
                     .iter()
-                    .any(|word| t.keyword(word))
+                    .any(|word| is_word(sql, t, word))
         })
 }
 
 /// A query whose whole result can be kept and filtered: it returns rows,
 /// writes nothing, and can be wrapped in `FROM (…)`, which EXPLAIN cannot.
 pub fn is_filterable_query(sql: &str) -> bool {
-    let explain = tokenize(sql)
-        .iter()
-        .find(|t| !matches!(t.kind, TokenKind::Comment | TokenKind::Symbol('(')))
-        .is_some_and(|t| t.keyword("explain"));
+    let explain = first_word(&tokens(sql)).is_some_and(|t| is_word(sql, t, "explain"));
     returns_rows(sql) && !may_mutate(sql) && !explain
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Relation {
     pub catalog: String,
     pub schema: String,
     pub name: String,
     pub columns: Vec<String>,
+    /// The type of each of `columns`, when known.
+    pub column_types: Vec<String>,
     pub is_view: bool,
     /// In `current_database()`, so a name without the database finds it.
     pub current_database: bool,
 }
 
-impl Relation {
-    /// The ways SQL can name this relation, preferred first: without the
-    /// database only in the current one, and without `main` as DuckDB allows.
-    fn qualified_names(&self) -> Vec<Vec<&str>> {
-        let mut names = Vec::new();
-        if self.current_database {
-            names.push(vec![self.schema.as_str(), &self.name]);
-        }
-        names.push(vec![self.catalog.as_str(), &self.schema, &self.name]);
-        if self.schema.eq_ignore_ascii_case("main") {
-            names.push(vec![self.catalog.as_str(), &self.name]);
-        }
-        names
-    }
+/// What the SQL connection knows, for completion, highlighting and checks.
+#[derive(Clone, Debug, Default)]
+pub struct SqlCatalog {
+    pub relations: Vec<Relation>,
+    /// `current_database()`.
+    pub current_database: String,
+    pub databases: Vec<String>,
+    /// (database, schema)
+    pub schemas: Vec<(String, String)>,
+    pub functions: Vec<FunctionInfo>,
+    pub settings: Vec<SettingInfo>,
+    pub extensions: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct SqlCompletion {
-    pub label: String,
-    pub insert: String,
-    pub range: Range<usize>,
-    pub is_column: bool,
-}
+impl SqlCatalog {
+    /// The database a name without one is in.
+    fn database<'a>(&'a self, database: Option<&'a str>) -> &'a str {
+        database.unwrap_or(&self.current_database)
+    }
 
-fn reserved(word: &str) -> bool {
-    [
-        "select",
-        "from",
-        "join",
-        "left",
-        "right",
-        "inner",
-        "outer",
-        "full",
-        "cross",
-        "natural",
-        "on",
-        "using",
-        "where",
-        "group",
-        "order",
-        "having",
-        "qualify",
-        "limit",
-        "offset",
-        "union",
-        "except",
-        "intersect",
-        "pivot",
-        "unpivot",
-        "as",
-        "set",
-        "returning",
-        "window",
-    ]
-    .iter()
-    .any(|w| word.eq_ignore_ascii_case(w))
-}
+    /// Whether a name without a database finds relations of `database`: the
+    /// current one, and `temp` for temporary tables.
+    fn searched(&self, database: &str) -> bool {
+        database.eq_ignore_ascii_case(&self.current_database) || database.eq_ignore_ascii_case("temp")
+    }
 
-fn relation_matches(relation: &Relation, names: &[String]) -> bool {
-    match names {
-        [name] => relation.name.eq_ignore_ascii_case(name),
-        _ => relation.qualified_names().iter().any(|qualified| {
-            qualified.len() == names.len()
-                && qualified
-                    .iter()
-                    .zip(names)
-                    .all(|(part, name)| part.eq_ignore_ascii_case(name))
-        }),
-    }
-}
-
-pub fn completions(text: &str, offset: usize, relations: &[Relation]) -> Vec<SqlCompletion> {
-    let mut offset = offset.min(text.len());
-    while !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    let Some(statement) = current_statement(text, offset) else {
-        return Vec::new();
-    };
-    let mut tokens = tokenize(&text[statement.clone()])
-        .into_iter()
-        .map(|mut t| {
-            t.range.start += statement.start;
-            t.range.end += statement.start;
-            t
-        })
-        .collect::<Vec<_>>();
-    // Parentheses around expressions share the surrounding query block; subqueries do not.
-    let mut query_scopes = std::collections::HashMap::from([(0, 0)]);
-    let mut next_scope = 1;
-    for (i, token) in tokens.iter().enumerate() {
-        if token.kind == TokenKind::Symbol('(') {
-            let query = tokens[i + 1..]
-                .iter()
-                .find(|t| t.kind != TokenKind::Comment)
-                .is_some_and(|t| {
-                    ["select", "with", "from", "values", "pivot", "unpivot"]
-                        .iter()
-                        .any(|word| t.keyword(word))
-                });
-            query_scopes.insert(
-                next_scope,
-                if query {
-                    next_scope
-                } else {
-                    *query_scopes.get(&token.scope).unwrap_or(&0)
-                },
-            );
-            next_scope += 1;
-        }
-    }
-    for token in &mut tokens {
-        token.scope = *query_scopes.get(&token.scope).unwrap_or(&0);
-    }
-    if tokens.iter().any(|t| {
-        matches!(t.kind, TokenKind::Comment | TokenKind::Literal)
-            && t.range.start < offset
-            && offset <= t.range.end
-    }) {
-        return Vec::new();
-    }
-    let word = tokens
-        .iter()
-        .find(|t| t.identifier().is_some() && t.range.start < offset && offset <= t.range.end);
-    let (range, prefix, before_offset) = if let Some(word) = word {
-        let start = word.range.start + usize::from(matches!(word.kind, TokenKind::Quoted(_)));
-        (
-            word.range.clone(),
-            text[start..offset]
-                .trim_end_matches('"')
-                .replace("\"\"", "\"")
-                .to_lowercase(),
-            word.range.start,
-        )
-    } else {
-        (offset..offset, String::new(), offset)
-    };
-    let before = tokens
-        .iter()
-        .filter(|t| t.range.end <= before_offset && t.kind != TokenKind::Comment)
-        .collect::<Vec<_>>();
-    let mut names = Vec::new();
-    let mut at = before.len();
-    while at >= 2 && before[at - 1].kind == TokenKind::Symbol('.') {
-        let Some(name) = before[at - 2].identifier() else {
-            break;
-        };
-        names.insert(0, name.to_owned());
-        at -= 2;
-    }
-    let scope = word
-        .map(|t| t.scope)
-        .or_else(|| {
-            before.last().map(|t| {
-                if t.kind == TokenKind::Symbol('(') {
-                    tokens
-                        .iter()
-                        .find(|n| n.range.start >= t.range.end)
-                        .map_or(t.scope, |n| n.scope)
-                } else {
-                    t.scope
-                }
-            })
-        })
-        .unwrap_or(0);
-    if at > 0
-        && ["from", "join", "pivot"]
-            .iter()
-            .any(|w| before[at - 1].keyword(w))
-    {
-        // The first way to name each relation that extends what is typed, with
-        // the part under the cursor matching the prefix.
-        return relations
-            .iter()
-            .filter_map(|r| {
-                let qualified = r.qualified_names();
-                let rest = if names.is_empty() {
-                    r.name
-                        .to_lowercase()
-                        .starts_with(&prefix)
-                        .then(|| qualified[0].clone())?
-                } else {
-                    qualified.into_iter().find_map(|qualified| {
-                        let rest = qualified.get(names.len()..)?;
-                        (!rest.is_empty()
-                            && qualified
-                                .iter()
-                                .zip(&names)
-                                .all(|(part, name)| part.eq_ignore_ascii_case(name))
-                            && rest[0].to_lowercase().starts_with(&prefix))
-                        .then(|| rest.to_vec())
-                    })?
-                };
-                let full = r.qualified_names().swap_remove(0).join(".");
-                Some(SqlCompletion {
-                    label: format!("{full}{}", if r.is_view { " (view)" } else { "" }),
-                    insert: rest
-                        .iter()
-                        .map(|part| quote_identifier(part))
-                        .collect::<Vec<_>>()
-                        .join("."),
-                    range: range.clone(),
-                    is_column: false,
-                })
-            })
-            .collect();
-    }
-    let [alias] = names.as_slice() else {
-        return Vec::new();
-    };
-    let boundaries = tokens
-        .iter()
-        .filter(|t| {
-            t.scope == scope
-                && ["union", "except", "intersect"]
-                    .iter()
-                    .any(|word| t.keyword(word))
-        })
-        .collect::<Vec<_>>();
-    let branch_start = boundaries
-        .iter()
-        .filter(|t| t.range.end <= offset)
-        .map(|t| t.range.end)
-        .max()
-        .unwrap_or(statement.start);
-    let branch_end = boundaries
-        .iter()
-        .filter(|t| t.range.start > offset)
-        .map(|t| t.range.start)
-        .min()
-        .unwrap_or(statement.end);
-    let relevant = tokens
-        .iter()
-        .filter(|t| {
-            t.scope == scope
-                && t.range.start >= branch_start
-                && t.range.end <= branch_end
-                && t.kind != TokenKind::Comment
-        })
-        .collect::<Vec<_>>();
-    let mut matches = Vec::new();
-    let mut bindings = 0;
-    for (i, token) in relevant.iter().enumerate() {
-        if !(token.keyword("from") || token.keyword("join")) {
-            continue;
-        }
-        let mut j = i + 1;
-        let mut table = Vec::new();
-        if let Some(name) = relevant.get(j).and_then(|t| t.identifier()) {
-            table.push(name.to_owned());
-            j += 1;
-        }
-        while relevant
-            .get(j)
-            .is_some_and(|t| t.kind == TokenKind::Symbol('.'))
-        {
-            let Some(name) = relevant.get(j + 1).and_then(|t| t.identifier()) else {
-                break;
+    /// Relations of `database.schema`; without a database, those a name
+    /// without one finds, and `main` without a schema.
+    fn relations_in<'a, 'b>(
+        &'a self,
+        database: Option<&'b str>,
+        schema: Option<&'b str>,
+    ) -> impl Iterator<Item = &'a Relation> {
+        let schema = schema.unwrap_or("main");
+        self.relations.iter().filter(move |r| {
+            let database_ok = match database {
+                Some(d) => r.catalog.eq_ignore_ascii_case(d),
+                None => self.searched(&r.catalog),
             };
-            table.push(name.to_owned());
-            j += 2;
-        }
-        if relevant.get(j).is_some_and(|t| t.keyword("as")) {
-            j += 1;
-        }
-        let Some(alias_token) = relevant.get(j) else {
-            continue;
-        };
-        let Some(found_alias) = alias_token.identifier() else {
-            continue;
-        };
-        if (matches!(alias_token.kind, TokenKind::Word(_)) && reserved(found_alias))
-            || !found_alias.eq_ignore_ascii_case(alias)
-        {
-            continue;
-        }
-        bindings += 1;
-        // CTE names shadow catalog objects. Their output columns are intentionally not inferred.
-        let significant = tokens
-            .iter()
-            .filter(|t| t.kind != TokenKind::Comment)
-            .collect::<Vec<_>>();
-        let cte_shadow = table.len() == 1
-            && significant.iter().enumerate().any(|(i, candidate)| {
-                if candidate.range.start >= token.range.start
-                    || !candidate
-                        .identifier()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&table[0]))
-                {
-                    return false;
-                }
-                let mut j = i + 1;
-                if significant
-                    .get(j)
-                    .is_some_and(|t| t.kind == TokenKind::Symbol('('))
-                {
-                    j += 1;
-                    while significant
-                        .get(j)
-                        .is_some_and(|t| t.kind != TokenKind::Symbol(')'))
-                    {
-                        j += 1;
-                    }
-                    j += 1;
-                }
-                significant.get(j).is_some_and(|t| t.keyword("as"))
-                    && significant
-                        .get(j + 1)
-                        .is_some_and(|t| t.kind == TokenKind::Symbol('('))
-            });
-        if !cte_shadow {
-            matches.extend(relations.iter().filter(|r| relation_matches(r, &table)));
-        }
-    }
-    if matches.len() != 1 || bindings != 1 {
-        return Vec::new();
-    }
-    matches[0]
-        .columns
-        .iter()
-        .filter(|c| c.to_lowercase().starts_with(&prefix))
-        .map(|column| SqlCompletion {
-            label: column.clone(),
-            insert: quote_identifier(column),
-            range: range.clone(),
-            is_column: true,
+            database_ok && r.schema.eq_ignore_ascii_case(schema)
         })
-        .collect()
+    }
+
+    /// The relation a written name refers to, as DuckDB resolves it:
+    /// `name`, `schema.name` or `database.name`, `database.schema.name`.
+    pub fn resolve(&self, path: &[&str]) -> Option<&Relation> {
+        let named = |r: &&Relation, name: &str| r.name.eq_ignore_ascii_case(name);
+        match path {
+            [name] => self.relations_in(None, None).find(|r| named(r, name)),
+            [qualifier, name] => self
+                .relations_in(None, Some(qualifier))
+                .find(|r| named(r, name))
+                .or_else(|| self.relations_in(Some(qualifier), None).find(|r| named(r, name))),
+            [database, schema, name] => self
+                .relations_in(Some(database), Some(schema))
+                .find(|r| named(r, name)),
+            _ => None,
+        }
+    }
+
+    /// Relations a name without a qualifier does not reach, with the
+    /// qualified name to write for each: another database's, or another
+    /// schema's.
+    pub fn qualified_elsewhere(&self) -> impl Iterator<Item = (&Relation, Vec<&str>)> {
+        self.relations.iter().filter_map(|r| {
+            let here = self.searched(&r.catalog);
+            let main = r.schema.eq_ignore_ascii_case("main");
+            match (here, main) {
+                (true, true) => None,
+                (true, false) => Some((r, vec![r.schema.as_str(), &r.name])),
+                (false, true) => Some((r, vec![r.catalog.as_str(), &r.name])),
+                (false, false) => Some((r, vec![r.catalog.as_str(), &r.schema, &r.name])),
+            }
+        })
+    }
+}
+
+impl Catalog for SqlCatalog {
+    fn databases(&self) -> Vec<String> {
+        self.databases.clone()
+    }
+
+    fn schemas(&self, database: Option<&str>) -> Vec<String> {
+        let database = self.database(database);
+        self.schemas
+            .iter()
+            .filter(|(d, _)| d.eq_ignore_ascii_case(database))
+            .map(|(_, s)| s.clone())
+            .collect()
+    }
+
+    fn tables(&self, database: Option<&str>, schema: Option<&str>) -> Vec<TableInfo> {
+        self.relations_in(database, schema)
+            .map(|r| TableInfo {
+                database: Some(r.catalog.clone()),
+                schema: Some(r.schema.clone()),
+                name: r.name.clone(),
+                kind: if r.is_view {
+                    TableKind::View
+                } else {
+                    TableKind::Table
+                },
+            })
+            .collect()
+    }
+
+    fn columns(&self, relation: &RelationSource) -> Option<Vec<ColumnInfo>> {
+        let RelationSource::Table { path } = relation else {
+            return None;
+        };
+        let path = path.iter().map(|n| n.text.as_str()).collect::<Vec<_>>();
+        let relation = self.resolve(&path)?;
+        Some(
+            relation
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(i, name)| ColumnInfo {
+                    name: name.clone(),
+                    data_type: relation.column_types.get(i).cloned(),
+                })
+                .collect(),
+        )
+    }
+
+    fn functions(&self) -> Vec<FunctionInfo> {
+        self.functions.clone()
+    }
+
+    fn settings(&self) -> Vec<SettingInfo> {
+        self.settings.clone()
+    }
+
+    fn extensions(&self) -> Vec<String> {
+        self.extensions.clone()
+    }
+}
+
+/// Completion items at `offset`: `diver_sql`'s, plus the relations a bare
+/// name doesn't reach, under the qualified name to write, where a table may go.
+pub fn completions(text: &str, offset: usize, catalog: &SqlCatalog) -> Vec<CompletionItem> {
+    let ctx = diver_sql::complete(text, TextSize::new(offset.min(text.len()) as u32));
+    let objects = diver_sql::document_objects(&diver_sql::parse(text));
+    let mut items = diver_sql::items(&ctx, catalog, &objects);
+    let tables = ctx
+        .expected
+        .iter()
+        .any(|e| matches!(e, Expected::TableRef { qualifier } if qualifier.is_empty()));
+    if tables {
+        for (relation, path) in catalog.qualified_elsewhere() {
+            let insert = path
+                .iter()
+                .map(|part| diver_sql::quote_if_needed(part))
+                .collect::<Vec<_>>()
+                .join(".");
+            items.push(CompletionItem {
+                label: path.join("."),
+                kind: if relation.is_view {
+                    ItemKind::View
+                } else {
+                    ItemKind::Table
+                },
+                insert_text: insert,
+                replace_range: ctx.replace_range,
+                detail: Some(relation.catalog.clone()),
+                documentation: None,
+                // After the default schema's tables.
+                sort_key: 360,
+            });
+        }
+    }
+    items
 }
 
 /// A file path being typed inside a `'…'` literal.
@@ -588,19 +328,6 @@ pub struct PathQuery {
     /// The last path segment in the editor text, which a completion replaces.
     pub range: Range<usize>,
 }
-
-/// Table functions whose first argument is a file path or glob.
-const FILE_FUNCTIONS: &[&str] = &[
-    "parquet_scan",
-    "parquet_metadata",
-    "parquet_schema",
-    "parquet_file_metadata",
-    "parquet_kv_metadata",
-    "glob",
-    "sniff_csv",
-    "delta_scan",
-    "iceberg_scan",
-];
 
 fn explicit_path(typed: &str) -> bool {
     let bytes = typed.as_bytes();
@@ -613,80 +340,53 @@ fn explicit_path(typed: &str) -> bool {
             && matches!(bytes[2], b'/' | b'\\'))
 }
 
-/// A bare relative path completes only where SQL expects a file, so ordinary
-/// string values like `name = 'abc'` never open a file list.
-fn file_position(tokens: &[SqlToken], literal: usize) -> bool {
-    let mut before = tokens[..literal]
-        .iter()
-        .rev()
-        .filter(|t| t.kind != TokenKind::Comment);
-    let Some(previous) = before.next() else {
-        return false;
-    };
-    if ["from", "join", "attach"]
-        .iter()
-        .any(|w| previous.keyword(w))
-    {
-        return true;
-    }
-    let mut previous = Some(previous);
-    if previous.is_some_and(|t| t.kind == TokenKind::Symbol('[')) {
-        previous = before.next();
-    }
-    if !previous.is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
-        return false;
-    }
-    before.next().is_some_and(|t| match &t.kind {
-        TokenKind::Word(name) => {
-            let name = name.to_ascii_lowercase();
-            name.starts_with("read_") || FILE_FUNCTIONS.contains(&name.as_str())
+/// Whether a string after `before` opens a list of files: `read_csv(['…`.
+fn first_of_path_list(text: &str, before: &[Token]) -> bool {
+    match before {
+        [.., name, open, bracket]
+            if bracket.kind == SyntaxKind::L_BRACK && open.kind == SyntaxKind::L_PAREN =>
+        {
+            name.kind == SyntaxKind::IDENT && diver_sql::takes_path(&text[name.range.clone()])
         }
         _ => false,
-    })
+    }
 }
 
+/// A path that doesn't look like one completes only where SQL takes a file
+/// (`FROM '…'`, `read_csv('…'`, `ATTACH '…'`), so ordinary string values like
+/// `name = 'abc'` never open a file list.
 pub fn path_query(text: &str, offset: usize) -> Option<PathQuery> {
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
         offset -= 1;
     }
-    let tokens = tokenize(text);
-    let index = tokens.iter().position(|t| {
-        t.kind == TokenKind::Literal && t.range.start < offset && offset <= t.range.end
+    let all = tokens(text);
+    let index = all.iter().position(|t| {
+        matches!(t.kind, SyntaxKind::STRING | SyntaxKind::UNTERMINATED_STRING)
+            && t.range.start < offset
+            && offset <= t.range.end
     })?;
-    let literal = &tokens[index];
-    let bytes = text.as_bytes();
-    if bytes[literal.range.start] != b'\'' {
+    let (kind, literal) = (all[index].kind, all[index].range.clone());
+    // E'…' strings (backslash escapes) and $$…$$ are other kinds.
+    if text.as_bytes()[literal.start] != b'\'' {
         return None;
     }
-    // E'…' strings use backslash escapes, so their text is not a plain path.
-    if index > 0
-        && tokens[index - 1].range.end == literal.range.start
-        && tokens[index - 1].keyword("e")
-    {
-        return None;
-    }
-    let content = literal.range.start + 1;
-    let closed = literal.range.end > content
-        && bytes[literal.range.end - 1] == b'\''
-        && !text[content..literal.range.end - 1]
-            .replace("''", "")
-            .contains('\'');
-    let content_end = if closed {
-        literal.range.end - 1
-    } else {
-        literal.range.end
-    };
+    let content = literal.start + 1;
+    let closed = kind == SyntaxKind::STRING;
+    let content_end = if closed { literal.end - 1 } else { literal.end };
     if offset > content_end {
         return None;
     }
     let raw = &text[content..offset];
     let typed = raw.replace("''", "'");
-    if !explicit_path(&typed) && !file_position(&tokens, index) {
-        return None;
+    if !explicit_path(&typed) && !first_of_path_list(text, &all[..index]) {
+        let cx = diver_sql::complete(text, TextSize::new(offset as u32));
+        if !cx.expected.contains(&Expected::FilePath) {
+            return None;
+        }
     }
     let start = content + raw.rfind(['/', '\\']).map_or(0, |at| at + 1);
-    // An unterminated literal runs to the end of the text, so only replace what was typed.
+    // An unterminated literal runs to the end of the line, so only replace what was typed.
     let end = if closed {
         text[offset..content_end]
             .find(['/', '\\'])
@@ -703,134 +403,91 @@ pub fn path_query(text: &str, offset: usize) -> Option<PathQuery> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn catalog() -> Vec<Relation> {
-        vec![
-            Relation {
-                catalog: "db".into(),
-                schema: "main".into(),
-                name: "apples".into(),
-                columns: vec!["color".into(), "café".into()],
-                is_view: false,
-                current_database: true,
-            },
-            Relation {
-                catalog: "db".into(),
-                schema: "files".into(),
-                name: "sales".into(),
-                columns: vec!["total".into()],
-                is_view: true,
-                current_database: true,
-            },
-            Relation {
-                catalog: "shop".into(),
-                schema: "main".into(),
-                name: "orders".into(),
-                columns: vec!["qty".into()],
-                is_view: false,
-                current_database: false,
-            },
-        ]
+
+    pub(crate) fn catalog() -> SqlCatalog {
+        let relation = |catalog: &str, schema: &str, name: &str, columns: &[&str], view: bool| Relation {
+            catalog: catalog.into(),
+            schema: schema.into(),
+            name: name.into(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            column_types: columns.iter().map(|_| "VARCHAR".to_string()).collect(),
+            is_view: view,
+            current_database: catalog == "db",
+        };
+        SqlCatalog {
+            relations: vec![
+                relation("db", "main", "apples", &["color", "café"], false),
+                relation("db", "files", "sales", &["total"], true),
+                relation("shop", "main", "orders", &["qty"], false),
+            ],
+            current_database: "db".into(),
+            databases: vec!["db".into(), "shop".into()],
+            schemas: vec![
+                ("db".into(), "main".into()),
+                ("db".into(), "files".into()),
+                ("shop".into(), "main".into()),
+            ],
+            ..Default::default()
+        }
     }
+
+    fn labels(sql: &str) -> Vec<String> {
+        let at = sql.find('|').unwrap();
+        let text = sql.replace('|', "");
+        completions(&text, at, &catalog())
+            .into_iter()
+            .filter(|i| i.kind != diver_sql::ItemKind::Keyword)
+            .map(|i| i.label)
+            .collect()
+    }
+
     #[test]
     fn split_quoted_commented_and_dollar_sql() {
         let sql = "-- ;\nSELECT 'a;''b', $$;$$, $tag$;$tag$, \"a;b\"; /* a; /* ; */ */ SELECT 'café';; -- empty";
         let parts = statements(sql);
         assert_eq!(parts.len(), 2);
         assert!(sql[parts[0].clone()].contains("$tag$;$tag$"));
+        assert!(sql[parts[0].clone()].starts_with("-- ;"));
+        assert!(sql[parts[0].clone()].ends_with(';'));
         assert_eq!(current_statement(sql, parts[0].end), Some(parts[0].clone()));
         assert_eq!(current_statement(sql, sql.len()), None);
     }
+
     #[test]
-    fn alias_completion_reads_below_cursor_and_filters() {
-        let sql = "select a. from apples a";
-        assert_eq!(
-            completions(sql, 9, &catalog())
-                .iter()
-                .map(|c| c.label.as_str())
-                .collect::<Vec<_>>(),
-            ["color", "café"]
-        );
-        let sql = "SELECT A.c FROM main.apples AS a JOIN files.sales s ON s.";
-        assert_eq!(completions(sql, 10, &catalog()).len(), 2);
-        assert_eq!(completions(sql, sql.len(), &catalog())[0].label, "total");
-        let sql = "SELECT sum(a.) FROM apples a";
-        assert_eq!(
-            completions(sql, sql.find("a.").unwrap() + 2, &catalog()).len(),
-            2
-        );
+    fn the_catalog_resolves_names_as_duckdb_does() {
+        let catalog = catalog();
+        assert_eq!(catalog.resolve(&["APPLES"]).unwrap().name, "apples");
+        assert_eq!(catalog.resolve(&["files", "sales"]).unwrap().name, "sales");
+        assert_eq!(catalog.resolve(&["shop", "orders"]).unwrap().name, "orders");
+        assert_eq!(catalog.resolve(&["db", "files", "sales"]).unwrap().name, "sales");
+        assert!(catalog.resolve(&["orders"]).is_none());
+        assert!(catalog.resolve(&["sales"]).is_none());
+        let elsewhere = catalog
+            .qualified_elsewhere()
+            .map(|(_, path)| path.join("."))
+            .collect::<Vec<_>>();
+        assert_eq!(elsewhere, ["files.sales", "shop.orders"]);
     }
+
     #[test]
-    fn relation_triggers_and_qualification() {
-        for sql in ["select * FrOm ", "select * from apples a JOIN ", "PIVOT "] {
-            assert_eq!(completions(sql, sql.len(), &catalog()).len(), 3);
-        }
-        let sql = "from files.sa";
-        assert_eq!(
-            completions(sql, sql.len(), &catalog())[0].insert,
-            "\"sales\""
-        );
-        let insert = |sql: &str| {
-            completions(sql, sql.len(), &catalog())
-                .into_iter()
-                .map(|c| (c.label, c.insert))
-                .collect::<Vec<_>>()
-        };
-        // Another database's relations name it first.
-        assert_eq!(
-            insert("from ord"),
-            [("shop.main.orders".into(), "\"shop\".\"main\".\"orders\"".into())]
-        );
-        assert_eq!(
-            insert("from shop."),
-            [("shop.main.orders".into(), "\"main\".\"orders\"".into())]
-        );
-        assert_eq!(
-            insert("from shop.or"),
-            [("shop.main.orders".into(), "\"orders\"".into())]
-        );
-        assert_eq!(
-            insert("from shop.main."),
-            [("shop.main.orders".into(), "\"orders\"".into())]
-        );
-        assert_eq!(
-            insert("from db.files."),
-            [("files.sales (view)".into(), "\"sales\"".into())]
-        );
-        // A schema of the current database still works on its own.
-        assert_eq!(insert("from main.").len(), 1);
-        let sql = "select o. from shop.orders o";
-        assert_eq!(completions(sql, 9, &catalog())[0].label, "qty");
+    fn completion_reads_aliases_and_qualified_names_from_the_catalog() {
+        // Names that need quotes are shown and inserted quoted.
+        assert_eq!(labels("select a.| from apples a"), ["color", "\"café\""]);
+        let sql = "SELECT A.c FROM main.apples AS a JOIN files.sales s ON s.|";
+        assert_eq!(labels(sql), ["total"]);
+        assert_eq!(labels("SELECT sum(a.|) FROM apples a"), ["color", "\"café\""]);
+        assert_eq!(labels("select o.| from shop.orders o"), ["qty"]);
+        // Tables of the default schema, then schemas and databases to qualify with.
+        let tables = labels("select * from |");
+        assert!(tables.contains(&"apples".to_string()), "{tables:?}");
+        assert!(!tables.contains(&"orders".to_string()), "{tables:?}");
+        assert!(tables.contains(&"shop.orders".to_string()), "{tables:?}");
+        assert!(labels("from shop.|").contains(&"orders".to_string()));
+        assert!(labels("from files.|").contains(&"sales".to_string()));
+        // A CTE that shadows a table has its own columns.
+        assert!(labels("WITH apples AS (select 1 AS one) select a.| from apples a").contains(&"one".to_string()));
     }
-    #[test]
-    fn no_unqualified_or_unresolved_or_cross_statement_columns() {
-        for sql in [
-            "select col",
-            "select x. from apples a",
-            "select a.; select a.",
-            "select 'a.",
-            "-- a.",
-            "select * from apples a /* a.",
-            "WITH apples AS (select 1) select a. from apples a",
-            "select x. from (select 1) x",
-        ] {
-            assert!(completions(sql, sql.len(), &catalog()).is_empty(), "{sql}");
-        }
-        let sql = "select (select a. from files.sales s) from apples a";
-        assert!(completions(sql, sql.find("a.").unwrap() + 2, &catalog()).is_empty());
-        let sql = "WITH apples(x) AS (select 1) SELECT a. FROM apples a";
-        assert!(completions(sql, sql.find("a.").unwrap() + 2, &catalog()).is_empty());
-    }
-    #[test]
-    fn duplicate_aliases_are_ambiguous() {
-        let sql = "select a. from apples a join files.sales a on true";
-        assert!(completions(sql, 9, &catalog()).is_empty());
-        let sql = "select a. from apples a join unknown_table a on true";
-        assert!(completions(sql, 9, &catalog()).is_empty());
-        let sql = "select a. from apples a union all select s.total from files.sales s";
-        assert_eq!(completions(sql, 9, &catalog()).len(), 2);
-        let sql = "select a.color from apples a union all select a. from files.sales s";
-        assert!(completions(sql, sql.rfind("a.").unwrap() + 2, &catalog()).is_empty());
-    }
+
     #[test]
     fn path_queries_need_a_path_prefix_or_a_file_position() {
         let typed = |sql: &str| path_query(sql, sql.len()).map(|q| q.typed);
@@ -842,8 +499,8 @@ mod tests {
         assert_eq!(typed("select x = '../a").as_deref(), Some("../a"));
         assert_eq!(typed("FROM 'sales/q1").as_deref(), Some("sales/q1"));
         assert_eq!(typed("select * from read_csv('sa").as_deref(), Some("sa"));
-        assert_eq!(typed("FROM read_parquet(['a.parquet', 'b").as_deref(), None);
         assert_eq!(typed("FROM read_parquet(['b").as_deref(), Some("b"));
+        assert_eq!(typed("FROM read_parquet(['a.parquet', 'b").as_deref(), None);
         assert_eq!(typed("FROM glob('").as_deref(), Some(""));
         assert_eq!(typed("ATTACH 'db/x").as_deref(), Some("db/x"));
         assert_eq!(typed("select * from t where name = 'abc"), None);
@@ -851,6 +508,7 @@ mod tests {
         assert_eq!(typed("select $$./a"), None);
         assert_eq!(typed("-- './a"), None);
     }
+
     #[test]
     fn path_query_replaces_the_last_segment_only() {
         let sql = "FROM './data/sal' AS s";
@@ -871,6 +529,7 @@ mod tests {
         let query = path_query(sql, "FROM './x".len()).unwrap();
         assert_eq!(&sql[query.range], "x");
     }
+
     #[test]
     fn filterable_queries_read_without_writing() {
         for sql in [
@@ -882,6 +541,7 @@ mod tests {
             "DESCRIBE t",
             "SUMMARIZE t",
             "SHOW TABLES",
+            "(SELECT 1) UNION (SELECT 2)",
         ] {
             assert!(is_filterable_query(sql), "{sql}");
         }

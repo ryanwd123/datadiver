@@ -279,7 +279,7 @@ impl DataFrameView {
             move || {
                 let mut guard = service.lock().map_err(|_| "SQL connection lock poisoned".to_string())?;
                 let execution = SqlExecution::new(database)?;
-                let catalog = execution.catalog()?;
+                let catalog = execution.sql_catalog()?;
                 let handles = (
                     execution.interrupt.clone(),
                     execution.stopped.clone(),
@@ -629,7 +629,7 @@ impl DataFrameView {
                     .map_err(|_| "SQL connection lock poisoned".to_string())?
                     .as_ref()
                     .ok_or_else(|| "SQL connection unavailable".to_string())?
-                    .catalog()
+                    .sql_catalog()
             },
             move |view: &mut Self, cx, result| {
                 // Clear before the staleness check: a stopped run bumps the revision

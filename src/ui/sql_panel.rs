@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use super::column_completion::{ColumnCompletion, ColumnSyntax};
 use super::input_with_autocompletion;
 use crate::domain::ai::{AiEvent, SqlCheck, SqlProposal, insertion, relation_name};
-use crate::domain::sql_editor::{Relation, current_statement};
+use crate::domain::sql_editor::{SqlCatalog, current_statement};
 use crate::infrastructure::path_completion::PathRoots;
 use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
@@ -69,7 +69,7 @@ pub struct SqlPanel {
     pub editor: HostedEditor,
     /// Whether the window is the active one; the caret blinks only then.
     pub window_active: bool,
-    pub catalog: Arc<RwLock<Vec<Relation>>>,
+    pub catalog: Arc<RwLock<SqlCatalog>>,
     pub path_roots: Arc<RwLock<PathRoots>>,
     pub busy: bool,
     pub status: String,
@@ -102,10 +102,11 @@ pub struct SqlPanel {
 impl SqlPanel {
     /// A panel whose editor paints into `host`'s frames (none in headless tests).
     pub fn new(text: String, host: Option<windows::Win32::Foundation::HWND>) -> Self {
-        let catalog = Arc::new(RwLock::new(Vec::new()));
+        let catalog = Arc::new(RwLock::new(SqlCatalog::default()));
         let path_roots = Arc::new(RwLock::new(PathRoots::default()));
         let completions = input_with_autocompletion::sql_catalog(catalog.clone(), path_roots.clone());
-        let mut editor = HostedEditor::sql(host, completions);
+        let language = super::sql_language::SqlLanguage::new(catalog.clone());
+        let mut editor = HostedEditor::sql(host, completions, language);
         editor.set_text(text);
         editor.set_selection(0..0);
         Self {
@@ -236,7 +237,7 @@ impl SqlPanel {
 
     /// Tables as `@` mentions name them: the default database's first.
     fn mention_names(&self) -> Vec<String> {
-        let catalog = self.catalog.read().map(|c| c.clone()).unwrap_or_default();
+        let catalog = self.catalog.read().map(|c| c.relations.clone()).unwrap_or_default();
         let (mut own, mut other): (Vec<_>, Vec<_>) = catalog
             .iter()
             .map(|r| {
