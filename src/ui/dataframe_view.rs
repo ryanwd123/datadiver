@@ -103,6 +103,8 @@ pub(crate) struct DrillDown {
 pub(crate) enum SourceTarget {
     File(PathBuf),
     DatabaseView(crate::domain::documents::DatabaseView),
+    /// A saved SQL source, by id.
+    SqlSource(String),
 }
 
 impl FileEntry {
@@ -131,10 +133,12 @@ impl FileEntry {
                 "{} {} {}",
                 view.name,
                 view.source_path,
-                if matches!(view.view, ViewKind::Table(_)) {
-                    "table view"
-                } else {
-                    "query view"
+                match &view.view {
+                    _ if view.sql_source.is_some() => "sql source",
+                    ViewKind::Table(_) => "table view",
+                    ViewKind::Query(_) => "query view",
+                    ViewKind::Sql(config) if config.script => "sql script",
+                    ViewKind::Sql(_) => "sql source",
                 }
             ),
             Self::Source(path) => format!("{} source", path.display()),
@@ -494,6 +498,8 @@ pub struct DataFrameView {
     pub(crate) sql_running: bool,
     sql_revision: u64,
     auto_save_task: Option<Task>,
+    /// A command to run once the location being opened is shown.
+    pub(crate) after_open: Option<CommandId>,
     sql_service: std::sync::Arc<std::sync::Mutex<Option<crate::infrastructure::sql_execution::SqlExecution>>>,
     sql_interrupt: Option<std::sync::Arc<duckdb::InterruptHandle>>,
     sql_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -758,6 +764,7 @@ impl DataFrameView {
             sql_running: false,
             sql_revision: 0,
             auto_save_task: None,
+            after_open: None,
             sql_service: std::sync::Arc::new(std::sync::Mutex::new(None)),
             sql_interrupt: None,
             sql_stopped: None,

@@ -52,7 +52,7 @@ impl WindowSession {
             && self
                 .working
                 .as_ref()
-                .is_none_or(|d| d.database_view.is_none())
+                .is_none_or(|d| d.database_view.is_none() && d.sql_source.is_none())
             && self.source_path.as_deref().is_none_or(str::is_empty)
         {
             return None;
@@ -191,6 +191,7 @@ impl WindowSession {
         let path = self.source_path.clone().unwrap_or_default();
         let mut draft = DocumentDefinition::draft_table(name, path);
         draft.database_view = self.working.as_ref().and_then(|d| d.database_view.clone());
+        draft.sql_source = self.working.as_ref().and_then(|d| d.sql_source.clone());
         draft.view = ViewKind::Query(Default::default());
         if let Some(definition) = &self.working {
             draft.slicers = definition.slicers.clone();
@@ -771,7 +772,7 @@ impl WindowSession {
         if let Some(definition) = self
             .working
             .as_ref()
-            .filter(|d| d.id.is_empty() && d.database_view.is_some())
+            .filter(|d| d.id.is_empty() && (d.database_view.is_some() || d.sql_source.is_some()))
         {
             self.identity = if matches!(definition.view, ViewKind::Table(_)) {
                 SessionIdentity::DraftTable

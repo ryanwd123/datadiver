@@ -228,6 +228,7 @@ impl DataFrameView {
     fn open_tree_target(&mut self, target: TreeTarget, new_window: bool, pivot_draft: bool, cx: &mut Cx<Self>) {
         let entry = match target {
             TreeTarget::View(definition) => FileEntry::View(*definition),
+            TreeTarget::SqlSource(source) => FileEntry::View(DocumentDefinition::draft_sql_source(&source)),
             TreeTarget::Source(path) => FileEntry::Source(path),
             TreeTarget::Relation(relation) => FileEntry::View(DocumentDefinition::draft_database_view(relation)),
         };

@@ -39,7 +39,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals and a heat map.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
-- **Write SQL:** a SQL editor with highlighting, table, column, and file path completion, saved SQL views, and a startup script.
+- **Write SQL:** a SQL editor with highlighting, table, column, and file path completion, SQL sources whose rows you can build views on, SQL scripts, and a startup script.
 - **Ask AI for SQL:** describe what you want and get SQL checked by DuckDB before you run it, using any OpenAI-compatible provider.
 - **Inspect values:** column profiles in the Info dialog, and a cell detail pane for long text and pretty-printed JSON.
 - **Reuse your work:** save views, open favorites with **Ctrl+1–9**, go back and forward through history, undo view changes, and restore the previous session.
@@ -256,7 +256,7 @@ The editor understands DuckDB's SQL as you type:
 
 **Settings** (**Ctrl+,**) › **Editor options** changes how the editor looks and behaves: the completion list's font, size and number of rows; whether completions and signature help open while typing; problem underlines and hover docs; word wrap, line numbers, whitespace, indent guides and highlights; closing brackets and quotes; the blinking cursor; tab size, spaces or tabs, and indentation detection; and Ctrl+wheel zoom. The options are saved with your settings and apply to every window.
 
-Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you turn on **Auto-run** in **View options**. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
+Save SQL with **Ctrl+S**. A saved SQL is a **SQL source**: it is listed under **Sources › SQL sources** in the database tree and in **Ctrl+P**, and opening it there shows the rows its last statement returns, as a table you can search, slice, group, pivot and save views of like any other source. Each such view runs the script again, on a connection of its own, when it opens or reloads (**F5**), so the script should create only temporary tables, or use `CREATE OR REPLACE`. Group By, Pivot By, Aggregations and Order By in the editor of a saved SQL source open its rows the same way. In the editor, a SQL source reopens without execution unless you turn on **Auto-run** in **View options**. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 
 **New SQL query** in the command palette starts an empty SQL draft, even when the editor is already open.
 

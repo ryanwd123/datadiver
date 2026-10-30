@@ -490,10 +490,21 @@ impl ViewRepository {
         (views, issues)
     }
 
+    /// The saved view with `id`.
+    pub fn load_view(&self, id: &str) -> io::Result<DocumentDefinition> {
+        let path = self
+            .find_by_id(id)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "view not found"))?;
+        let view: DocumentDefinition = read_json(&path)?;
+        view.validate().map_err(io::Error::other)?;
+        Ok(view)
+    }
+
     pub fn save_view(&self, view: &mut DocumentDefinition) -> io::Result<PathBuf> {
         view.validate().map_err(io::Error::other)?;
         if view.source_path.is_empty()
             && view.database_view.is_none()
+            && view.sql_source.is_none()
             && !matches!(view.view, crate::domain::documents::ViewKind::Sql(_))
         {
             return Err(io::Error::new(

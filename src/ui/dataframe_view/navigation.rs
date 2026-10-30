@@ -66,7 +66,9 @@ impl DataFrameView {
             return;
         };
         self.rollback_navigation(cx);
-        let entry = if matches!(target.identity, SessionIdentity::RawSource | SessionIdentity::DraftTable) {
+        let entry = if matches!(target.identity, SessionIdentity::RawSource | SessionIdentity::DraftTable)
+            && target.source_path.is_some()
+        {
             FileEntry::Source(PathBuf::from(target.source_path.as_ref().expect("source location")))
         } else if let Some(definition) = &target.definition {
             FileEntry::View(definition.clone())
@@ -187,6 +189,10 @@ impl DataFrameView {
             FileEntry::View(definition) => definition.database_view.clone(),
             FileEntry::Source(_) | FileEntry::StartupSql => None,
         };
+        let sql_source = match &entry {
+            FileEntry::View(definition) => definition.sql_source.clone(),
+            FileEntry::Source(_) | FileEntry::StartupSql => None,
+        };
         let search = if let Some((_, target)) = &self.navigation_target {
             target.search_text.clone()
         } else if carry_search {
@@ -212,7 +218,9 @@ impl DataFrameView {
             move || {
                 let _span = crate::infrastructure::performance::Span::new("source_check");
                 let mut file = Default::default();
-                let source = if let Some(view) = &database_view {
+                let source = if let Some(id) = &sql_source {
+                    FrameSnapshot::new(sql_source_rows(&repository, &database, id)?, existing.source_revision + 1)
+                } else if let Some(view) = &database_view {
                     FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
                 } else {
                     let options;
@@ -294,6 +302,9 @@ impl DataFrameView {
                         view.schedule_search(search, cx);
                         // The picker may have restored focus to the SQL editor we just removed.
                         view.focus_grid(cx);
+                        if let Some(command) = view.after_open.take() {
+                            view.dispatch_command(command, cx);
+                        }
                     }
                     Err(error) => {
                         view.rollback_navigation(cx);
@@ -329,6 +340,10 @@ impl DataFrameView {
         if self.session.is_sql() {
             return;
         }
+        if let Some(id) = self.session.working.as_ref().and_then(|d| d.sql_source.clone()) {
+            self.load_data_source(SourceTarget::SqlSource(id), reset, LoadMode::Check, cx);
+            return;
+        }
         if let Some(view) = self.session.working.as_ref().and_then(|d| d.database_view.clone()) {
             self.load_database_view(view, reset, cx);
             return;
@@ -343,6 +358,7 @@ impl DataFrameView {
 
     pub(crate) fn rollback_navigation(&mut self, cx: &mut Cx<Self>) {
         self.navigation_target = None;
+        self.after_open = None;
         if let Some(previous) = self.navigation_backup.take() {
             self.session.restore_navigation(previous.session);
             let token = self.session.token();
@@ -431,6 +447,7 @@ impl DataFrameView {
                 SourceTarget::DatabaseView(view) => database
                     .load_view(&view)
                     .map(|store| (store.into(), Default::default())),
+                SourceTarget::SqlSource(id) => sql_source_rows(&repository, &database, &id).map(|store| (store, Default::default())),
             },
             move |view: &mut Self, cx, result| {
                 if !view.session.accepts(token) {
@@ -651,6 +668,10 @@ impl DataFrameView {
                     let destination = if let Some(database_view) = &definition.database_view {
                         self.session
                             .navigate_to_view(Ok(source), DocumentDefinition::draft_database_view(database_view.clone()))
+                    } else if let Some(id) = &definition.sql_source {
+                        let mut draft = DocumentDefinition::draft_table(definition.name.clone(), String::new());
+                        draft.sql_source = Some(id.clone());
+                        self.session.navigate_to_view(Ok(source), draft)
                     } else {
                         self.session.navigate_to_raw(Ok(source), path)
                     };
@@ -766,6 +787,13 @@ impl DataFrameView {
             target.filters = filters;
             return Ok((FileEntry::View(target), None));
         }
+        if let Some(id) = &definition.sql_source {
+            let mut target = DocumentDefinition::draft_table(definition.name.clone(), String::new());
+            target.sql_source = Some(id.clone());
+            target.slicers = slicers;
+            target.filters = filters;
+            return Ok((FileEntry::View(target), None));
+        }
         let path = self
             .session
             .source_path
@@ -774,4 +802,21 @@ impl DataFrameView {
             .ok_or("Drill down needs a file or database view source")?;
         Ok((FileEntry::Source(PathBuf::from(path)), Some(DrillDown { slicers, filters })))
     }
+}
+
+/// The rows of the saved SQL source `id`, run on a connection of their own.
+pub(crate) fn sql_source_rows(
+    repository: &crate::infrastructure::json_store::ViewRepository,
+    database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>,
+    id: &str,
+) -> Result<crate::infrastructure::store::Store, String> {
+    let source = repository
+        .load_view(id)
+        .map_err(|error| format!("Cannot open the SQL source: {error}"))?;
+    let ViewKind::Sql(config) = &source.view else {
+        return Err(format!("{} is not a SQL source", source.name));
+    };
+    database.initialize()?;
+    crate::infrastructure::sql_execution::sql_source_rows(database.clone(), config)
+        .map_err(|error| format!("{}: {error}", source.name))
 }

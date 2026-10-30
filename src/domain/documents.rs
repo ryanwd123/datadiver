@@ -278,10 +278,16 @@ pub struct QueryConfig {
     pub heatmap: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A SQL source, whose last statement's rows other views can be built on,
+/// or a SQL script, a scratchpad of statements run now and then.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SqlConfig {
     pub text: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub script: bool,
+    /// Which engine runs the SQL: all of DuckDB's, or Polars SQL.
+    pub engine: Engine,
     pub result_sort: Vec<SortKey>,
     /// Runs the whole script each time the view opens.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -290,6 +296,19 @@ pub struct SqlConfig {
     /// order, so only the part still leading the result is frozen.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub frozen_columns: Vec<String>,
+}
+
+impl Default for SqlConfig {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            script: false,
+            engine: Engine::DuckDb,
+            result_sort: Vec::new(),
+            auto_run: false,
+            frozen_columns: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -493,6 +512,9 @@ pub struct DocumentDefinition {
     pub source_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_view: Option<DatabaseView>,
+    /// The id of the SQL source whose rows the view reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_source: Option<String>,
     #[serde(default)]
     pub slicers: Vec<SlicerDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -514,6 +536,7 @@ impl DocumentDefinition {
             name,
             source_path,
             database_view: None,
+            sql_source: None,
             slicers: Vec::new(),
             filters: Vec::new(),
             actions: Vec::new(),
@@ -533,7 +556,27 @@ impl DocumentDefinition {
         definition
     }
 
+    /// A table of the rows a saved SQL source returns.
+    pub fn draft_sql_source(source: &DocumentDefinition) -> Self {
+        let mut definition = Self::draft_table(source.name.clone(), String::new());
+        definition.sql_source = Some(source.id.clone());
+        definition
+    }
+
+    /// Whether this is a SQL script rather than a SQL source or another view.
+    pub fn is_sql_script(&self) -> bool {
+        matches!(&self.view, ViewKind::Sql(config) if config.script)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(id) = &self.sql_source
+            && (id.is_empty()
+                || !self.source_path.is_empty()
+                || self.database_view.is_some()
+                || matches!(self.view, ViewKind::Sql(_)))
+        {
+            return Err("views on a SQL source read no file or database relation".into());
+        }
         if let Some(view) = &self.database_view {
             if view.name.trim().is_empty()
                 || (!matches!(view.kind, RelationKind::Function | RelationKind::File)
@@ -817,5 +860,32 @@ mod dimension_tests {
             serde_json::from_value::<QueryConfig>(value).unwrap(),
             config
         );
+    }
+}
+
+#[cfg(test)]
+mod sql_source_tests {
+    use super::*;
+
+    #[test]
+    fn sql_sources_default_to_duckdb_and_views_on_them_read_nothing_else() {
+        let config: SqlConfig = serde_json::from_value(serde_json::json!({"text": "SELECT 1"})).unwrap();
+        assert_eq!(config.engine, Engine::DuckDb);
+        assert!(!config.script);
+        let mut source = DocumentDefinition::draft_table("Orders".into(), String::new());
+        source.id = "orders".into();
+        source.view = ViewKind::Sql(config);
+        assert!(!source.is_sql_script());
+        let mut view = DocumentDefinition::draft_sql_source(&source);
+        assert_eq!(view.sql_source.as_deref(), Some("orders"));
+        view.validate().unwrap();
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["sql_source"], "orders");
+        assert_eq!(serde_json::from_value::<DocumentDefinition>(json).unwrap(), view);
+        view.source_path = "orders.csv".into();
+        assert!(view.validate().is_err());
+        view.source_path.clear();
+        view.view = ViewKind::Sql(SqlConfig::default());
+        assert!(view.validate().is_err());
     }
 }

@@ -18,10 +18,37 @@ impl DataFrameView {
         )
     }
 
+    /// Whether the SQL editor holds a SQL source, whose rows views can be
+    /// built on, rather than a script.
+    pub(crate) fn sql_source_session(&self) -> bool {
+        self.session.is_sql()
+            && !matches!(self.session.identity, SessionIdentity::StartupSql)
+            && !self.session.working.as_ref().is_some_and(DocumentDefinition::is_sql_script)
+    }
+
+    /// Grouping, pivoting, aggregating or ordering a SQL source opens its rows
+    /// as a source, as the tree does, and then the panel.
+    fn build_on_sql_source(&mut self, id: CommandId, cx: &mut Cx<Self>) {
+        let source = match (&self.session.identity, &self.session.working) {
+            (SessionIdentity::SavedSql(_), Some(source)) if !self.session.dirty => source.clone(),
+            _ => {
+                self.error = Some("Save the SQL source (Ctrl+S) to build views on its rows".into());
+                cx.notify();
+                return;
+            }
+        };
+        self.navigate_to_file(FileEntry::View(DocumentDefinition::draft_sql_source(&source)), false, false, false, cx);
+        // Set after navigating starts, which drops a command from an earlier location.
+        self.after_open = Some(id);
+    }
+
     pub(crate) fn dispatch_command(&mut self, id: CommandId, cx: &mut Cx<Self>) {
         if self.session.is_sql()
             && matches!(id, CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy)
         {
+            if self.sql_source_session() {
+                self.build_on_sql_source(id, cx);
+            }
             return;
         }
         if id == CommandId::AddSlicer

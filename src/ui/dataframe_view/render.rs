@@ -131,6 +131,7 @@ impl DataFrameView {
         if self.space_menu_open {
             SpaceMenu {
                 sql: self.session.is_sql(),
+                sql_source: self.sql_source_session(),
                 sql_slicers: self.sql_result_complete,
                 table: self.is_table(),
                 has_sort: !self.session.sort.is_empty(),

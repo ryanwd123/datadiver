@@ -383,7 +383,9 @@ fn check_sql_file_picker_focus(hide_panel: bool) {
         viewer.run_until_parked();
         press(&viewer, "enter");
     };
-    pick("Scratch");
+    // The picker opens a SQL source as its rows; the editor opens directly.
+    viewer.update(|view, cx| view.navigate_to_file(FileEntry::View(scratch.clone()), false, false, false, cx));
+    viewer.run_until_parked();
     assert!(viewer.read(|view| view.session.is_sql()));
     press(&viewer, "ctrl-j");
     press(&viewer, "ctrl-enter");
@@ -1184,4 +1186,81 @@ fn reset_database_connection_drops_sql_temp_tables_and_reruns_the_startup_script
     run_all_sql(&viewer, "SELECT * FROM scratch;");
     let error = panel(&viewer, |panel| panel.error.clone()).expect("the temp table is gone");
     assert!(format!("{error:?}").contains("scratch"), "{error:?}");
+}
+
+#[test]
+fn views_build_on_sql_sources_in_either_engine_and_reopen_from_their_script() {
+    use crate::domain::documents::{Engine, QueryConfig};
+    for engine in [Engine::DuckDb, Engine::Polars] {
+        let home = tempfile::tempdir().unwrap();
+        let repository = repository(home.path());
+        let mut source = sql_view(
+            "Fruit",
+            SqlConfig {
+                // DuckDB keeps a plain table in the profile, where a second run would find it.
+                text: format!(
+                    "CREATE {} fruit AS SELECT * FROM (VALUES ('red', 12), ('gold', 15), ('red', 3)) AS t(color, quantity);\nSELECT * FROM fruit",
+                    if engine == Engine::DuckDb { "TEMP TABLE" } else { "TABLE" }
+                ),
+                engine,
+                ..Default::default()
+            },
+        );
+        repository.save_view(&mut source).unwrap();
+        let viewer = viewer(repository.clone(), None);
+        // The tree and Ctrl+P open a SQL source as the table of its rows.
+        viewer.update(|view, cx| {
+            view.navigate_to_file(FileEntry::View(DocumentDefinition::draft_sql_source(&source)), false, false, false, cx)
+        });
+        viewer.run_until_parked();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.session.identity, SessionIdentity::DraftTable);
+            assert!(view.is_table());
+            assert_eq!(view.session.source.engine, engine);
+            assert_eq!(view.session.result.row_count(), 3);
+        });
+        viewer.update(|view, cx| {
+            view.session
+                .set_query_config(
+                    QueryConfig {
+                        group_by: vec!["color".into()],
+                        ..Default::default()
+                    },
+                    "Fruit by color".into(),
+                )
+                .unwrap();
+            view.schedule_search(String::new(), cx);
+        });
+        viewer.run_until_parked();
+        assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
+        viewer.update(|view, _| view.session.save_as("Fruit by color".into(), &view.repository.clone()).unwrap());
+        let saved = repository
+            .load_views()
+            .0
+            .into_iter()
+            .find(|view| view.name == "Fruit by color")
+            .unwrap();
+        assert_eq!(saved.sql_source.as_deref(), Some(source.id.as_str()));
+        // A saved view runs its source's script again when it opens.
+        let reopened = self::viewer(repository.clone(), None);
+        reopened.update(|view, cx| view.navigate_to_file(FileEntry::View(saved.clone()), false, false, false, cx));
+        reopened.run_until_parked();
+        reopened.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(matches!(view.session.identity, SessionIdentity::SavedQuery(_)));
+            assert_eq!(view.session.result.row_count(), 2);
+        });
+        // Grouping in the SQL source's editor opens its rows and then the panel.
+        reopened.update(|view, cx| view.navigate_to_file(FileEntry::View(source.clone()), false, false, false, cx));
+        reopened.run_until_parked();
+        assert!(reopened.read(|view| view.sql_source_session()));
+        reopened.update(|view, cx| view.dispatch_command(CommandId::Group, cx));
+        reopened.run_until_parked();
+        reopened.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.session.working.as_ref().unwrap().sql_source.as_deref(), Some(source.id.as_str()));
+            assert!(matches!(view.dialog, Some(Dialog::Pivot(_))));
+        });
+    }
 }

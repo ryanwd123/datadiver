@@ -428,6 +428,33 @@ impl SqlExecution {
         PathRoots::new(&setting("file_search_path"), &setting("home_directory"))
     }
 
+    /// Runs a SQL source's script on a connection of its own and keeps every
+    /// row of its last statement, for the views built on the source. The
+    /// rows are copied out, so the store outlives the connection and its
+    /// temporary objects.
+    pub fn source_rows(database: Arc<SourceDatabase>, text: &str) -> Result<DuckDbStore, String> {
+        let execution = Self::new(database)?;
+        let ranges = statements(text);
+        let (last, setup) = ranges.split_last().ok_or("The SQL source has no statement")?;
+        let mutated = ranges.iter().any(|range| may_mutate(&text[range.clone()]));
+        let result = (|| {
+            for (index, range) in setup.iter().enumerate() {
+                execution
+                    .execute(&text[range.clone()], 0)
+                    .map_err(|error| format!("Statement {}: {error}", index + 1))?;
+            }
+            match execution.execute(&text[last.clone()], u64::MAX) {
+                Ok((Some((store, _)), _)) => Ok(store),
+                Ok((None, _)) => Err("The SQL source's last statement returns no rows".to_owned()),
+                Err(error) => Err(format!("Statement {}: {error}", ranges.len())),
+            }
+        })();
+        if mutated {
+            execution.database.invalidate();
+        }
+        result
+    }
+
     pub fn run(&self, text: &str, limit: u64) -> SqlRun {
         let started = Instant::now();
         let mut mutated = false;
@@ -855,6 +882,18 @@ fn sql_type(data_type: &DataType) -> Result<String, String> {
     })
 }
 
+/// The rows a SQL source returns, run by the engine it chose.
+pub fn sql_source_rows(
+    database: Arc<SourceDatabase>,
+    config: &crate::domain::documents::SqlConfig,
+) -> Result<super::store::Store, String> {
+    use crate::domain::documents::Engine;
+    match config.engine {
+        Engine::DuckDb => SqlExecution::source_rows(database, &config.text).map(Into::into),
+        Engine::Polars => super::polars::sql::source_rows(&config.text).map(Into::into),
+    }
+}
+
 /// A DuckDB aggregate function, for the aggregation manager's reference list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AggregateFunction {
@@ -916,6 +955,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = SqlExecution::new(SourceDatabase::for_profile(dir.path())).unwrap();
         (dir, service)
+    }
+
+    #[test]
+    fn sql_source_rows_keep_every_row_after_their_connection_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = SourceDatabase::for_profile(dir.path());
+        let text = "CREATE TEMP TABLE numbers AS SELECT range AS n FROM range(250000);\nSELECT n, n % 7 AS bucket FROM numbers";
+        let store = SqlExecution::source_rows(database.clone(), text).unwrap();
+        assert_eq!(store.row_count(), 250_000);
+        assert_eq!(store.schema()[1].name, "bucket");
+        let error = SqlExecution::source_rows(database.clone(), "CREATE TEMP TABLE t AS SELECT 1").err().unwrap();
+        assert!(error.contains("returns no rows"), "{error}");
+        let error = SqlExecution::source_rows(database, "SELECT 1;\nSELECT * FROM missing").err().unwrap();
+        assert!(error.starts_with("Statement 2:"), "{error}");
     }
 
     #[test]

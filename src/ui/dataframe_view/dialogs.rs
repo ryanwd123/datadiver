@@ -566,8 +566,12 @@ impl DataFrameView {
             .into_iter()
             .filter(|c| {
                 (!self.session.is_sql()
-                    || !matches!(c.id, CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy)
-                        && (c.id != CommandId::AddSlicer || self.sql_result_complete))
+                    || match c.id {
+                        // A SQL source opens its rows to build these on.
+                        CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy => self.sql_source_session(),
+                        CommandId::AddSlicer => self.sql_result_complete,
+                        _ => true,
+                    })
                     // The SQL editor's own commands, while it is open.
                     && (self.sql_panel_open && self.sql_panel.is_some()
                         || super::sql_editor::sql_editor_action(c.id).is_none()
@@ -684,7 +688,11 @@ impl DataFrameView {
                     match view.view {
                         ViewKind::Table(_) => groups[0].push(FileEntry::View(view)),
                         ViewKind::Query(_) => groups[1].push(FileEntry::View(view)),
-                        ViewKind::Sql(_) => groups[3].push(FileEntry::View(view)),
+                        // A SQL source opens as its rows, like the other sources.
+                        ViewKind::Sql(_) if !view.is_sql_script() => {
+                            groups[3].push(FileEntry::View(DocumentDefinition::draft_sql_source(&view)))
+                        }
+                        ViewKind::Sql(_) => {}
                     }
                 }
                 let folders = state.settings.watched_folders.iter().map(PathBuf::from).collect::<Vec<_>>();
@@ -740,7 +748,7 @@ impl DataFrameView {
         let mut titles = vec!["Table views".to_owned(), "Query views".to_owned()];
         let mut new_sections = vec![groups[0].clone(), groups[1].clone()];
         if !groups[3].is_empty() {
-            titles.push("SQL views".into());
+            titles.push("SQL sources".into());
             new_sections.push(groups[3].clone());
         }
         if !groups[4].is_empty() {

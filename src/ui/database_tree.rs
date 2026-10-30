@@ -18,6 +18,8 @@ use crate::ui::widgets::{ButtonStyle, Fonts, Row, WidgetId, button, colors};
 #[derive(Clone, Debug, PartialEq)]
 pub enum TreeTarget {
     View(Box<DocumentDefinition>),
+    /// A SQL source, opened as the table of rows it returns.
+    SqlSource(Box<DocumentDefinition>),
     Source(PathBuf),
     Relation(DatabaseView),
 }
@@ -191,7 +193,7 @@ impl Builder<'_> {
             return None;
         }
         let deletable = match (&target, id.split_once(':').map(|(kind, _)| kind)) {
-            (TreeTarget::View(view), _) => Some(DeleteTarget::View(view.clone())),
+            (TreeTarget::View(view) | TreeTarget::SqlSource(view), _) => Some(DeleteTarget::View(view.clone())),
             (TreeTarget::Relation(relation), _) if relation.kind != RelationKind::Function => {
                 Some(DeleteTarget::Relation(relation.clone()))
             }
@@ -258,7 +260,8 @@ fn build_tree(
         let (order, kind) = match view.view {
             ViewKind::Table(_) => (0, "Table views"),
             ViewKind::Query(_) => (1, "Query views"),
-            ViewKind::Sql(_) => (2, "SQL views"),
+            // SQL sources are listed with the other sources.
+            ViewKind::Sql(_) => continue,
         };
         if let Some(item) = builder.leaf(
             format!("view:{}", view.id),
@@ -316,6 +319,19 @@ fn build_tree(
     groups.extend(builder.folder("group:databases", "Databases", databases));
 
     let mut sources = Vec::new();
+    let sql_sources = data
+        .views
+        .iter()
+        .filter(|view| matches!(view.view, ViewKind::Sql(_)) && !view.is_sql_script())
+        .filter_map(|view| {
+            builder.leaf(
+                format!("sql:{}", view.id),
+                view.name.clone(),
+                TreeTarget::SqlSource(Box::new(view.clone())),
+            )
+        })
+        .collect();
+    sources.extend(builder.folder("src:sql", "SQL sources", sql_sources));
     for (root, files) in &data.folders {
         let mut tree = Folder::default();
         for file in files {
@@ -837,11 +853,11 @@ mod tests {
                 "Saved views",
                 "  +Table views",
                 "  +Query views",
-                "  +SQL views",
                 "Databases",
                 "  +profile",
                 "  +shop",
                 "Sources",
+                "  +SQL sources",
                 "  +C:/data",
                 "  +Watched files",
                 "  +Recent files",
@@ -858,6 +874,7 @@ mod tests {
             targets.get("meta:duckdb_tables"),
             Some(TreeTarget::Relation(view)) if view.kind == RelationKind::Function
         ));
+        assert!(matches!(targets.get("sql:sql-1"), Some(TreeTarget::SqlSource(view)) if view.name == "Monthly SQL"));
     }
 
     #[test]

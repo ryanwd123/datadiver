@@ -69,6 +69,8 @@ pub fn command_for_key(key: &str, shifted: bool, table: bool) -> Option<CommandI
 /// The commands the Space menu lists, with their shortcuts.
 pub struct SpaceMenu {
     pub sql: bool,
+    /// A saved SQL source, whose rows views can be built on.
+    pub sql_source: bool,
     pub sql_slicers: bool,
     pub table: bool,
     pub has_sort: bool,
@@ -84,6 +86,7 @@ impl SpaceMenu {
             .filter(|entry| {
                 !self.sql
                     || (entry.command == CommandId::AddSlicer && self.sql_slicers)
+                    || (self.sql_source && matches!(entry.command, CommandId::Group | CommandId::Pivot | CommandId::Aggregation))
                     || !matches!(
                         entry.command,
                         CommandId::Group
