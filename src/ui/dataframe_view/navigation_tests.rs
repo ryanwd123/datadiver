@@ -1191,6 +1191,17 @@ fn a_file_read_into_memory_stops_at_the_limit_in_either_engine() {
             assert!(view.limit_applies());
             assert!(view.limit_reached());
         });
+        // Exporting asks first, since the rest of the file was never read.
+        viewer.update(|view, cx| view.export_result(cx));
+        viewer.read(|view| match &view.dialog {
+            Some(super::dialogs::Dialog::Confirm(confirm)) => {
+                let (title, message, _) = confirm.text();
+                assert!(title.contains("rows that were read"), "{title}");
+                assert!(message.contains("first 2 rows"), "{message}");
+            }
+            _ => panic!("expected the export to ask first"),
+        });
+        viewer.update(|view, _| view.dialog = None);
         // Raising the limit reads the file again, whole this time.
         let limit = viewer.read(|view| view.limit_input.id);
         viewer.focus(limit);

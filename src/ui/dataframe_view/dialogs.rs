@@ -39,6 +39,8 @@ pub enum ConfirmAction {
     DeleteView(Box<DocumentDefinition>),
     /// Deletes an archived view for good.
     DeleteArchive(PathBuf),
+    /// Exports a result whose file was read only up to the row limit.
+    ExportCut,
 }
 
 pub struct ConfirmDialog {
@@ -233,6 +235,7 @@ impl DataFrameView {
     fn run_confirmed(&mut self, action: ConfirmAction, cx: &mut Cx<Self>) {
         match action {
             ConfirmAction::NewSql { script } => self.begin_new_sql(script, cx),
+            ConfirmAction::ExportCut => self.export_rows(cx),
             ConfirmAction::DropRelation(relation) => {
                 let database = self.database.clone();
                 self.run_tree_delete(move || database.drop_relation(&relation), cx);

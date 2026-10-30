@@ -205,6 +205,22 @@ fn enter_drills_from_pivot_cells_to_source_rows_and_back_returns() {
 }
 
 #[test]
+fn totals_of_a_file_cut_at_the_limit_say_how_many_rows_they_cover() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, SALES).unwrap();
+    let repository = repository(home.path());
+    let mut settings = repository.load_settings().unwrap();
+    settings.query_limit = 3;
+    repository.save_settings(&settings).unwrap();
+    let viewer = viewer(repository);
+    open(&viewer, FileEntry::Source(path.clone()));
+    open(&viewer, FileEntry::View(pivot(&path, sum_total(), true)));
+    let footer = viewer.read(|view| view.grid.footer().cloned()).expect("grand total row");
+    assert_eq!(footer.label, "Total (first 3 rows)");
+}
+
+#[test]
 fn space_t_adds_row_totals_and_a_grand_total_footer() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("sales.csv");

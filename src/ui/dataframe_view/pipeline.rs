@@ -702,13 +702,21 @@ impl DataFrameView {
                 .query_cache
                 .as_ref()
                 .is_some_and(|cache| cache.frame.cut_at.is_some());
+        // Totals cover every group, including any search or the limit hides,
+        // but only the rows of a file that were read.
+        let cut = self
+            .session
+            .source
+            .cut_at
+            .map(|limit| format!("first {} rows", crate::domain::formatting::group_numeric_text(&limit.to_string())));
+        let label = match (narrowed, cut) {
+            (false, None) => "Total".into(),
+            (true, None) => "Total (all groups)".into(),
+            (false, Some(cut)) => format!("Total ({cut})"),
+            (true, Some(cut)) => format!("Total (all groups, {cut})"),
+        };
         let footer = crate::ui::grid::GridFooter {
-            // Totals cover every group, including any search or the limit hides.
-            label: if narrowed {
-                "Total (all groups)".into()
-            } else {
-                "Total".into()
-            },
+            label,
             values: values.clone(),
         };
         self.grid.set_footer(Some(footer));

@@ -650,6 +650,27 @@ impl DataFrameView {
             cx.notify();
             return;
         }
+        // The rest of the file was never read, so no rerun can include it.
+        if let Some(limit) = self.session.source.cut_at {
+            let rows = crate::domain::formatting::group_numeric_text(&limit.to_string());
+            self.confirm(
+                "Export only the rows that were read?".into(),
+                format!(
+                    "Only the first {rows} rows of this file were read, so the export leaves the rest of the file out. To export all of it, raise Limit above the file's row count, or scan it in place with Read mode, then export again."
+                ),
+                format!("Export from {rows} rows"),
+                false,
+                super::dialogs::ConfirmAction::ExportCut,
+                cx,
+            );
+            return;
+        }
+        self.export_rows(cx);
+    }
+
+    /// Asks for a file and writes the displayed result to it, rerunning a
+    /// query that stopped at the limit.
+    pub(crate) fn export_rows(&mut self, cx: &mut Cx<Self>) {
         let result = self.session.result.clone();
         let rerun = self.unlimited_query_rerun();
         let directory = self
