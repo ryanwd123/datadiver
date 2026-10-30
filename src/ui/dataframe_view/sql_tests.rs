@@ -457,6 +457,56 @@ fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
 }
 
 #[test]
+fn sql_editor_keys_follow_the_keymap_and_its_actions_are_commands() {
+    use crate::application::keymap::{ActionId, DisabledDefault, KeyContext, UserBinding};
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    press(&viewer, "ctrl-j");
+    // Run moves from Ctrl+Enter to F5; Ctrl+/ no longer comments.
+    viewer.update(|view, _| {
+        for (action, keystroke) in [(ActionId::RunSql, "ctrl-enter"), (ActionId::SqlToggleLineComment, "ctrl-/")] {
+            view.keymap.disabled_defaults.push(DisabledDefault {
+                action,
+                context: KeyContext::SqlEditor,
+                keystroke: keystroke.into(),
+            });
+        }
+        view.keymap.bindings.push(UserBinding {
+            action: ActionId::RunSql,
+            context: KeyContext::SqlEditor,
+            keystroke: "f5".into(),
+        });
+    });
+    place(&viewer, "SELECT 10 AS first", 0..0);
+    let first_column = || viewer.read(|view| view.session.result.columns[0].0.clone());
+    let before = first_column();
+    press(&viewer, "ctrl-enter");
+    assert_eq!(first_column(), before);
+    press(&viewer, "f5");
+    assert_eq!(first_column(), "first");
+    press(&viewer, "ctrl-/");
+    assert_eq!(sql_text(&viewer), "SELECT 10 AS first");
+    // Defaults still reach the editor's actions through the keymap.
+    press(&viewer, "ctrl-shift-k");
+    assert_eq!(sql_text(&viewer), "");
+
+    // The palette lists the editor's commands with their keys while it is open.
+    let commands = |viewer: &Viewer| {
+        viewer.read(|view| {
+            crate::ui::command_palette::matching_commands(&super::active_commands(), &view.keymap, "fold")
+                .into_iter()
+                .map(|(command, _, shortcut)| (command.id, shortcut))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert!(commands(&viewer).contains(&(CommandId::SqlFold, "Ctrl+Shift+[".into())));
+    place(&viewer, "SELECT\n  1,\n  2", 0..0);
+    viewer.update(|view, cx| view.dispatch_command(CommandId::SqlSelectLine, cx));
+    assert_eq!(panel(&viewer, |panel| panel.editor.selected_text()), "SELECT\n");
+    assert!(editor_focused(&viewer));
+}
+
+#[test]
 fn sql_search_sort_and_save_never_reexecute_statements() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

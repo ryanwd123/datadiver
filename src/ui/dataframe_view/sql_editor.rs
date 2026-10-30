@@ -7,6 +7,41 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// The editor action a SQL editor command runs.
+pub(crate) fn sql_editor_action(id: CommandId) -> Option<code_editor::Action> {
+    use code_editor::Action;
+    Some(match id {
+        CommandId::SqlToggleLineComment => Action::ToggleLineComment,
+        CommandId::SqlToggleBlockComment => Action::ToggleBlockComment,
+        CommandId::SqlFind => Action::Find,
+        CommandId::SqlReplace => Action::Replace,
+        CommandId::SqlGoToLine => Action::GoToLine,
+        CommandId::SqlShowCompletions => Action::TriggerSuggest,
+        CommandId::SqlShowSignature => Action::TriggerParameterHints,
+        CommandId::SqlAddCursorAbove => Action::AddCursorAbove,
+        CommandId::SqlAddCursorBelow => Action::AddCursorBelow,
+        CommandId::SqlAddNextOccurrence => Action::AddNextOccurrence,
+        CommandId::SqlSelectAllOccurrences => Action::SelectAllOccurrences,
+        CommandId::SqlMoveLinesUp => Action::MoveLinesUp,
+        CommandId::SqlMoveLinesDown => Action::MoveLinesDown,
+        CommandId::SqlCopyLinesUp => Action::CopyLinesUp,
+        CommandId::SqlCopyLinesDown => Action::CopyLinesDown,
+        CommandId::SqlDeleteLines => Action::DeleteLines,
+        CommandId::SqlSelectLine => Action::SelectLine,
+        CommandId::SqlExpandSelection => Action::ExpandSelection,
+        CommandId::SqlShrinkSelection => Action::ShrinkSelection,
+        CommandId::SqlJumpToBracket => Action::JumpToBracket,
+        CommandId::SqlFold => Action::Fold,
+        CommandId::SqlUnfold => Action::Unfold,
+        CommandId::SqlFoldAll => Action::FoldAll,
+        CommandId::SqlUnfoldAll => Action::UnfoldAll,
+        CommandId::SqlToggleWordWrap => Action::ToggleWordWrap,
+        CommandId::SqlInsertLineBelow => Action::InsertLineBelow,
+        CommandId::SqlInsertLineAbove => Action::InsertLineAbove,
+        _ => return None,
+    })
+}
+
 impl DataFrameView {
     /// Opens the SQL editor for a screenshot, running sample SQL first for
     /// targets that show results.
@@ -646,6 +681,38 @@ impl DataFrameView {
             },
         )
         .detach();
+    }
+
+    /// Keys the keymap binds in the SQL editor: running, asking AI, and the
+    /// editor's own actions, which follow the keymap so they can be rebound.
+    /// A default the keymap unbinds does nothing rather than reach the editor.
+    pub(crate) fn sql_editor_key(&mut self, event: &crate::ui::platform::KeyEvent, cx: &mut Cx<Self>) -> bool {
+        use crate::application::keymap::{ACTIONS, ActionId, canonical_keystroke};
+        let Ok(stroke) = canonical_keystroke(&event.stroke()) else {
+            return false;
+        };
+        let in_editor = |id: ActionId| ACTIONS.iter().any(|s| s.id == id && s.context == KeyContext::SqlEditor);
+        match self.keymap.binding_for(&stroke, KeyContext::SqlEditor) {
+            Some(action) if in_editor(action) => {
+                self.dispatch_keymap_action(action, cx);
+                true
+            }
+            _ => ACTIONS
+                .iter()
+                .any(|s| s.context == KeyContext::SqlEditor && s.default_bindings.contains(&stroke.as_str())),
+        }
+    }
+
+    /// A SQL editor command from a key or the command palette: focuses the
+    /// editor and runs its action there.
+    pub(crate) fn run_sql_editor_action(&mut self, action: code_editor::Action, cx: &mut Cx<Self>) {
+        let Some(panel) = self.sql_panel.as_mut().filter(|_| self.sql_panel_open) else {
+            return;
+        };
+        let id = panel.editor.id;
+        panel.editor.run(action);
+        self.set_focus(Some(id), cx);
+        self.handle_sql_panel_events(cx);
     }
 
     pub(crate) fn run_sql(&mut self, all: bool, cx: &mut Cx<Self>) {

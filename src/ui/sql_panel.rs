@@ -328,7 +328,8 @@ impl SqlPanel {
     pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
         let key = event.key.as_str();
         let m = event.modifiers;
-        if m.control && !m.shift && !m.alt && (key == "k" || key == "i") {
+        let in_ask = *focus == Some(self.ask_input.id);
+        if in_ask && m.control && !m.shift && !m.alt && (key == "k" || key == "i") {
             self.open_ask(focus);
             return true;
         }
@@ -345,7 +346,7 @@ impl SqlPanel {
         if ask_key.is_some_and(|ask_key| self.ask_key(ask_key, focus)) {
             return true;
         }
-        if key == "enter" && m.control {
+        if in_ask && key == "enter" && m.control {
             if !self.busy {
                 self.events.push(SqlPanelEvent::Run(false));
             }

@@ -31,6 +31,11 @@ impl DataFrameView {
             cx.notify();
             return;
         }
+        if let Some(action) = sql_editor::sql_editor_action(id) {
+            self.run_sql_editor_action(action, cx);
+            cx.notify();
+            return;
+        }
         match id {
             CommandId::Back => self.navigate_history(false, cx),
             CommandId::Forward => self.navigate_history(true, cx),
@@ -119,6 +124,35 @@ impl DataFrameView {
             CommandId::RunAction => self.open_action_menu(cx),
             CommandId::EditActions => self.open_actions_editor(cx),
             CommandId::AiProviders => self.open_ai_settings(cx),
+            CommandId::RunSql => self.run_sql(false, cx),
+            CommandId::RunAllSql => self.run_sql(true, cx),
+            CommandId::SqlToggleLineComment
+            | CommandId::SqlToggleBlockComment
+            | CommandId::SqlFind
+            | CommandId::SqlReplace
+            | CommandId::SqlGoToLine
+            | CommandId::SqlShowCompletions
+            | CommandId::SqlShowSignature
+            | CommandId::SqlAddCursorAbove
+            | CommandId::SqlAddCursorBelow
+            | CommandId::SqlAddNextOccurrence
+            | CommandId::SqlSelectAllOccurrences
+            | CommandId::SqlMoveLinesUp
+            | CommandId::SqlMoveLinesDown
+            | CommandId::SqlCopyLinesUp
+            | CommandId::SqlCopyLinesDown
+            | CommandId::SqlDeleteLines
+            | CommandId::SqlSelectLine
+            | CommandId::SqlExpandSelection
+            | CommandId::SqlShrinkSelection
+            | CommandId::SqlJumpToBracket
+            | CommandId::SqlFold
+            | CommandId::SqlUnfold
+            | CommandId::SqlFoldAll
+            | CommandId::SqlUnfoldAll
+            | CommandId::SqlToggleWordWrap
+            | CommandId::SqlInsertLineBelow
+            | CommandId::SqlInsertLineAbove => {}
             CommandId::AskSql => {
                 self.open_sql_editor(cx);
                 if self.session.is_sql()

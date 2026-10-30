@@ -561,9 +561,13 @@ impl DataFrameView {
         let commands = active_commands()
             .into_iter()
             .filter(|c| {
-                !self.session.is_sql()
+                (!self.session.is_sql()
                     || !matches!(c.id, CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy)
-                        && (c.id != CommandId::AddSlicer || self.sql_result_complete)
+                        && (c.id != CommandId::AddSlicer || self.sql_result_complete))
+                    // The SQL editor's own commands, while it is open.
+                    && (self.sql_panel_open && self.sql_panel.is_some()
+                        || super::sql_editor::sql_editor_action(c.id).is_none()
+                            && !matches!(c.id, CommandId::RunSql | CommandId::RunAllSql))
             })
             .collect::<Vec<_>>();
         let shown = matching_commands(&commands, &self.keymap, "");

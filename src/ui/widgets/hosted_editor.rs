@@ -121,6 +121,11 @@ impl HostedEditor {
         })
     }
 
+    /// Runs one of the editor's actions, as its key would.
+    pub fn run(&mut self, action: Action) {
+        self.editor.run(action);
+    }
+
     pub fn trigger_suggest(&mut self) {
         self.editor.run(Action::TriggerSuggest);
     }

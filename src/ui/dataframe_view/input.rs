@@ -148,6 +148,10 @@ impl DataFrameView {
             return true;
         }
         let focus = self.focus;
+        let sql_editor = self.sql_panel_open && self.sql_panel.as_ref().is_some_and(|panel| focus == Some(panel.editor.id));
+        if sql_editor && self.sql_editor_key(event, cx) {
+            return true;
+        }
         // The SQL panel takes its keys first, then Ctrl chords reach the app.
         if let Some(panel) = &mut self.sql_panel
             && self.sql_panel_open

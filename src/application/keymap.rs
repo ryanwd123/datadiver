@@ -30,10 +30,11 @@ pub enum KeyContext {
     PivotBy,
     Aggregations,
     KeymapEditor,
+    SqlEditor,
 }
 
 impl KeyContext {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Application,
         Self::Window,
         Self::Grid,
@@ -48,6 +49,7 @@ impl KeyContext {
         Self::PivotBy,
         Self::Aggregations,
         Self::KeymapEditor,
+        Self::SqlEditor,
     ];
 
     pub fn id(self) -> &'static str {
@@ -66,6 +68,7 @@ impl KeyContext {
             Self::PivotBy => "pivot_by",
             Self::Aggregations => "aggregations",
             Self::KeymapEditor => "keymap_editor",
+            Self::SqlEditor => "sql_editor",
         }
     }
 
@@ -85,6 +88,7 @@ impl KeyContext {
             Self::PivotBy => "Pivot By Panel",
             Self::Aggregations => "Aggregations Panel",
             Self::KeymapEditor => "Keymap Editor",
+            Self::SqlEditor => "SQL Editor",
         }
     }
 
@@ -98,7 +102,8 @@ impl KeyContext {
             | Self::GroupBy
             | Self::PivotBy
             | Self::Aggregations
-            | Self::KeymapEditor => Some(Self::Application),
+            | Self::KeymapEditor
+            | Self::SqlEditor => Some(Self::Application),
             Self::TableSpaceMenu | Self::QuerySpaceMenu => Some(Self::SpaceMenu),
             Self::Application => Some(Self::Window),
             Self::Window => None,
@@ -241,6 +246,36 @@ pub enum ActionId {
     Redo,
     FocusGrid,
     FocusSlicers,
+    AskSql,
+    RunSql,
+    RunAllSql,
+    SqlToggleLineComment,
+    SqlToggleBlockComment,
+    SqlFind,
+    SqlReplace,
+    SqlGoToLine,
+    SqlShowCompletions,
+    SqlShowSignature,
+    SqlAddCursorAbove,
+    SqlAddCursorBelow,
+    SqlAddNextOccurrence,
+    SqlSelectAllOccurrences,
+    SqlMoveLinesUp,
+    SqlMoveLinesDown,
+    SqlCopyLinesUp,
+    SqlCopyLinesDown,
+    SqlDeleteLines,
+    SqlSelectLine,
+    SqlExpandSelection,
+    SqlShrinkSelection,
+    SqlJumpToBracket,
+    SqlFold,
+    SqlUnfold,
+    SqlFoldAll,
+    SqlUnfoldAll,
+    SqlToggleWordWrap,
+    SqlInsertLineBelow,
+    SqlInsertLineAbove,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,10 +288,11 @@ pub enum ActionCategory {
     FilesViews,
     Application,
     SpaceMenu,
+    SqlEditor,
 }
 
 impl ActionCategory {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Navigation,
         Self::Selection,
         Self::DataExploration,
@@ -265,6 +301,7 @@ impl ActionCategory {
         Self::FilesViews,
         Self::Application,
         Self::SpaceMenu,
+        Self::SqlEditor,
     ];
 
     pub fn label(self) -> &'static str {
@@ -277,6 +314,7 @@ impl ActionCategory {
             Self::FilesViews => "Files & views",
             Self::Application => "Application",
             Self::SpaceMenu => "Space menu",
+            Self::SqlEditor => "SQL editor",
         }
     }
 }
@@ -292,6 +330,246 @@ pub struct ActionSpec {
 }
 
 pub const ACTIONS: &[ActionSpec] = &[
+    ActionSpec {
+        id: ActionId::AskSql,
+        category: ActionCategory::SqlEditor,
+        name: "Ask AI for SQL",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::AskSql),
+        default_bindings: &["ctrl-k", "ctrl-i"],
+    },
+    ActionSpec {
+        id: ActionId::RunSql,
+        category: ActionCategory::SqlEditor,
+        name: "Run SQL statement",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::RunSql),
+        default_bindings: &["ctrl-enter"],
+    },
+    ActionSpec {
+        id: ActionId::RunAllSql,
+        category: ActionCategory::SqlEditor,
+        name: "Run SQL script",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::RunAllSql),
+        default_bindings: &["ctrl-shift-enter"],
+    },
+    ActionSpec {
+        id: ActionId::SqlToggleLineComment,
+        category: ActionCategory::SqlEditor,
+        name: "Toggle line comment",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlToggleLineComment),
+        default_bindings: &["ctrl-/"],
+    },
+    ActionSpec {
+        id: ActionId::SqlToggleBlockComment,
+        category: ActionCategory::SqlEditor,
+        name: "Toggle block comment",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlToggleBlockComment),
+        default_bindings: &["alt-shift-a"],
+    },
+    ActionSpec {
+        id: ActionId::SqlFind,
+        category: ActionCategory::SqlEditor,
+        name: "Find",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlFind),
+        default_bindings: &["ctrl-f"],
+    },
+    ActionSpec {
+        id: ActionId::SqlReplace,
+        category: ActionCategory::SqlEditor,
+        name: "Replace",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlReplace),
+        default_bindings: &["ctrl-h"],
+    },
+    ActionSpec {
+        id: ActionId::SqlGoToLine,
+        category: ActionCategory::SqlEditor,
+        name: "Go to line",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlGoToLine),
+        default_bindings: &["ctrl-g"],
+    },
+    ActionSpec {
+        id: ActionId::SqlShowCompletions,
+        category: ActionCategory::SqlEditor,
+        name: "Show completions",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlShowCompletions),
+        default_bindings: &["ctrl-space"],
+    },
+    ActionSpec {
+        id: ActionId::SqlShowSignature,
+        category: ActionCategory::SqlEditor,
+        name: "Show signature help",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlShowSignature),
+        default_bindings: &["ctrl-shift-space"],
+    },
+    ActionSpec {
+        id: ActionId::SqlAddCursorAbove,
+        category: ActionCategory::SqlEditor,
+        name: "Add cursor above",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlAddCursorAbove),
+        default_bindings: &["ctrl-alt-up"],
+    },
+    ActionSpec {
+        id: ActionId::SqlAddCursorBelow,
+        category: ActionCategory::SqlEditor,
+        name: "Add cursor below",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlAddCursorBelow),
+        default_bindings: &["ctrl-alt-down"],
+    },
+    ActionSpec {
+        id: ActionId::SqlAddNextOccurrence,
+        category: ActionCategory::SqlEditor,
+        name: "Add next occurrence to selection",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlAddNextOccurrence),
+        default_bindings: &["ctrl-d"],
+    },
+    ActionSpec {
+        id: ActionId::SqlSelectAllOccurrences,
+        category: ActionCategory::SqlEditor,
+        name: "Select all occurrences",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlSelectAllOccurrences),
+        default_bindings: &["ctrl-shift-l", "ctrl-f2"],
+    },
+    ActionSpec {
+        id: ActionId::SqlMoveLinesUp,
+        category: ActionCategory::SqlEditor,
+        name: "Move lines up",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlMoveLinesUp),
+        default_bindings: &["alt-up"],
+    },
+    ActionSpec {
+        id: ActionId::SqlMoveLinesDown,
+        category: ActionCategory::SqlEditor,
+        name: "Move lines down",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlMoveLinesDown),
+        default_bindings: &["alt-down"],
+    },
+    ActionSpec {
+        id: ActionId::SqlCopyLinesUp,
+        category: ActionCategory::SqlEditor,
+        name: "Copy lines up",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlCopyLinesUp),
+        default_bindings: &["alt-shift-up"],
+    },
+    ActionSpec {
+        id: ActionId::SqlCopyLinesDown,
+        category: ActionCategory::SqlEditor,
+        name: "Copy lines down",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlCopyLinesDown),
+        default_bindings: &["alt-shift-down"],
+    },
+    ActionSpec {
+        id: ActionId::SqlDeleteLines,
+        category: ActionCategory::SqlEditor,
+        name: "Delete lines",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlDeleteLines),
+        default_bindings: &["ctrl-shift-k"],
+    },
+    ActionSpec {
+        id: ActionId::SqlSelectLine,
+        category: ActionCategory::SqlEditor,
+        name: "Select line",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlSelectLine),
+        default_bindings: &["ctrl-l"],
+    },
+    ActionSpec {
+        id: ActionId::SqlExpandSelection,
+        category: ActionCategory::SqlEditor,
+        name: "Expand selection",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlExpandSelection),
+        default_bindings: &["alt-shift-right"],
+    },
+    ActionSpec {
+        id: ActionId::SqlShrinkSelection,
+        category: ActionCategory::SqlEditor,
+        name: "Shrink selection",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlShrinkSelection),
+        default_bindings: &["alt-shift-left"],
+    },
+    ActionSpec {
+        id: ActionId::SqlJumpToBracket,
+        category: ActionCategory::SqlEditor,
+        name: "Go to matching bracket",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlJumpToBracket),
+        default_bindings: &["ctrl-shift-\\"],
+    },
+    ActionSpec {
+        id: ActionId::SqlFold,
+        category: ActionCategory::SqlEditor,
+        name: "Fold",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlFold),
+        default_bindings: &["ctrl-shift-["],
+    },
+    ActionSpec {
+        id: ActionId::SqlUnfold,
+        category: ActionCategory::SqlEditor,
+        name: "Unfold",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlUnfold),
+        default_bindings: &["ctrl-shift-]"],
+    },
+    ActionSpec {
+        id: ActionId::SqlFoldAll,
+        category: ActionCategory::SqlEditor,
+        name: "Fold all",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlFoldAll),
+        default_bindings: &[],
+    },
+    ActionSpec {
+        id: ActionId::SqlUnfoldAll,
+        category: ActionCategory::SqlEditor,
+        name: "Unfold all",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlUnfoldAll),
+        default_bindings: &[],
+    },
+    ActionSpec {
+        id: ActionId::SqlToggleWordWrap,
+        category: ActionCategory::SqlEditor,
+        name: "Toggle word wrap",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlToggleWordWrap),
+        default_bindings: &["alt-z"],
+    },
+    ActionSpec {
+        id: ActionId::SqlInsertLineBelow,
+        category: ActionCategory::SqlEditor,
+        name: "Insert line below",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlInsertLineBelow),
+        default_bindings: &[],
+    },
+    ActionSpec {
+        id: ActionId::SqlInsertLineAbove,
+        category: ActionCategory::SqlEditor,
+        name: "Insert line above",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlInsertLineAbove),
+        default_bindings: &[],
+    },
     ActionSpec {
         id: ActionId::Back,
         category: ActionCategory::FilesViews,
