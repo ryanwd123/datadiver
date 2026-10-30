@@ -37,16 +37,6 @@ pub struct SqlExecution {
     database: Arc<SourceDatabase>,
     pub interrupt: Arc<InterruptHandle>,
     pub stopped: Arc<AtomicBool>,
-    /// This editor's result tables, oldest first.
-    result_tables: std::sync::Mutex<Vec<String>>,
-}
-
-impl Drop for SqlExecution {
-    fn drop(&mut self) {
-        for table in self.result_tables.get_mut().map(std::mem::take).unwrap_or_default() {
-            let _ = self.connection.execute_batch(&format!("DROP TABLE IF EXISTS {table}"));
-        }
-    }
 }
 
 pub struct SqlRun {
@@ -75,7 +65,6 @@ impl SqlExecution {
             database,
             interrupt,
             stopped: Arc::new(AtomicBool::new(false)),
-            result_tables: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -629,14 +618,9 @@ impl SqlExecution {
         self.connection
             .execute_batch(&format!("CREATE TABLE {table} AS FROM (\n{body}\n)"))
             .map_err(|error| error.to_string())?;
-        let mut tables = self.result_tables.lock().map_err(|_| "results lock poisoned")?;
-        // The previous result stays for a view still showing it; older ones go.
-        while tables.len() > 1 {
-            let old = tables.remove(0);
-            let _ = self.connection.execute_batch(&format!("DROP TABLE IF EXISTS {old}"));
-        }
-        tables.push(table.clone());
-        DuckDbStore::from_named_connection(self.database.connect()?, table).map(Some)
+        // The table lasts as long as a view shows it, even after this editor
+        // runs again or closes.
+        DuckDbStore::owning_table(self.database.connect()?, table).map(Some)
     }
 
     fn execute(
@@ -1159,20 +1143,32 @@ mod tests {
             assert!(!run.complete, "{sql}");
         }
         assert!(service.run("ROLLBACK", 10).error.is_none());
-        // Only the current and previous results are kept.
+        // A result's table lasts exactly as long as its store, even after the
+        // editor runs again or closes.
+        let database = service.database.clone();
+        let tables = || {
+            database
+                .connect()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM duckdb_tables() WHERE database_name = '__dd_results' \
+                     AND table_name LIKE '__dd_result_%'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        let before = tables();
         for _ in 0..3 {
             assert!(service.run("SELECT 1", 10).complete);
         }
-        let kept = service
-            .connection
-            .query_row(
-                "SELECT count(*) FROM duckdb_tables() WHERE database_name = '__dd_results' \
-                 AND table_name LIKE '__dd_result_%'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap();
-        assert_eq!(kept, 2);
+        assert_eq!(tables(), before);
+        let shown = service.run("SELECT 42 AS n", 10).result.unwrap();
+        drop(service);
+        assert_eq!(tables(), before + 1);
+        assert_eq!(shown.fetch_row_ids(&[0]).unwrap()[0].values, [Some("42".into())]);
+        drop(shown);
+        assert_eq!(tables(), before);
     }
 
     #[test]

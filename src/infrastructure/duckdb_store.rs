@@ -79,8 +79,24 @@ pub struct DuckDbStore {
     renamed_source_rowid: Option<String>,
     row_count: usize,
     retired_view_row_maps: Arc<Mutex<Vec<String>>>,
+    /// Set when the store's table is dropped with the store.
+    owned_table: Option<OwnedTable>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
+}
+
+/// A table that only its store reads, dropped once the store is gone.
+struct OwnedTable {
+    connection: Connection,
+    table_sql: String,
+}
+
+impl Drop for OwnedTable {
+    fn drop(&mut self) {
+        let _ = self
+            .connection
+            .execute_batch(&format!("DROP TABLE IF EXISTS {}", self.table_sql));
+    }
 }
 
 impl DuckDbStore {
@@ -324,6 +340,19 @@ impl DuckDbStore {
         Self::from_named_connection(connection, "qp_data".into())
     }
 
+    /// Reads `table_sql`, a table nothing else reads, and drops it once the
+    /// store is gone.
+    pub(crate) fn owning_table(connection: Connection, table_sql: String) -> Result<Self, String> {
+        // Made first, so a store that fails to open still drops the table.
+        let owned = OwnedTable {
+            connection: connection.try_clone().map_err(|error| error.to_string())?,
+            table_sql: table_sql.clone(),
+        };
+        let mut store = Self::from_named_connection(connection, table_sql)?;
+        store.owned_table = Some(owned);
+        Ok(store)
+    }
+
     pub(crate) fn from_named_connection(connection: Connection, table_sql: String) -> Result<Self, String> {
         let mut store = Self {
             connection,
@@ -334,6 +363,7 @@ impl DuckDbStore {
             renamed_source_rowid: None,
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            owned_table: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -366,6 +396,7 @@ impl DuckDbStore {
             renamed_source_rowid,
             row_count,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            owned_table: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -472,6 +503,7 @@ impl DuckDbStore {
             // The relation is lazy: opening it binds its schema without scanning rows.
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            owned_table: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         })
