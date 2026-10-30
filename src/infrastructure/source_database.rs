@@ -649,7 +649,9 @@ impl SourceDatabase {
             .query_row("SELECT current_database()", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
         for (name, _) in attached_databases(connection)? {
-            if name == main || name == "system" || name == "temp" || name == FILES_CATALOG {
+            // DataDiver's own catalogs, such as the SQL results every editor
+            // shares, stay: views in other windows still read them.
+            if name == main || name == "system" || name == "temp" || name == FILES_CATALOG || name.starts_with("__dd_") {
                 continue;
             }
             connection
@@ -1063,11 +1065,23 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(names(&database).contains(&"dropped".to_string()));
+        // An editor's results, which views in other windows read.
+        database
+            .connect()
+            .unwrap()
+            .execute_batch("ATTACH ':memory:' AS __dd_results; CREATE TABLE __dd_results.main.shown AS SELECT 1 AS n")
+            .unwrap();
         fs::write(home.path().join(STARTUP_SCRIPT), "CREATE OR REPLACE TABLE runs AS SELECT 2 AS n;").unwrap();
         let revision = database.revision();
         assert_eq!(database.reset_connection().unwrap(), None);
         assert!(database.revision() > revision);
         assert!(!names(&database).contains(&"dropped".to_string()));
+        let shown: i64 = database
+            .connect()
+            .unwrap()
+            .query_row("SELECT n FROM __dd_results.main.shown", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(shown, 1);
         let n: i64 = database
             .connect()
             .unwrap()
