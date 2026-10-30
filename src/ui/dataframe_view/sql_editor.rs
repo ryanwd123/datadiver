@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::ai::{AiEvent, SqlRequest, generate_sql, mentioned_relations};
+use crate::domain::documents::Engine;
 use crate::domain::sql_editor;
 use crate::infrastructure::{ai_client, file_schemas, sql_execution::SqlExecution};
 use crate::ui::sql_panel::{AskProvider, SqlAsk, SqlPanelEvent};
@@ -182,6 +183,7 @@ FROM apples a";
         self.sql_panel_open = false;
         self.sql_running = false;
         self.sql_service = Arc::new(Mutex::new(None));
+        self.sql_polars = Arc::new(Mutex::new(polars::sql::SQLContext::new()));
         self.sql_interrupt = None;
         self.sql_stopped = None;
         self.sql_restore_sort = false;
@@ -692,6 +694,10 @@ FROM apples a";
         if self.sql_running || !self.session.is_sql() {
             return;
         }
+        if self.sql_engine() == Engine::Polars {
+            self.run_polars_sql(all, cx);
+            return;
+        }
         let Some(panel) = &mut self.sql_panel else {
             return;
         };
@@ -749,23 +755,7 @@ FROM apples a";
                             panel.error = run.error;
                         }
                         if let Some(store) = run.result.take() {
-                            let sort = if view.sql_restore_sort {
-                                view.session.sort.clone()
-                            } else {
-                                Vec::new()
-                            };
-                            view.sql_restore_sort = false;
-                            let source_revision = view.session.source.source_revision + 1;
-                            view.session.replace_source(FrameSnapshot::new(store, source_revision));
-                            view.session.sort = available_sort_keys(&sort, view.session.source.schema.as_ref());
-                            if let Some(ViewKind::Sql(config)) = view.session.working.as_mut().map(|d| &mut d.view) {
-                                config.result_sort = view.session.sort.clone();
-                            }
-                            view.query_cache = None;
-                            view.table_query = None;
-                            view.slicer_stage = None;
-                            view.grid.reset_widths();
-                            view.set_search_text(String::new(), cx);
+                            view.show_sql_result(store.into(), cx);
                         }
                     }
                     Err(error) => {
@@ -780,6 +770,123 @@ FROM apples a";
         )
         .detach();
         cx.notify();
+    }
+
+    /// The engine the SQL in the editor runs on; the startup script always
+    /// runs on DuckDB.
+    pub(crate) fn sql_engine(&self) -> Engine {
+        match self.session.working.as_ref().map(|d| &d.view) {
+            Some(ViewKind::Sql(config)) if !matches!(self.session.identity, SessionIdentity::StartupSql) => config.engine,
+            _ => Engine::DuckDb,
+        }
+    }
+
+    /// Switches the engine the SQL runs on. A saved source or script stores
+    /// it at once, and its next run uses the new engine.
+    pub(crate) fn set_sql_engine(&mut self, engine: Engine, cx: &mut Cx<Self>) {
+        if matches!(self.session.identity, SessionIdentity::StartupSql) || self.sql_engine() == engine {
+            return;
+        }
+        if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
+            config.engine = engine;
+            self.session.dirty = true;
+        }
+        // Tables an earlier run made belong to the other engine.
+        self.sql_polars = Arc::new(Mutex::new(polars::sql::SQLContext::new()));
+        if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
+            self.persist_view();
+        }
+        if let Some(panel) = &mut self.sql_panel {
+            panel.status = format!("Runs on {} · Ctrl+Enter · selection or current statement", sql_engine_label(engine));
+        }
+        cx.notify();
+    }
+
+    /// Runs the selection, the current statement, or with `all` the whole
+    /// script on Polars SQL. Statements share this editor's context, so
+    /// tables a run creates are there for the next one.
+    fn run_polars_sql(&mut self, all: bool, cx: &mut Cx<Self>) {
+        let Some(panel) = &mut self.sql_panel else {
+            return;
+        };
+        let text = panel.sql_to_run(all);
+        if text.trim().is_empty() {
+            return;
+        }
+        self.sql_running = true;
+        panel.busy = true;
+        panel.error = None;
+        panel.status = "Running on Polars SQL…".into();
+        let context = self.sql_polars.clone();
+        let revision = self.sql_revision;
+        cx.spawn(
+            move || {
+                let started = Instant::now();
+                let mut context = context.lock().map_err(|_| "Polars SQL lock poisoned".to_string())?;
+                Ok::<_, String>((crate::infrastructure::polars::sql::run(&mut context, &text), started.elapsed()))
+            },
+            move |view: &mut Self, cx, outcome| {
+                if revision != view.sql_revision || !view.session.is_sql() {
+                    return;
+                }
+                view.sql_running = false;
+                let (result, status, error) = match outcome {
+                    Ok((run, elapsed)) => {
+                        let status = format!(
+                            "{} statement{} completed in {:.2}s on Polars SQL",
+                            run.completed,
+                            if run.completed == 1 { "" } else { "s" },
+                            elapsed.as_secs_f64()
+                        );
+                        (run.result, status, run.error)
+                    }
+                    Err(error) => (None, String::new(), Some(error)),
+                };
+                if let Some(panel) = &mut view.sql_panel {
+                    panel.busy = false;
+                    if !status.is_empty() {
+                        panel.status = status;
+                    }
+                    panel.error = error;
+                }
+                if let Some(store) = result {
+                    // Polars keeps every row, so slicers and filters see them all.
+                    view.sql_result_complete = true;
+                    view.show_sql_result(store.into(), cx);
+                }
+                cx.notify();
+            },
+        )
+        .detach();
+        cx.notify();
+    }
+
+    /// Shows a run's rows in the grid, keeping the sort when the view just opened.
+    fn show_sql_result(&mut self, store: crate::infrastructure::store::Store, cx: &mut Cx<Self>) {
+        let sort = if self.sql_restore_sort {
+            self.session.sort.clone()
+        } else {
+            Vec::new()
+        };
+        self.sql_restore_sort = false;
+        let source_revision = self.session.source.source_revision + 1;
+        self.session.replace_source(FrameSnapshot::new(store, source_revision));
+        self.session.sort = available_sort_keys(&sort, self.session.source.schema.as_ref());
+        if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
+            config.result_sort = self.session.sort.clone();
+        }
+        self.query_cache = None;
+        self.table_query = None;
+        self.slicer_stage = None;
+        self.grid.reset_widths();
+        self.set_search_text(String::new(), cx);
+    }
+}
+
+pub(crate) fn sql_engine_label(engine: Engine) -> &'static str {
+    match engine {
+        Engine::DuckDb => "DuckDB",
+        Engine::Polars => "Polars SQL",
     }
 }
 

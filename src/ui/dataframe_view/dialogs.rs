@@ -1072,7 +1072,11 @@ impl DataFrameView {
             PaletteKind::Engines => {
                 if let Some(engine) = crate::infrastructure::store::Engine::ALL.get(index).copied() {
                     self.close_dialog(cx);
-                    self.set_file_engine(engine, cx);
+                    if self.session.is_sql() {
+                        self.set_sql_engine(engine, cx);
+                    } else {
+                        self.set_file_engine(engine, cx);
+                    }
                 }
             }
             PaletteKind::Settings => self.confirm_setting(index, cx),

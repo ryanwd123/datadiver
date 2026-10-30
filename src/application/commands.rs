@@ -143,7 +143,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::QueryEngine,
         key: "query_engine",
-        label: "Choose query engine for this file",
+        label: "Choose query engine",
         default_binding: None,
     },
     Command {

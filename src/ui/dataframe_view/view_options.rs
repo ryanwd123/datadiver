@@ -39,6 +39,10 @@ impl DataFrameView {
         {
             rows.push((ViewOption::AutoRun, "Auto-run", "Run the whole script each time it opens".into(), Some(auto_run)));
         }
+        if sql.is_some() && !matches!(self.session.identity, SessionIdentity::StartupSql) {
+            let engine = super::sql_editor::sql_engine_label(self.sql_engine());
+            rows.push((ViewOption::Engine, "Engine", format!("{engine} · Enter switches"), None));
+        }
         if self.settings_file().is_some() {
             // The file's setting changes before the file is read again.
             let engine = self.file_settings.engine.unwrap_or(self.session.source.engine);
@@ -94,6 +98,13 @@ impl DataFrameView {
         match option {
             ViewOption::AutoSave => self.set_auto_save(!on, cx),
             ViewOption::AutoRun => self.set_auto_run(!on, cx),
+            ViewOption::Engine if self.session.is_sql() => {
+                let engine = match self.sql_engine() {
+                    Engine::Polars => Engine::DuckDb,
+                    Engine::DuckDb => Engine::Polars,
+                };
+                self.set_sql_engine(engine, cx);
+            }
             ViewOption::Engine => {
                 let engine = match self.file_settings.engine.unwrap_or(self.session.source.engine) {
                     Engine::Polars => Engine::DuckDb,

@@ -32,8 +32,25 @@ impl DataFrameView {
     }
 
     pub(crate) fn open_engine_palette(&mut self, cx: &mut Cx<Self>) {
+        if self.session.is_sql() && !matches!(self.session.identity, SessionIdentity::StartupSql) {
+            let current = self.sql_engine();
+            let items = Engine::ALL
+                .iter()
+                .map(|engine| {
+                    let mut item = Item::new(super::sql_editor::sql_engine_label(*engine)).detail(match engine {
+                        Engine::Polars => "Polars SQL; read files with read_csv('…') or read_parquet('…')",
+                        Engine::DuckDb => "All of DuckDB's SQL, with the profile's tables and attached databases",
+                    });
+                    item.check = Some(*engine == current);
+                    item
+                })
+                .collect();
+            let name = self.session.working.as_ref().map(|d| d.name.clone()).unwrap_or_default();
+            self.palette(&format!("Engine for {name}"), "Choose an engine", items, dialogs::PaletteKind::Engines, cx);
+            return;
+        }
         let Some(path) = self.settings_file() else {
-            self.copy_status = Some("Only files choose a query engine; SQL and database tables run on DuckDB".into());
+            self.copy_status = Some("Files, SQL sources and SQL scripts choose an engine; database tables and the startup script run on DuckDB".into());
             cx.notify();
             return;
         };

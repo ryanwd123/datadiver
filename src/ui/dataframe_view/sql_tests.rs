@@ -1269,3 +1269,32 @@ fn views_build_on_sql_sources_in_either_engine_and_reopen_from_their_script() {
         });
     }
 }
+
+#[test]
+fn sql_sources_switch_to_polars_sql_and_keep_its_tables_between_runs() {
+    use crate::domain::documents::Engine;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut saved = sql_view("Polars fruit", SqlConfig::default());
+    repository.save_view(&mut saved).unwrap();
+    let viewer = viewer(repository.clone(), Some(saved));
+    switch(&viewer, ViewOption::Engine);
+    assert_eq!(sql_config(&viewer).engine, Engine::Polars);
+    // A saved source stores the engine at once.
+    assert_eq!(saved_sql(&repository).engine, Engine::Polars);
+    run_all_sql(&viewer, "CREATE TABLE fruit AS SELECT * FROM (VALUES ('red', 12), ('gold', 15)) AS t(color, quantity);");
+    edit_sql(&viewer, "SELECT color FROM fruit WHERE quantity > 12");
+    viewer.update(|view, cx| view.run_sql(true, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        let panel = view.sql_panel.as_ref().unwrap();
+        assert!(panel.error.is_none(), "{:?}", panel.error);
+        assert!(panel.status.contains("Polars SQL"), "{}", panel.status);
+        assert_eq!(view.session.source.engine, Engine::Polars);
+        assert_eq!(view.session.result.row_count(), 1);
+        assert!(view.sql_result_complete);
+    });
+    // Switching back stores DuckDB again.
+    switch(&viewer, ViewOption::Engine);
+    assert_eq!(saved_sql(&repository).engine, Engine::DuckDb);
+}

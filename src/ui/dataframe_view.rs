@@ -502,6 +502,8 @@ pub struct DataFrameView {
     /// A command to run once the location being opened is shown.
     pub(crate) after_open: Option<CommandId>,
     sql_service: std::sync::Arc<std::sync::Mutex<Option<crate::infrastructure::sql_execution::SqlExecution>>>,
+    /// Where SQL on the Polars engine runs; tables it creates stay for the next run.
+    sql_polars: std::sync::Arc<std::sync::Mutex<polars::sql::SQLContext>>,
     sql_interrupt: Option<std::sync::Arc<duckdb::InterruptHandle>>,
     sql_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     sql_restore_sort: bool,
@@ -767,6 +769,7 @@ impl DataFrameView {
             auto_save_task: None,
             after_open: None,
             sql_service: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            sql_polars: std::sync::Arc::new(std::sync::Mutex::new(polars::sql::SQLContext::new())),
             sql_interrupt: None,
             sql_stopped: None,
             sql_restore_sort: false,
