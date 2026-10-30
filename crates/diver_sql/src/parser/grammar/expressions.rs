@@ -9,7 +9,7 @@
 use super::super::{CompletedMarker, Parser};
 use super::names::{self, NameRule};
 use super::{select, types};
-use crate::complete::{Expected, FunctionKind, Name};
+use crate::complete::{Expected, FunctionKind, Name, StringNameKind};
 use crate::dialect::{self, Feature};
 use crate::{Kw, SyntaxKind as K};
 
@@ -381,7 +381,7 @@ pub(super) fn postfix(p: &mut Parser, mut lhs: CompletedMarker) -> CompletedMark
                 lhs = m.complete(p, K::FIELD_EXPR);
                 if p.current() == K::L_PAREN {
                     let m = lhs.precede(p);
-                    arg_list(p, false);
+                    arg_list(p, FirstArg::Any);
                     lhs = m.complete(p, K::CALL_EXPR);
                 }
             }
@@ -581,8 +581,7 @@ fn name_expr(p: &mut Parser) -> Option<CompletedMarker> {
     if p.current() == K::L_PAREN {
         let m = path.precede(p);
         let callee = last_word_text(p);
-        let path_fn = dialect::takes_path(&callee);
-        call_rest(p, path_fn);
+        call_rest(p, FirstArg::of(&callee));
         return Some(m.complete(p, K::CALL_EXPR));
     }
     let m = path.precede(p);
@@ -594,9 +593,31 @@ fn last_word_text(p: &Parser) -> String {
     p.prev_text().to_string()
 }
 
+/// What a call's first argument holds, for completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FirstArg {
+    Any,
+    /// A file path or glob: `read_csv('…')`.
+    Path,
+    /// A string naming something: `getvariable('…')`.
+    Name(StringNameKind),
+}
+
+impl FirstArg {
+    pub(super) fn of(callee: &str) -> FirstArg {
+        if dialect::takes_path(callee) {
+            FirstArg::Path
+        } else if let Some(kind) = dialect::string_name_arg(callee) {
+            FirstArg::Name(kind)
+        } else {
+            FirstArg::Any
+        }
+    }
+}
+
 /// `(args) [WITHIN GROUP (...)] [FILTER (...)] [IGNORE NULLS] [OVER ...]` after a callee.
-pub(super) fn call_rest(p: &mut Parser, path_fn: bool) {
-    arg_list(p, path_fn);
+pub(super) fn call_rest(p: &mut Parser, first_arg: FirstArg) {
+    arg_list(p, first_arg);
     if p.at_kw(Kw::Within) && p.nth_at_kw(1, Kw::Group) {
         let m = p.start();
         p.bump_kw(Kw::Within);
@@ -632,7 +653,7 @@ pub(super) fn call_rest(p: &mut Parser, path_fn: bool) {
 }
 
 /// `(DISTINCT a, b := 1, ... ORDER BY x)`.
-pub(super) fn arg_list(p: &mut Parser, path_fn: bool) {
+pub(super) fn arg_list(p: &mut Parser, first_arg: FirstArg) {
     let m = p.start();
     p.expect(K::L_PAREN);
     if !p.eat_kw(Kw::Distinct) {
@@ -643,7 +664,7 @@ pub(super) fn arg_list(p: &mut Parser, path_fn: bool) {
         if p.at_kw(Kw::Order) {
             break;
         }
-        arg(p, first && path_fn);
+        arg(p, if first { first_arg } else { FirstArg::Any });
         first = false;
         if !p.eat(K::COMMA) {
             break;
@@ -663,7 +684,7 @@ pub(super) fn arg_list(p: &mut Parser, path_fn: bool) {
     m.complete(p, K::ARG_LIST);
 }
 
-fn arg(p: &mut Parser, path_arg: bool) {
+fn arg(p: &mut Parser, kind: FirstArg) {
     if names::at_name(p, NameRule::Any) && matches!(p.nth(1), K::COLON_EQ | K::FAT_ARROW) {
         let m = p.start();
         let name = p.start();
@@ -674,8 +695,13 @@ fn arg(p: &mut Parser, path_arg: bool) {
         m.complete(p, K::NAMED_ARG);
         return;
     }
-    if path_arg && p.current().is_string() {
-        p.record_string(Expected::FilePath);
+    match kind {
+        FirstArg::Path if p.current().is_string() => p.record_string(Expected::FilePath),
+        FirstArg::Name(name) if p.current().is_string() => {
+            p.record_string(Expected::StringName(name))
+        }
+        FirstArg::Name(name) => p.record(Expected::StringName(name)),
+        _ => {}
     }
     if expr(p).is_none() {
         p.err_recover("expected an argument", &[]);

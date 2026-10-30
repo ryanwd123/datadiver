@@ -1054,3 +1054,48 @@ fn script_tables_complete_their_columns() {
         assert!(got.iter().any(|g| g == "t") && got.iter().any(|g| g == "z"), "{query}: {got:?}");
     }
 }
+
+#[test]
+fn string_argument_names() {
+    run(&[
+        (
+            "SET VARIABLE qq = 12;
+SELECT getvariable(|",
+            &["qq", "db_var"],
+            &["db_seq", "threads"],
+        ),
+        ("SELECT getvariable('|')", &["db_var"], &["order_id"]),
+        (
+            "CREATE SEQUENCE ser START WITH 1;
+SELECT nextval(|",
+            &["ser", "db_seq"],
+            &["db_var"],
+        ),
+        ("SELECT currval('d|", &["db_seq"], &[]),
+        ("SELECT current_setting(|", &["threads", "max_memory"], &["db_var"]),
+        ("SELECT current_setting('th|", &["threads"], &[]),
+        // only the first argument names something
+        ("SELECT nextval('ser', |", &[], &["db_seq"]),
+        ("SELECT * FROM orders WHERE name = '|'", &[], &["db_var", "threads"]),
+    ]);
+}
+
+/// Outside a string a name goes in as a string literal; inside one, bare.
+#[test]
+fn string_argument_names_are_quoted_outside_strings() {
+    let insert = |sql: &str, label: &str| {
+        let (text, offset) = common::split_cursor(sql);
+        diver_sql::complete_with(&text, offset, &common::catalog())
+            .into_iter()
+            .find(|i| i.label == label)
+            .map(|i| i.insert_text)
+    };
+    assert_eq!(insert("SELECT getvariable(|", "db_var").as_deref(), Some("'db_var'"));
+    assert_eq!(insert("SELECT getvariable(d|", "db_var").as_deref(), Some("'db_var'"));
+    assert_eq!(insert("SELECT getvariable('|')", "db_var").as_deref(), Some("db_var"));
+    assert_eq!(
+        insert("CREATE SEQUENCE s.ser;
+SELECT nextval(|", "s.ser").as_deref(),
+        Some("'s.ser'")
+    );
+}

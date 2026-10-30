@@ -4,7 +4,7 @@
 //! PIVOT / UNPIVOT statements.
 
 use super::super::{CompletedMarker, Parser};
-use super::expressions::{self, expr};
+use super::expressions::{self, FirstArg, expr};
 use super::names::{self, NameRule};
 use super::{from, select, statements};
 use crate::complete::{Expected, FunctionKind, NewNameKind};
@@ -260,7 +260,7 @@ fn from_item_like(p: &mut Parser) {
     };
     names::path(p, NameRule::Any, &on_hole);
     if p.current() == K::L_PAREN {
-        expressions::arg_list(p, true);
+        expressions::arg_list(p, FirstArg::Path);
         m.complete(p, K::TABLE_FUNCTION);
     } else {
         m.complete(p, K::TABLE_REF);
@@ -299,7 +299,7 @@ pub(super) fn pragma(p: &mut Parser) {
             p.error("expected a value");
         }
     } else if p.current() == K::L_PAREN {
-        expressions::arg_list(p, false);
+        expressions::arg_list(p, FirstArg::Any);
     }
     m.complete(p, K::PRAGMA_STMT);
 }
@@ -472,7 +472,7 @@ pub(super) fn execute(p: &mut Parser) {
     p.bump_kw(Kw::Execute);
     names::new_name(p, NameRule::ColId, NewNameKind::Other);
     if p.current() == K::L_PAREN {
-        expressions::arg_list(p, false);
+        expressions::arg_list(p, FirstArg::Any);
     }
     m.complete(p, K::EXECUTE_STMT);
 }
@@ -501,7 +501,7 @@ pub(super) fn call(p: &mut Parser) {
         p.error("expected a function");
     }
     if p.current() == K::L_PAREN {
-        expressions::arg_list(p, false);
+        expressions::arg_list(p, FirstArg::Any);
     } else {
         p.error("expected '('");
     }

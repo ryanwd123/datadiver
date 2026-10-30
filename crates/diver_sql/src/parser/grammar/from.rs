@@ -2,7 +2,7 @@
 //! UNPIVOT and samples.
 
 use super::super::{CompletedMarker, Parser};
-use super::expressions::{self, expr};
+use super::expressions::{self, FirstArg, expr};
 use super::names::{self, NameRule};
 use super::select;
 use crate::complete::{Expected, FunctionKind, NewNameKind};
@@ -169,7 +169,7 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
         });
         names::table_path(p);
         if p.current() == K::L_PAREN {
-            expressions::arg_list(p, false);
+            expressions::arg_list(p, FirstArg::Any);
             K::TABLE_FUNCTION
         } else {
             K::TABLE_REF
@@ -200,7 +200,11 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
         select::query_rest(p, q);
         K::SUBQUERY_REF
     } else if names::at_name(p, NameRule::TypeFunc) || names::at_name(p, NameRule::ColId) {
-        let path_fn = dialect::takes_path(p.nth_text(0)) || last_part_takes_path(p);
+        let first_arg = if dialect::takes_path(p.nth_text(0)) || last_part_takes_path(p) {
+            FirstArg::Path
+        } else {
+            FirstArg::Any
+        };
         let on_hole = |p: &mut Parser, q: Vec<crate::complete::Name>| {
             p.record(Expected::FunctionName {
                 kind: FunctionKind::Table,
@@ -210,7 +214,7 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
         };
         names::path(p, NameRule::Any, &on_hole);
         if p.current() == K::L_PAREN {
-            expressions::arg_list(p, path_fn);
+            expressions::arg_list(p, first_arg);
             if p.at_kw(Kw::With) && p.nth_at_kw(1, Kw::Ordinality) {
                 p.bump_kw(Kw::With);
                 p.bump_kw(Kw::Ordinality);

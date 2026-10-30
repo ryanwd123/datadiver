@@ -17,6 +17,8 @@ pub enum ObjectKind {
     Type,
     Schema,
     Sequence,
+    /// `SET VARIABLE name = …`
+    Variable,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,9 +59,29 @@ impl DocumentObject {
 pub fn document_objects(parse: &Parse) -> Vec<DocumentObject> {
     let root = parse.syntax();
     root.children()
-        .filter(|s| s.kind() == SyntaxKind::CREATE_STMT)
-        .filter_map(|s| object(&s))
+        .filter_map(|s| match s.kind() {
+            SyntaxKind::CREATE_STMT => object(&s),
+            SyntaxKind::SET_STMT => variable(&s),
+            _ => None,
+        })
         .collect()
+}
+
+/// The variable `SET VARIABLE name = …` makes.
+fn variable(stmt: &SyntaxNode) -> Option<DocumentObject> {
+    if !stmt
+        .children_with_tokens()
+        .any(|e| e.kind() == SyntaxKind::VARIABLE_KW)
+    {
+        return None;
+    }
+    let name = ast::child_of_kind(stmt, SyntaxKind::NAME).and_then(|n| ast::first_name(&n))?;
+    Some(DocumentObject {
+        kind: ObjectKind::Variable,
+        path: vec![name],
+        columns: Columns::Unknown,
+        range: stmt.text_range(),
+    })
 }
 
 fn object(stmt: &SyntaxNode) -> Option<DocumentObject> {

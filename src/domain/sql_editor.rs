@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use diver_sql::{
     Catalog, ColumnInfo, CompletionItem, Expected, FunctionInfo, ItemKind, Quoting, RelationSource,
-    SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize,
+    SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize, VariableInfo,
 };
 
 /// A token with its byte range and parenthesis depth.
@@ -159,6 +159,10 @@ pub struct SqlCatalog {
     pub functions: Vec<FunctionInfo>,
     pub settings: Vec<SettingInfo>,
     pub extensions: Vec<String>,
+    /// `SET VARIABLE`'s, for `getvariable('…')`.
+    pub variables: Vec<VariableInfo>,
+    /// (database, schema, name), for `nextval('…')`.
+    pub sequences: Vec<(String, String, String)>,
     /// Columns of the files and table functions scripts read, by
     /// [`FileSource::key`], as DESCRIBE told them.
     pub files: HashMap<String, Vec<ColumnInfo>>,
@@ -303,6 +307,24 @@ impl Catalog for SqlCatalog {
     fn extensions(&self) -> Vec<String> {
         self.extensions.clone()
     }
+
+    fn variables(&self) -> Vec<VariableInfo> {
+        self.variables.clone()
+    }
+
+    fn sequences(&self) -> Vec<String> {
+        self.sequences
+            .iter()
+            .map(|(database, schema, name)| {
+                let path = match (self.searched(database), schema.eq_ignore_ascii_case("main")) {
+                    (true, true) => vec![name.as_str()],
+                    (true, false) => vec![schema.as_str(), name],
+                    (false, _) => vec![database.as_str(), schema, name],
+                };
+                path.into_iter().map(diver_sql::quote_if_needed).collect::<Vec<_>>().join(".")
+            })
+            .collect()
+    }
 }
 
 impl SqlCatalog {
@@ -415,6 +437,15 @@ pub fn after_relation_keyword(text: &str, offset: usize) -> bool {
         && ["from", "join", "pivot", "unpivot"]
             .iter()
             .any(|word| is_word(before, &last, word))
+}
+
+/// Whether the caret is where a call's string argument names a variable,
+/// sequence or setting: `getvariable(|`, `nextval('|`.
+pub fn at_string_name(text: &str, offset: usize) -> bool {
+    diver_sql::complete(text, TextSize::new(offset.min(text.len()) as u32))
+        .expected
+        .iter()
+        .any(|e| matches!(e, Expected::StringName(_)))
 }
 
 /// Completion items at `offset`: `diver_sql`'s, plus the relations a bare

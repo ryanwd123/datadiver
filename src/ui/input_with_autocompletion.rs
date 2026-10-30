@@ -114,8 +114,12 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 })
                 .collect();
         }
-        // A space opens the list only where a table goes.
+        // A space opens the list only where a table goes, and `(` only where
+        // a call takes a variable, sequence or setting name.
         if cx.trigger == Some(' ') && !sql_editor::after_relation_keyword(cx.text, cx.offset) {
+            return Vec::new();
+        }
+        if cx.trigger == Some('(') && !sql_editor::at_string_name(cx.text, cx.offset) {
             return Vec::new();
         }
         let Ok(catalog) = self.catalog.read() else {
@@ -152,7 +156,7 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
 
     fn trigger_characters(&self) -> Vec<char> {
         let options = self.options();
-        let mut triggers = vec!['\'', '/', '\\'];
+        let mut triggers = vec!['\'', '/', '\\', '('];
         for (on, c) in [(options.after_dot, '.'), (options.after_quote, '"'), (options.after_from, ' ')] {
             if on {
                 triggers.push(c);
@@ -173,11 +177,13 @@ fn completion_kind(kind: diver_sql::ItemKind) -> code_editor::CompletionKind {
     match kind {
         ItemKind::Keyword | ItemKind::Operator => CompletionKind::Keyword,
         ItemKind::Column => CompletionKind::Field,
-        ItemKind::Alias => CompletionKind::Variable,
+        ItemKind::Alias | ItemKind::Variable => CompletionKind::Variable,
         ItemKind::Cte | ItemKind::Table | ItemKind::View | ItemKind::Type => CompletionKind::Class,
         ItemKind::Schema | ItemKind::Database => CompletionKind::Module,
         ItemKind::Function | ItemKind::TableFunction => CompletionKind::Function,
-        ItemKind::Setting | ItemKind::Extension | ItemKind::Pragma => CompletionKind::Constant,
+        ItemKind::Setting | ItemKind::Sequence | ItemKind::Extension | ItemKind::Pragma => {
+            CompletionKind::Constant
+        }
         ItemKind::File | ItemKind::Folder => CompletionKind::Text,
     }
 }

@@ -746,6 +746,27 @@ fn sql_completion_triggers_and_quoting_follow_the_editor_options() {
 }
 
 #[test]
+fn sql_open_paren_lists_names_only_where_a_call_takes_one() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    let typed = |text: &str| {
+        place(&viewer, text, text.len()..text.len());
+        viewer.input("(");
+        viewer.run_until_parked();
+        viewer.render();
+        completion_labels(&viewer)
+    };
+    assert_eq!(typed("SET VARIABLE qq = 12;
+SELECT getvariable").unwrap()[0], "qq");
+    press(&viewer, "enter");
+    assert!(sql_text(&viewer).starts_with("SET VARIABLE qq = 12;
+SELECT getvariable('qq'"), "{}", sql_text(&viewer));
+    assert_eq!(typed("SELECT sum"), None);
+}
+
+#[test]
 fn sql_alias_of_a_file_completes_its_columns_once_described() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

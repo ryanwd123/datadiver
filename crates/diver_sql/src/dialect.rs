@@ -1,5 +1,7 @@
 //! Per-dialect tables: what the grammar accepts and which functions take paths.
 
+use crate::complete::StringNameKind;
+
 /// The SQL dialect being parsed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Dialect {
@@ -121,4 +123,21 @@ const PATH_FUNCTIONS: &[&str] = &[
 pub fn takes_path(name: &str) -> bool {
     let name = name.trim_matches('"');
     PATH_FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
+}
+
+/// Functions whose first argument is a string naming a variable, sequence or setting.
+const STRING_NAME_FUNCTIONS: &[(&str, StringNameKind)] = &[
+    ("getvariable", StringNameKind::Variable),
+    ("nextval", StringNameKind::Sequence),
+    ("currval", StringNameKind::Sequence),
+    ("current_setting", StringNameKind::Setting),
+];
+
+/// What the first argument of the function `name` names, when it is a string naming something.
+pub fn string_name_arg(name: &str) -> Option<StringNameKind> {
+    let name = name.trim_matches('"');
+    STRING_NAME_FUNCTIONS
+        .iter()
+        .find(|(f, _)| f.eq_ignore_ascii_case(name))
+        .map(|(_, kind)| *kind)
 }

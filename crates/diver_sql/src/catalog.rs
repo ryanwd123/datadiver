@@ -43,6 +43,13 @@ pub struct SettingInfo {
     pub description: Option<String>,
 }
 
+/// A variable `SET VARIABLE` made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariableInfo {
+    pub name: String,
+    pub data_type: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathInfo {
     /// What to insert in place of the typed path.
@@ -81,6 +88,14 @@ pub trait Catalog {
         Vec::new()
     }
     fn extensions(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn variables(&self) -> Vec<VariableInfo> {
+        Vec::new()
+    }
+    /// Sequences by the name `nextval` takes: bare in the default schema,
+    /// qualified elsewhere (`other.ser`).
+    fn sequences(&self) -> Vec<String> {
         Vec::new()
     }
     fn pragmas(&self) -> Vec<String> {
@@ -197,6 +212,8 @@ mod mock {
         pub file_columns: Vec<(String, Vec<String>)>,
         pub settings: Vec<SettingInfo>,
         pub extensions: Vec<String>,
+        pub variables: Vec<VariableInfo>,
+        pub sequences: Vec<String>,
         pub paths: Vec<PathInfo>,
         pub implicit: Vec<ColumnInfo>,
     }
@@ -336,6 +353,19 @@ mod mock {
             self
         }
 
+        pub fn variable(mut self, name: &str, data_type: &str) -> Self {
+            self.variables.push(VariableInfo {
+                name: name.into(),
+                data_type: Some(data_type.into()),
+            });
+            self
+        }
+
+        pub fn sequence(mut self, name: &str) -> Self {
+            self.sequences.push(name.into());
+            self
+        }
+
         /// Columns of the frame an expression is written against.
         pub fn implicit_columns(mut self, columns: &[&str]) -> Self {
             self.implicit.extend(columns.iter().map(|c| ColumnInfo {
@@ -445,6 +475,14 @@ mod mock {
 
         fn extensions(&self) -> Vec<String> {
             self.extensions.clone()
+        }
+
+        fn variables(&self) -> Vec<VariableInfo> {
+            self.variables.clone()
+        }
+
+        fn sequences(&self) -> Vec<String> {
+            self.sequences.clone()
         }
 
         fn paths(&self, typed: &str) -> Vec<PathInfo> {

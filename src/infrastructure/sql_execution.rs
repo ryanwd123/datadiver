@@ -157,6 +157,29 @@ impl SqlExecution {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        let mut variables = self
+            .connection
+            .prepare("SELECT name, type FROM duckdb_variables() ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let variables = variables
+            .query_map([], |row| {
+                Ok(diver_sql::VariableInfo {
+                    name: row.get(0)?,
+                    data_type: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut sequences = self
+            .connection
+            .prepare("SELECT database_name, schema_name, sequence_name FROM duckdb_sequences() ORDER BY 1, 2, 3")
+            .map_err(|e| e.to_string())?;
+        let sequences = sequences
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         let hidden = |name: &String| name.starts_with("__dd_") || name.starts_with("__qp_");
         Ok(SqlCatalog {
             relations: self.catalog()?,
@@ -168,6 +191,8 @@ impl SqlExecution {
             schemas: schemas.into_iter().filter(|(d, _)| !hidden(d)).collect(),
             functions: self.functions()?,
             settings,
+            variables,
+            sequences: sequences.into_iter().filter(|(d, _, _)| !hidden(d)).collect(),
             extensions: strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?,
             files: Default::default(),
             table_functions: self.metadata_function_columns().unwrap_or_default(),
@@ -1219,6 +1244,30 @@ mod tests {
             let labels = completions(sql, at, &catalog).into_iter().map(|c| c.label).collect::<Vec<_>>();
             assert!(labels.iter().any(|l| l == "database_name" || l == "library_version"), "{sql}: {labels:?}");
         }
+    }
+
+    #[test]
+    fn variables_sequences_and_settings_complete_in_their_functions() {
+        use crate::domain::sql_editor::completions;
+        let (_dir, service) = service();
+        let run = service.run(
+            "SET VARIABLE qq = 12; CREATE SEQUENCE ser START WITH 1; CREATE SCHEMA other; CREATE SEQUENCE other.ids",
+            10,
+        );
+        assert!(run.error.is_none(), "{:?}", run.error);
+        let catalog = service.sql_catalog().unwrap();
+        let inserts = |sql: &str| {
+            completions(sql, sql.len(), &catalog)
+                .into_iter()
+                .map(|c| (c.label, c.insert_text))
+                .collect::<Vec<_>>()
+        };
+        let variables = inserts("SELECT getvariable(");
+        assert!(variables.contains(&("qq".into(), "'qq'".into())), "{variables:?}");
+        let sequences = inserts("SELECT nextval('");
+        assert!(sequences.contains(&("ser".into(), "ser".into())), "{sequences:?}");
+        assert!(sequences.contains(&("other.ids".into(), "other.ids".into())), "{sequences:?}");
+        assert!(inserts("SELECT current_setting(").iter().any(|(label, _)| label == "threads"));
     }
 
     #[test]

@@ -40,6 +40,9 @@ pub enum Expected {
     SettingName,
     ExtensionName,
     PragmaName,
+    /// A string literal naming something, as `getvariable('qq')` and
+    /// `nextval('ser')` take: in the string, or where one may start.
+    StringName(StringNameKind),
     /// An expression may start here.
     Expr,
 }
@@ -52,6 +55,14 @@ pub enum FunctionKind {
     Table,
     Macro,
     Any,
+}
+
+/// What a string argument names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StringNameKind {
+    Variable,
+    Sequence,
+    Setting,
 }
 
 /// What kind of name is being made up at the cursor.

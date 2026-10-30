@@ -27,13 +27,14 @@ pub use rowan::{TextRange, TextSize};
 pub use catalog::MockCatalog;
 pub use catalog::{
     Catalog, ColumnInfo, EmptyCatalog, FunctionInfo, PathInfo, SettingInfo, TableInfo, TableKind,
-    builtin_pragmas, builtin_types,
+    VariableInfo, builtin_pragmas, builtin_types,
 };
 pub use complete::{
-    CompletionContext, Expected, FunctionKind, Name, NewNameKind, complete, complete_with_options,
+    CompletionContext, Expected, FunctionKind, Name, NewNameKind, StringNameKind, complete,
+    complete_with_options,
 };
 pub use diagnostics::{Diagnostic, Severity, diagnostics, diagnostics_with};
-pub use dialect::{Dialect, takes_path};
+pub use dialect::{Dialect, string_name_arg, takes_path};
 pub use document::{DocumentObject, ObjectKind, document_objects};
 pub use folding::{folding_ranges, selection_ranges};
 pub use highlight::{HighlightClass, highlight, highlight_with};

@@ -4,7 +4,7 @@
 use rowan::TextRange;
 
 use crate::catalog::{Catalog, ColumnInfo, TableKind};
-use crate::complete::{CompletionContext, Expected, FunctionKind, Name, eq_fold};
+use crate::complete::{CompletionContext, Expected, FunctionKind, Name, StringNameKind, eq_fold};
 use crate::document::{DocumentObject, ObjectKind};
 use crate::scope::{ColumnSource, Columns, RelationSource, VisibleRelation};
 use crate::{Kw, KwCategory, SyntaxKind};
@@ -23,6 +23,8 @@ pub enum ItemKind {
     TableFunction,
     Type,
     Setting,
+    Variable,
+    Sequence,
     Extension,
     Pragma,
     File,
@@ -47,6 +49,8 @@ pub struct CompletionItem {
 /// Rank bands: in-scope columns, then aliases, CTEs and tables, then
 /// functions, then keywords.
 mod rank {
+    /// What a string argument names, as nothing else fits it as well.
+    pub const STRING_NAME: u32 = 50;
     pub const COLUMN: u32 = 100;
     pub const ALIAS: u32 = 200;
     pub const CTE: u32 = 300;
@@ -171,6 +175,7 @@ pub fn items_with(
                     out.push(&name, ItemKind::Pragma, name.clone(), None, rank::OTHER);
                 }
             }
+            Expected::StringName(kind) => out.string_names(*kind, catalog, objects),
             Expected::FilePath => out.paths(catalog),
             Expected::NewName(_) | Expected::Expr => {}
         }
@@ -404,6 +409,47 @@ impl Items<'_> {
                     rank::FUNCTION,
                 );
             }
+        }
+    }
+
+    /// Variables, sequences or settings, inserted into the string the cursor
+    /// is in, or as a string literal where one may start.
+    fn string_names(&mut self, kind: StringNameKind, catalog: &dyn Catalog, objects: &[DocumentObject]) {
+        let mut names: Vec<(String, Option<String>)> = match kind {
+            StringNameKind::Variable => catalog
+                .variables()
+                .into_iter()
+                .map(|v| (v.name, v.data_type))
+                .collect(),
+            StringNameKind::Sequence => catalog.sequences().into_iter().map(|s| (s, None)).collect(),
+            StringNameKind::Setting => catalog
+                .settings()
+                .into_iter()
+                .map(|s| (s.name, s.description))
+                .collect(),
+        };
+        let own = match kind {
+            StringNameKind::Variable => Some(ObjectKind::Variable),
+            StringNameKind::Sequence => Some(ObjectKind::Sequence),
+            StringNameKind::Setting => None,
+        };
+        for o in objects.iter().filter(|o| Some(o.kind) == own) {
+            let path: Vec<&str> = o.path.iter().map(|n| n.text.as_str()).collect();
+            names.push((path.join("."), Some("in this script".into())));
+        }
+        let item_kind = match kind {
+            StringNameKind::Variable => ItemKind::Variable,
+            StringNameKind::Sequence => ItemKind::Sequence,
+            StringNameKind::Setting => ItemKind::Setting,
+        };
+        for (name, detail) in names {
+            let escaped = name.replace('\'', "''");
+            let insert = if self.ctx.in_string.is_some() {
+                escaped
+            } else {
+                format!("'{escaped}'")
+            };
+            self.push(&name, item_kind, insert, detail, rank::STRING_NAME);
         }
     }
 

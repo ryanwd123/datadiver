@@ -195,6 +195,8 @@ pub fn catalog() -> MockCatalog {
         .table_function("range", &["range"])
         .setting("max_memory")
         .setting("threads")
+        .variable("db_var", "INTEGER")
+        .sequence("db_seq")
         .extension("httpfs")
         .extension("parquet")
         .path("data/", true)
