@@ -1,0 +1,178 @@
+SOURCE_FILE@0..259
+  SELECT_STMT@0..86
+    QUERY@0..86
+      SELECT_CORE@0..66
+        SELECT_CLAUSE@0..47
+          SELECT_KW@0..6 "SELECT"
+          DISTINCT_CLAUSE@7..22
+            DISTINCT_KW@7..15 "DISTINCT"
+            ON_KW@16..18 "ON"
+            L_PAREN@19..20 "("
+            COLUMN_REF@20..21
+              PATH@20..21
+                IDENT@20..21 "a"
+            R_PAREN@21..22 ")"
+          SELECT_ITEM@23..24
+            COLUMN_REF@23..24
+              PATH@23..24
+                IDENT@23..24 "a"
+          COMMA@24..25 ","
+          SELECT_ITEM@26..32
+            COLUMN_REF@26..27
+              PATH@26..27
+                IDENT@26..27 "b"
+            ALIAS@28..32
+              AS_KW@28..30 "AS"
+              NAME@31..32
+                IDENT@31..32 "x"
+          COMMA@32..33 ","
+          SELECT_ITEM@34..47
+            STAR_EXPR@34..47
+              STAR@34..35 "*"
+              EXCLUDE_CLAUSE@36..47
+                EXCLUDE_KW@36..43 "EXCLUDE"
+                NAME_LIST@44..47
+                  L_PAREN@44..45 "("
+                  PATH@45..46
+                    IDENT@45..46 "c"
+                  R_PAREN@46..47 ")"
+        FROM_CLAUSE@48..54
+          FROM_KW@48..52 "FROM"
+          TABLE_REF@53..54
+            PATH@53..54
+              IDENT@53..54 "t"
+        WHERE_CLAUSE@55..66
+          WHERE_KW@55..60 "WHERE"
+          BIN_EXPR@61..66
+            COLUMN_REF@61..62
+              PATH@61..62
+                IDENT@61..62 "a"
+            GT@63..64 ">"
+            LITERAL@65..66
+              INT_NUMBER@65..66 "1"
+      ORDER_BY_CLAUSE@67..77
+        ORDER_KW@67..72 "ORDER"
+        BY_KW@73..75 "BY"
+        ORDER_ITEM@76..77
+          COLUMN_REF@76..77
+            PATH@76..77
+              IDENT@76..77 "a"
+      LIMIT_CLAUSE@78..86
+        LIMIT_KW@78..83 "LIMIT"
+        LITERAL@84..86
+          INT_NUMBER@84..86 "10"
+  SEMICOLON@86..87 ";"
+  SELECT_STMT@88..103
+    QUERY@88..103
+      SELECT_CORE@88..103
+        FROM_CLAUSE@88..94
+          FROM_KW@88..92 "FROM"
+          TABLE_REF@93..94
+            PATH@93..94
+              IDENT@93..94 "t"
+        SELECT_CLAUSE@95..103
+          SELECT_KW@95..101 "SELECT"
+          SELECT_ITEM@102..103
+            COLUMN_REF@102..103
+              PATH@102..103
+                IDENT@102..103 "a"
+  SEMICOLON@103..104 ";"
+  SELECT_STMT@105..184
+    QUERY@105..184
+      WITH_CLAUSE@105..168
+        WITH_KW@105..109 "WITH"
+        RECURSIVE_KW@110..119 "RECURSIVE"
+        CTE@120..168
+          NAME@120..121
+            IDENT@120..121 "r"
+          COLUMN_ALIASES@121..124
+            L_PAREN@121..122 "("
+            NAME@122..123
+              IDENT@122..123 "n"
+            R_PAREN@123..124 ")"
+          AS_KW@125..127 "AS"
+          L_PAREN@128..129 "("
+          QUERY@129..167
+            SET_OP@129..167
+              SELECT_CORE@129..137
+                SELECT_CLAUSE@129..137
+                  SELECT_KW@129..135 "SELECT"
+                  SELECT_ITEM@136..137
+                    LITERAL@136..137
+                      INT_NUMBER@136..137 "1"
+              UNION_KW@138..143 "UNION"
+              ALL_KW@144..147 "ALL"
+              SELECT_CORE@148..167
+                SELECT_CLAUSE@148..160
+                  SELECT_KW@148..154 "SELECT"
+                  SELECT_ITEM@155..160
+                    BIN_EXPR@155..160
+                      COLUMN_REF@155..156
+                        PATH@155..156
+                          IDENT@155..156 "n"
+                      PLUS@157..158 "+"
+                      LITERAL@159..160
+                        INT_NUMBER@159..160 "1"
+                FROM_CLAUSE@161..167
+                  FROM_KW@161..165 "FROM"
+                  TABLE_REF@166..167
+                    PATH@166..167
+                      IDENT@166..167 "r"
+          R_PAREN@167..168 ")"
+      SELECT_CORE@169..184
+        SELECT_CLAUSE@169..177
+          SELECT_KW@169..175 "SELECT"
+          SELECT_ITEM@176..177
+            STAR_EXPR@176..177
+              STAR@176..177 "*"
+        FROM_CLAUSE@178..184
+          FROM_KW@178..182 "FROM"
+          TABLE_REF@183..184
+            PATH@183..184
+              IDENT@183..184 "r"
+  SEMICOLON@184..185 ";"
+  SELECT_STMT@186..257
+    QUERY@186..257
+      SET_OP@186..257
+        SELECT_CORE@186..201
+          SELECT_CLAUSE@186..194
+            SELECT_KW@186..192 "SELECT"
+            SELECT_ITEM@193..194
+              COLUMN_REF@193..194
+                PATH@193..194
+                  IDENT@193..194 "a"
+          FROM_CLAUSE@195..201
+            FROM_KW@195..199 "FROM"
+            TABLE_REF@200..201
+              PATH@200..201
+                IDENT@200..201 "t"
+        UNION_KW@202..207 "UNION"
+        BY_KW@208..210 "BY"
+        NAME_KW@211..215 "NAME"
+        SET_OP@216..257
+          SELECT_CORE@216..231
+            SELECT_CLAUSE@216..224
+              SELECT_KW@216..222 "SELECT"
+              SELECT_ITEM@223..224
+                COLUMN_REF@223..224
+                  PATH@223..224
+                    IDENT@223..224 "b"
+            FROM_CLAUSE@225..231
+              FROM_KW@225..229 "FROM"
+              TABLE_REF@230..231
+                PATH@230..231
+                  IDENT@230..231 "u"
+          INTERSECT_KW@232..241 "INTERSECT"
+          SELECT_CORE@242..257
+            SELECT_CLAUSE@242..250
+              SELECT_KW@242..248 "SELECT"
+              SELECT_ITEM@249..250
+                COLUMN_REF@249..250
+                  PATH@249..250
+                    IDENT@249..250 "c"
+            FROM_CLAUSE@251..257
+              FROM_KW@251..255 "FROM"
+              TABLE_REF@256..257
+                PATH@256..257
+                  IDENT@256..257 "v"
+  SEMICOLON@257..258 ";"

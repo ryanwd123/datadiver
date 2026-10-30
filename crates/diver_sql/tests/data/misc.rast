@@ -1,0 +1,91 @@
+SOURCE_FILE@0..194
+  COPY_STMT@0..49
+    COPY_KW@0..4 "COPY"
+    L_PAREN@5..6 "("
+    QUERY@6..14
+      SELECT_CORE@6..14
+        SELECT_CLAUSE@6..14
+          SELECT_KW@6..12 "SELECT"
+          SELECT_ITEM@13..14
+            LITERAL@13..14
+              INT_NUMBER@13..14 "1"
+    R_PAREN@14..15 ")"
+    TO_KW@16..18 "TO"
+    STRING@19..32 "'out.parquet'"
+    OPTION_LIST@33..49
+      L_PAREN@33..34 "("
+      OPTION@34..48
+        NAME@34..40
+          IDENT@34..40 "FORMAT"
+        COLUMN_REF@41..48
+          PATH@41..48
+            IDENT@41..48 "parquet"
+      R_PAREN@48..49 ")"
+  SEMICOLON@49..50 ";"
+  ATTACH_STMT@51..81
+    ATTACH_KW@51..57 "ATTACH"
+    STRING@58..64 "'x.db'"
+    AS_KW@65..67 "AS"
+    NAME@68..69
+      IDENT@68..69 "x"
+    OPTION_LIST@70..81
+      L_PAREN@70..71 "("
+      OPTION@71..80
+        NAME@71..80
+          IDENT@71..80 "READ_ONLY"
+      R_PAREN@80..81 ")"
+  SEMICOLON@81..82 ";"
+  SET_STMT@83..105
+    SET_KW@83..86 "SET"
+    GLOBAL_KW@87..93 "GLOBAL"
+    NAME@94..101
+      IDENT@94..101 "threads"
+    EQ@102..103 "="
+    LITERAL@104..105
+      INT_NUMBER@104..105 "4"
+  SEMICOLON@105..106 ";"
+  PIVOT_STMT@107..143
+    PIVOT_KW@107..112 "PIVOT"
+    TABLE_REF@113..114
+      PATH@113..114
+        IDENT@113..114 "t"
+    PIVOT_ON@115..119
+      ON_KW@115..117 "ON"
+      SELECT_ITEM@118..119
+        COLUMN_REF@118..119
+          PATH@118..119
+            IDENT@118..119 "y"
+    PIVOT_USING@120..132
+      USING_KW@120..125 "USING"
+      SELECT_ITEM@126..132
+        CALL_EXPR@126..132
+          PATH@126..129
+            IDENT@126..129 "sum"
+          ARG_LIST@129..132
+            L_PAREN@129..130 "("
+            COLUMN_REF@130..131
+              PATH@130..131
+                IDENT@130..131 "x"
+            R_PAREN@131..132 ")"
+    GROUP_BY_CLAUSE@133..143
+      GROUP_KW@133..138 "GROUP"
+      BY_KW@139..141 "BY"
+      COLUMN_REF@142..143
+        PATH@142..143
+          IDENT@142..143 "z"
+  SEMICOLON@143..144 ";"
+  PRAGMA_STMT@145..167
+    PRAGMA_KW@145..151 "PRAGMA"
+    NAME@152..162
+      IDENT@152..162 "table_info"
+    ARG_LIST@162..167
+      L_PAREN@162..163 "("
+      LITERAL@163..166
+        STRING@163..166 "'t'"
+      R_PAREN@166..167 ")"
+  SEMICOLON@167..168 ";"
+  UNKNOWN_STMT@169..192
+    IDENT@169..179 "frobnicate"
+    IDENT@180..183 "the"
+    IDENT@184..192 "database"
+  SEMICOLON@192..193 ";"

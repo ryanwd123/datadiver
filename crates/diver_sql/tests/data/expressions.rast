@@ -1,0 +1,245 @@
+SOURCE_FILE@0..369
+  SELECT_STMT@0..110
+    QUERY@0..110
+      SELECT_CORE@0..110
+        SELECT_CLAUSE@0..110
+          SELECT_KW@0..6 "SELECT"
+          SELECT_ITEM@7..28
+            BIN_EXPR@7..28
+              PREFIX_EXPR@7..16
+                MINUS@7..8 "-"
+                CAST_EXPR@8..16
+                  COLUMN_REF@8..9
+                    PATH@8..9
+                      IDENT@8..9 "a"
+                  DOUBLE_COLON@9..11 "::"
+                  TYPE_NAME@11..16
+                    PATH@11..14
+                      IDENT@11..14 "INT"
+                    L_BRACK@14..15 "["
+                    R_BRACK@15..16 "]"
+              PLUS@17..18 "+"
+              BIN_EXPR@19..28
+                COLUMN_REF@19..20
+                  PATH@19..20
+                    IDENT@19..20 "b"
+                STAR@21..22 "*"
+                BIN_EXPR@23..28
+                  COLUMN_REF@23..24
+                    PATH@23..24
+                      IDENT@23..24 "c"
+                  CARET@25..26 "^"
+                  LITERAL@27..28
+                    INT_NUMBER@27..28 "2"
+          COMMA@28..29 ","
+          SELECT_ITEM@30..110
+            BIN_EXPR@30..110
+              BETWEEN_EXPR@30..51
+                COLUMN_REF@30..31
+                  PATH@30..31
+                    IDENT@30..31 "a"
+                NOT_KW@32..35 "NOT"
+                BETWEEN_KW@36..43 "BETWEEN"
+                LITERAL@44..45
+                  INT_NUMBER@44..45 "1"
+                AND_KW@46..49 "AND"
+                LITERAL@50..51
+                  INT_NUMBER@50..51 "2"
+              OR_KW@52..54 "OR"
+              BIN_EXPR@55..110
+                IS_EXPR@55..79
+                  COLUMN_REF@55..56
+                    PATH@55..56
+                      IDENT@55..56 "b"
+                  IS_KW@57..59 "IS"
+                  NOT_KW@60..63 "NOT"
+                  DISTINCT_KW@64..72 "DISTINCT"
+                  FROM_KW@73..77 "FROM"
+                  COLUMN_REF@78..79
+                    PATH@78..79
+                      IDENT@78..79 "c"
+                AND_KW@80..83 "AND"
+                PREFIX_EXPR@84..110
+                  NOT_KW@84..87 "NOT"
+                  LIKE_EXPR@88..110
+                    COLUMN_REF@88..89
+                      PATH@88..89
+                        IDENT@88..89 "d"
+                    LIKE_KW@90..94 "LIKE"
+                    LITERAL@95..99
+                      STRING@95..99 "'x%'"
+                    ESCAPE_KW@100..106 "ESCAPE"
+                    LITERAL@107..110
+                      STRING@107..110 "'!'"
+  SEMICOLON@110..111 ";"
+  SELECT_STMT@112..221
+    QUERY@112..221
+      SELECT_CORE@112..221
+        SELECT_CLAUSE@112..221
+          SELECT_KW@112..118 "SELECT"
+          SELECT_ITEM@119..148
+            CASE_EXPR@119..148
+              CASE_KW@119..123 "CASE"
+              WHEN_CLAUSE@124..137
+                WHEN_KW@124..128 "WHEN"
+                COLUMN_REF@129..130
+                  PATH@129..130
+                    IDENT@129..130 "a"
+                THEN_KW@131..135 "THEN"
+                LITERAL@136..137
+                  INT_NUMBER@136..137 "1"
+              ELSE_CLAUSE@138..144
+                ELSE_KW@138..142 "ELSE"
+                LITERAL@143..144
+                  INT_NUMBER@143..144 "2"
+              END_KW@145..148 "END"
+          COMMA@148..149 ","
+          SELECT_ITEM@150..156
+            INDEX_EXPR@150..156
+              COLUMN_REF@150..151
+                PATH@150..151
+                  IDENT@150..151 "l"
+              L_BRACK@151..152 "["
+              LITERAL@152..153
+                INT_NUMBER@152..153 "1"
+              COLON@153..154 ":"
+              LITERAL@154..155
+                INT_NUMBER@154..155 "2"
+              R_BRACK@155..156 "]"
+          COMMA@156..157 ","
+          SELECT_ITEM@158..171
+            STRUCT_EXPR@158..171
+              L_CURLY@158..159 "{"
+              STRUCT_FIELD@159..170
+                LITERAL@159..162
+                  STRING@159..162 "'k'"
+                COLON@162..163 ":"
+                LIST_EXPR@164..170
+                  L_BRACK@164..165 "["
+                  LITERAL@165..166
+                    INT_NUMBER@165..166 "1"
+                  COMMA@166..167 ","
+                  LITERAL@168..169
+                    INT_NUMBER@168..169 "2"
+                  R_BRACK@169..170 "]"
+              R_CURLY@170..171 "}"
+          COMMA@171..172 ","
+          SELECT_ITEM@173..183
+            LAMBDA_EXPR@173..183
+              COLUMN_REF@173..174
+                PATH@173..174
+                  IDENT@173..174 "x"
+              ARROW@175..177 "->"
+              BIN_EXPR@178..183
+                COLUMN_REF@178..179
+                  PATH@178..179
+                    IDENT@178..179 "x"
+                PLUS@180..181 "+"
+                LITERAL@182..183
+                  INT_NUMBER@182..183 "1"
+          COMMA@183..184 ","
+          SELECT_ITEM@185..196
+            LAMBDA_EXPR@185..196
+              LAMBDA_KW@185..191 "lambda"
+              LAMBDA_PARAMS@192..193
+                NAME@192..193
+                  IDENT@192..193 "y"
+              COLON@193..194 ":"
+              COLUMN_REF@195..196
+                PATH@195..196
+                  IDENT@195..196 "y"
+          COMMA@196..197 ","
+          SELECT_ITEM@198..221
+            LIST_EXPR@198..221
+              L_BRACK@198..199 "["
+              COLUMN_REF@199..200
+                PATH@199..200
+                  IDENT@199..200 "z"
+              FOR_KW@201..204 "FOR"
+              NAME@205..206
+                IDENT@205..206 "z"
+              IN_KW@207..209 "IN"
+              COLUMN_REF@210..211
+                PATH@210..211
+                  IDENT@210..211 "l"
+              IF_KW@212..214 "IF"
+              BIN_EXPR@215..220
+                COLUMN_REF@215..216
+                  PATH@215..216
+                    IDENT@215..216 "z"
+                GT@217..218 ">"
+                LITERAL@219..220
+                  INT_NUMBER@219..220 "0"
+              R_BRACK@220..221 "]"
+  SEMICOLON@221..222 ";"
+  SELECT_STMT@223..367
+    QUERY@223..367
+      SELECT_CORE@223..367
+        SELECT_CLAUSE@223..367
+          SELECT_KW@223..229 "SELECT"
+          SELECT_ITEM@230..329
+            CALL_EXPR@230..329
+              PATH@230..235
+                IDENT@230..235 "count"
+              ARG_LIST@235..238
+                L_PAREN@235..236 "("
+                STAR_EXPR@236..237
+                  STAR@236..237 "*"
+                R_PAREN@237..238 ")"
+              FILTER_CLAUSE@239..255
+                FILTER_KW@239..245 "FILTER"
+                L_PAREN@246..247 "("
+                WHERE_KW@247..252 "WHERE"
+                COLUMN_REF@253..254
+                  PATH@253..254
+                    IDENT@253..254 "a"
+                R_PAREN@254..255 ")"
+              OVER_CLAUSE@256..329
+                OVER_KW@256..260 "OVER"
+                WINDOW_SPEC@261..329
+                  L_PAREN@261..262 "("
+                  PARTITION_BY@262..276
+                    PARTITION_KW@262..271 "PARTITION"
+                    BY_KW@272..274 "BY"
+                    COLUMN_REF@275..276
+                      PATH@275..276
+                        IDENT@275..276 "b"
+                  ORDER_BY_CLAUSE@277..287
+                    ORDER_KW@277..282 "ORDER"
+                    BY_KW@283..285 "BY"
+                    ORDER_ITEM@286..287
+                      COLUMN_REF@286..287
+                        PATH@286..287
+                          IDENT@286..287 "c"
+                  FRAME_CLAUSE@288..328
+                    ROWS_KW@288..292 "ROWS"
+                    BETWEEN_KW@293..300 "BETWEEN"
+                    FRAME_BOUND@301..312
+                      LITERAL@301..302
+                        INT_NUMBER@301..302 "1"
+                      PRECEDING_KW@303..312 "PRECEDING"
+                    AND_KW@313..316 "AND"
+                    FRAME_BOUND@317..328
+                      CURRENT_KW@317..324 "CURRENT"
+                      ROW_KW@325..328 "ROW"
+                  R_PAREN@328..329 ")"
+          COMMA@329..330 ","
+          SELECT_ITEM@331..351
+            SPECIAL_CALL@331..351
+              PATH@331..338
+                IDENT@331..338 "EXTRACT"
+              ARG_LIST@338..351
+                L_PAREN@338..339 "("
+                IDENT@339..343 "year"
+                FROM_KW@344..348 "FROM"
+                COLUMN_REF@349..350
+                  PATH@349..350
+                    IDENT@349..350 "d"
+                R_PAREN@350..351 ")"
+          COMMA@351..352 ","
+          SELECT_ITEM@353..367
+            INTERVAL_EXPR@353..367
+              INTERVAL_KW@353..361 "INTERVAL"
+              INT_NUMBER@362..363 "1"
+              DAY_KW@364..367 "DAY"
+  SEMICOLON@367..368 ";"

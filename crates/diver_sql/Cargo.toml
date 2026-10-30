@@ -6,4 +6,15 @@ description = "Editor-oriented DuckDB SQL parser: lossless syntax trees, complet
 license = "MIT"
 publish = false
 
+[features]
+# `MockCatalog`, an in-memory catalog for tests and examples.
+mock = []
+
 [dependencies]
+rowan = "0.16"
+
+[dev-dependencies]
+# The integration tests use `MockCatalog`.
+diver_sql = { path = ".", features = ["mock"] }
+expect-test = "1"
+proptest = "1"

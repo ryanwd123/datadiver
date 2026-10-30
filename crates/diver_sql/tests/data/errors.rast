@@ -1,0 +1,102 @@
+SOURCE_FILE@0..132
+  SELECT_STMT@0..14
+    QUERY@0..14
+      SELECT_CORE@0..14
+        SELECT_CLAUSE@0..9
+          SELECT_KW@0..6 "SELECT"
+          SELECT_ITEM@7..8
+            COLUMN_REF@7..8
+              PATH@7..8
+                IDENT@7..8 "a"
+          COMMA@8..9 ","
+        FROM_CLAUSE@10..14
+          FROM_KW@10..14 "FROM"
+  SEMICOLON@14..15 ";"
+  SELECT_STMT@16..34
+    QUERY@16..34
+      SELECT_CORE@16..34
+        SELECT_CLAUSE@16..27
+          SELECT_KW@16..22 "SELECT"
+          SELECT_ITEM@23..27
+            PAREN_EXPR@23..27
+              L_PAREN@23..24 "("
+              BIN_EXPR@24..27
+                COLUMN_REF@24..25
+                  PATH@24..25
+                    IDENT@24..25 "a"
+                PLUS@26..27 "+"
+        FROM_CLAUSE@28..34
+          FROM_KW@28..32 "FROM"
+          TABLE_REF@33..34
+            PATH@33..34
+              IDENT@33..34 "t"
+  SEMICOLON@34..35 ";"
+  SELECT_STMT@36..57
+    QUERY@36..57
+      SELECT_CORE@36..57
+        SELECT_CLAUSE@36..44
+          SELECT_KW@36..42 "SELECT"
+          SELECT_ITEM@43..44
+            STAR_EXPR@43..44
+              STAR@43..44 "*"
+        FROM_CLAUSE@45..51
+          FROM_KW@45..49 "FROM"
+          TABLE_REF@50..51
+            PATH@50..51
+              IDENT@50..51 "t"
+        WHERE_CLAUSE@52..57
+          WHERE_KW@52..57 "WHERE"
+  SEMICOLON@57..58 ";"
+  SELECT_STMT@59..88
+    QUERY@59..88
+      SELECT_CORE@59..88
+        SELECT_CLAUSE@59..67
+          SELECT_KW@59..65 "SELECT"
+          SELECT_ITEM@66..67
+            STAR_EXPR@66..67
+              STAR@66..67 "*"
+        FROM_CLAUSE@68..88
+          FROM_KW@68..72 "FROM"
+          JOIN_EXPR@73..88
+            TABLE_REF@73..74
+              PATH@73..74
+                IDENT@73..74 "t"
+            JOIN_KW@75..79 "JOIN"
+            JOIN_ON@80..88
+              ON_KW@80..82 "ON"
+              BIN_EXPR@83..88
+                COLUMN_REF@83..84
+                  PATH@83..84
+                    IDENT@83..84 "a"
+                EQ@85..86 "="
+                COLUMN_REF@87..88
+                  PATH@87..88
+                    IDENT@87..88 "b"
+  SEMICOLON@88..89 ";"
+  CREATE_STMT@90..109
+    CREATE_KW@90..96 "CREATE"
+    TABLE_KW@97..102 "TABLE"
+    TABLE_ELEMENTS@103..109
+      L_PAREN@103..104 "("
+      COLUMN_DEF@104..109
+        NAME@104..105
+          IDENT@104..105 "a"
+        TYPE_NAME@106..109
+          PATH@106..109
+            IDENT@106..109 "INT"
+  SEMICOLON@109..110 ";"
+  SELECT_STMT@111..132
+    QUERY@111..132
+      SELECT_CORE@111..132
+        SELECT_CLAUSE@111..132
+          SELECT_KW@111..117 "SELECT"
+          SELECT_ITEM@118..132
+            LITERAL@118..132
+              UNTERMINATED_STRING@118..132 "'unterminated\n"
+error 14..15: expected a table
+error 28..32: expected an expression
+error 28..32: expected ')'
+error 57..58: expected a condition
+error 80..82: expected a table
+error 103..104: expected a name
+error 109..110: expected ')'

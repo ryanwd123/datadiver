@@ -1,0 +1,115 @@
+SOURCE_FILE@0..229
+  CREATE_STMT@0..98
+    CREATE_KW@0..6 "CREATE"
+    OR_KW@7..9 "OR"
+    REPLACE_KW@10..17 "REPLACE"
+    TABLE_KW@18..23 "TABLE"
+    PATH@24..27
+      IDENT@24..25 "s"
+      DOT@25..26 "."
+      IDENT@26..27 "t"
+    TABLE_ELEMENTS@28..98
+      L_PAREN@28..29 "("
+      COLUMN_DEF@29..50
+        NAME@29..30
+          IDENT@29..30 "a"
+        TYPE_NAME@31..38
+          PATH@31..38
+            IDENT@31..38 "INTEGER"
+        COLUMN_CONSTRAINT@39..50
+          PRIMARY_KW@39..46 "PRIMARY"
+          KEY_KW@47..50 "KEY"
+      COMMA@50..51 ","
+      COLUMN_DEF@52..82
+        NAME@52..53
+          IDENT@52..53 "b"
+        TYPE_NAME@54..61
+          PATH@54..61
+            IDENT@54..61 "VARCHAR"
+        COLUMN_CONSTRAINT@62..70
+          NOT_KW@62..65 "NOT"
+          NULL_KW@66..70 "NULL"
+        COLUMN_CONSTRAINT@71..82
+          DEFAULT_KW@71..78 "DEFAULT"
+          LITERAL@79..82
+            STRING@79..82 "'x'"
+      COMMA@82..83 ","
+      TABLE_CONSTRAINT@84..97
+        CHECK_KW@84..89 "CHECK"
+        L_PAREN@90..91 "("
+        BIN_EXPR@91..96
+          COLUMN_REF@91..92
+            PATH@91..92
+              IDENT@91..92 "a"
+          GT@93..94 ">"
+          LITERAL@95..96
+            INT_NUMBER@95..96 "0"
+        R_PAREN@96..97 ")"
+      R_PAREN@97..98 ")"
+  SEMICOLON@98..99 ";"
+  CREATE_STMT@100..144
+    CREATE_KW@100..106 "CREATE"
+    MACRO_KW@107..112 "MACRO"
+    PATH@113..114
+      IDENT@113..114 "m"
+    MACRO_PARAMS@114..125
+      L_PAREN@114..115 "("
+      MACRO_PARAM@115..116
+        NAME@115..116
+          IDENT@115..116 "a"
+      COMMA@116..117 ","
+      MACRO_PARAM@118..124
+        NAME@118..119
+          IDENT@118..119 "b"
+        COLON_EQ@120..122 ":="
+        LITERAL@123..124
+          INT_NUMBER@123..124 "1"
+      R_PAREN@124..125 ")"
+    AS_KW@126..128 "AS"
+    BIN_EXPR@129..134
+      COLUMN_REF@129..130
+        PATH@129..130
+          IDENT@129..130 "a"
+      PLUS@131..132 "+"
+      COLUMN_REF@133..134
+        PATH@133..134
+          IDENT@133..134 "b"
+    COMMA@134..135 ","
+    MACRO_PARAMS@136..139
+      L_PAREN@136..137 "("
+      MACRO_PARAM@137..138
+        NAME@137..138
+          IDENT@137..138 "a"
+      R_PAREN@138..139 ")"
+    AS_KW@140..142 "AS"
+    COLUMN_REF@143..144
+      PATH@143..144
+        IDENT@143..144 "a"
+  SEMICOLON@144..145 ";"
+  ALTER_STMT@146..195
+    ALTER_KW@146..151 "ALTER"
+    TABLE_KW@152..157 "TABLE"
+    TABLE_REF@158..159
+      PATH@158..159
+        IDENT@158..159 "t"
+    ALTER_ACTION@160..195
+      ALTER_KW@160..165 "ALTER"
+      COLUMN_KW@166..172 "COLUMN"
+      PATH@173..174
+        IDENT@173..174 "a"
+      SET_KW@175..178 "SET"
+      DATA_KW@179..183 "DATA"
+      TYPE_KW@184..188 "TYPE"
+      TYPE_NAME@189..195
+        PATH@189..195
+          IDENT@189..195 "BIGINT"
+  SEMICOLON@195..196 ";"
+  DROP_STMT@197..227
+    DROP_KW@197..201 "DROP"
+    TABLE_KW@202..207 "TABLE"
+    IF_KW@208..210 "IF"
+    EXISTS_KW@211..217 "EXISTS"
+    PATH@218..219
+      IDENT@218..219 "t"
+    CASCADE_KW@220..227 "CASCADE"
+  SEMICOLON@227..228 ";"

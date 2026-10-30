@@ -1,0 +1,6 @@
+SELECT a, FROM;
+SELECT (a + FROM t;
+SELECT * FROM t WHERE;
+SELECT * FROM t JOIN ON a = b;
+CREATE TABLE (a INT;
+SELECT 'unterminated

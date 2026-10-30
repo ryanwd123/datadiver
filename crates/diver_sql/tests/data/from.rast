@@ -1,0 +1,120 @@
+SOURCE_FILE@0..186
+  SELECT_STMT@0..130
+    QUERY@0..130
+      SELECT_CORE@0..130
+        SELECT_CLAUSE@0..8
+          SELECT_KW@0..6 "SELECT"
+          SELECT_ITEM@7..8
+            STAR_EXPR@7..8
+              STAR@7..8 "*"
+        FROM_CLAUSE@9..130
+          FROM_KW@9..13 "FROM"
+          JOIN_EXPR@14..78
+            JOIN_EXPR@14..44
+              TABLE_REF@14..16
+                PATH@14..16
+                  IDENT@14..16 "t1"
+              ASOF_KW@17..21 "ASOF"
+              LEFT_KW@22..26 "LEFT"
+              JOIN_KW@27..31 "JOIN"
+              TABLE_REF@32..34
+                PATH@32..34
+                  IDENT@32..34 "t2"
+              JOIN_USING@35..44
+                USING_KW@35..40 "USING"
+                NAME_LIST@41..44
+                  L_PAREN@41..42 "("
+                  PATH@42..43
+                    IDENT@42..43 "a"
+                  R_PAREN@43..44 ")"
+            JOIN_KW@45..49 "JOIN"
+            SUBQUERY_REF@50..70
+              LATERAL_KW@50..57 "LATERAL"
+              L_PAREN@58..59 "("
+              QUERY@59..67
+                SELECT_CORE@59..67
+                  SELECT_CLAUSE@59..67
+                    SELECT_KW@59..65 "SELECT"
+                    SELECT_ITEM@66..67
+                      LITERAL@66..67
+                        INT_NUMBER@66..67 "1"
+              R_PAREN@67..68 ")"
+              ALIAS@69..70
+                NAME@69..70
+                  IDENT@69..70 "s"
+            JOIN_ON@71..78
+              ON_KW@71..73 "ON"
+              LITERAL@74..78
+                TRUE_KW@74..78 "true"
+          COMMA@78..79 ","
+          FILE_REF@80..93
+            STRING@80..91 "'f.parquet'"
+            ALIAS@92..93
+              NAME@92..93
+                IDENT@92..93 "f"
+          COMMA@93..94 ","
+          TABLE_FUNCTION@95..130
+            PATH@95..103
+              IDENT@95..103 "read_csv"
+            ARG_LIST@103..128
+              L_PAREN@103..104 "("
+              LITERAL@104..111
+                STRING@104..111 "'x.csv'"
+              COMMA@111..112 ","
+              NAMED_ARG@113..127
+                NAME@113..119
+                  IDENT@113..119 "header"
+                COLON_EQ@120..122 ":="
+                LITERAL@123..127
+                  TRUE_KW@123..127 "true"
+              R_PAREN@127..128 ")"
+            ALIAS@129..130
+              NAME@129..130
+                IDENT@129..130 "r"
+  SEMICOLON@130..131 ";"
+  SELECT_STMT@132..184
+    QUERY@132..184
+      SELECT_CORE@132..184
+        SELECT_CLAUSE@132..140
+          SELECT_KW@132..138 "SELECT"
+          SELECT_ITEM@139..140
+            STAR_EXPR@139..140
+              STAR@139..140 "*"
+        FROM_CLAUSE@141..184
+          FROM_KW@141..145 "FROM"
+          PIVOT_REF@146..184
+            TABLE_REF@146..147
+              PATH@146..147
+                IDENT@146..147 "t"
+            PIVOT_KW@148..153 "PIVOT"
+            L_PAREN@154..155 "("
+            SELECT_ITEM@155..161
+              CALL_EXPR@155..161
+                PATH@155..158
+                  IDENT@155..158 "sum"
+                ARG_LIST@158..161
+                  L_PAREN@158..159 "("
+                  COLUMN_REF@159..160
+                    PATH@159..160
+                      IDENT@159..160 "x"
+                  R_PAREN@160..161 ")"
+            PIVOT_IN@162..181
+              FOR_KW@162..165 "FOR"
+              COLUMN_REF@166..167
+                PATH@166..167
+                  IDENT@166..167 "y"
+              IN_KW@168..170 "IN"
+              L_PAREN@171..172 "("
+              SELECT_ITEM@172..175
+                LITERAL@172..175
+                  STRING@172..175 "'a'"
+              COMMA@175..176 ","
+              SELECT_ITEM@177..180
+                LITERAL@177..180
+                  STRING@177..180 "'b'"
+              R_PAREN@180..181 ")"
+            R_PAREN@181..182 ")"
+            ALIAS@183..184
+              NAME@183..184
+                IDENT@183..184 "p"
+  SEMICOLON@184..185 ";"
