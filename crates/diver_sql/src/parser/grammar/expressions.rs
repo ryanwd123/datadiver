@@ -16,7 +16,7 @@ const BP_ARROW: u8 = 1;
 const BP_OR: u8 = 3;
 const BP_AND: u8 = 5;
 const BP_NOT: u8 = 7;
-const BP_IS: u8 = 9;
+pub(super) const BP_IS: u8 = 9;
 const BP_CMP: u8 = 11;
 const BP_LIKE: u8 = 13;
 const BP_OTHER: u8 = 15;
@@ -91,6 +91,15 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
                 p.bump_kw(kw);
                 K::IS_EXPR
             }
+            Op::Postfix => {
+                p.bump();
+                K::POSTFIX_EXPR
+            }
+            Op::NotNull => {
+                p.bump_kw(Kw::Not);
+                p.bump_kw(Kw::Null);
+                K::IS_EXPR
+            }
             Op::In => {
                 p.eat_kw(Kw::Not);
                 p.bump_kw(Kw::In);
@@ -157,6 +166,8 @@ enum Op {
     Arrow,
     Is,
     NullTest(Kw),
+    NotNull,
+    Postfix,
     In,
     Between,
     Like,
@@ -193,6 +204,8 @@ fn infix_op(p: &mut Parser) -> Option<(Op, u8)> {
         K::PLUS | K::MINUS => (Op::Binary(1), BP_ADD),
         // `LIMIT 10%` ends with a percent sign, not a modulo
         K::PERCENT if !can_start_operand(p, 1) => return None,
+        // `10!` is a factorial
+        K::BANG if !can_start_operand(p, 1) => (Op::Postfix, BP_UNARY),
         K::STAR | K::SLASH | K::SLASH2 | K::PERCENT => (Op::Binary(1), BP_MUL),
         K::CARET | K::STAR2 => (Op::Binary(1), BP_POW),
         K::ARROW => (Op::Arrow, BP_ARROW),
@@ -224,6 +237,8 @@ fn infix_op(p: &mut Parser) -> Option<(Op, u8)> {
                 Kw::Between => (Op::Between, BP_LIKE),
                 Kw::Like | Kw::Ilike | Kw::Glob => (Op::Like, BP_LIKE),
                 Kw::Similar if p.nth_at_kw(1, Kw::To) => (Op::Like, BP_LIKE),
+                // `x NOT NULL`
+                Kw::Not if p.nth_at_kw(1, Kw::Null) => (Op::NotNull, BP_NOT),
                 Kw::Not => match p.nth_kw(1)? {
                     Kw::In => (Op::In, BP_LIKE),
                     Kw::Between => (Op::Between, BP_LIKE),
@@ -295,6 +310,8 @@ fn in_rhs(p: &mut Parser) {
 /// Prefix operators, then an atom with its postfix forms.
 fn prefix(p: &mut Parser) -> Option<CompletedMarker> {
     let op_bp = match p.current() {
+        // `*COLUMNS(...)` unpacks the columns into the surrounding call
+        K::STAR if p.nth_at_kw(1, Kw::Columns) && p.nth(2) == K::L_PAREN => Some(BP_UNARY),
         K::MINUS | K::PLUS | K::TILDE | K::AT | K::BANG => Some(BP_UNARY),
         K::IDENT if p.peek_kw(Kw::Not) => Some(BP_NOT),
         _ => None,
@@ -372,7 +389,7 @@ fn index_inner(p: &mut Parser) {
         }
         if !p.at(K::COLON) && !p.at(K::R_BRACK) {
             // `-` alone is "to the end" in DuckDB slices
-            if p.current() == K::MINUS && p.nth(1) == K::R_BRACK {
+            if p.current() == K::MINUS && matches!(p.nth(1), K::R_BRACK | K::COLON) {
                 p.bump();
             } else {
                 expr(p);
@@ -458,7 +475,13 @@ fn keyword_atom(p: &mut Parser) -> Option<CompletedMarker> {
             paren_or_subquery(p);
             return Some(m.complete(p, K::EXISTS_EXPR));
         }
-        Some(Kw::Interval) => return Some(interval(p)),
+        // `interval` is also a column name (`interval::VARCHAR`)
+        Some(Kw::Interval)
+            if next.is_string()
+                || matches!(next, K::INT_NUMBER | K::FLOAT_NUMBER | K::PARAM | K::L_PAREN | K::MINUS) =>
+        {
+            return Some(interval(p));
+        }
         Some(Kw::Array) if matches!(next, K::L_BRACK | K::L_PAREN) => {
             let m = p.start();
             p.bump_kw(Kw::Array);
@@ -572,6 +595,10 @@ pub(super) fn call_rest(p: &mut Parser, path_fn: bool) {
     }
     if p.at_kw(Kw::Over) {
         over(p);
+    }
+    // `count(*) EXPORT_STATE` returns the aggregate state
+    if p.current() == K::IDENT && p.nth_text(0).eq_ignore_ascii_case("export_state") {
+        p.bump();
     }
 }
 
@@ -720,7 +747,7 @@ pub(super) fn expr_list(p: &mut Parser) {
             p.err_recover("expected an expression", &[]);
             break;
         }
-        if !p.eat(K::COMMA) {
+        if !p.eat_list_comma() {
             break;
         }
     }
@@ -1037,7 +1064,7 @@ fn star_modifiers(p: &mut Parser) {
                     names::new_name(p, NameRule::Any, crate::complete::NewNameKind::Column);
                 }
                 item.complete(p, K::REPLACE_ITEM);
-                if !parens || !p.eat(K::COMMA) {
+                if !parens || !p.eat_list_comma() {
                     break;
                 }
             }
@@ -1062,7 +1089,7 @@ fn star_modifiers(p: &mut Parser) {
                     names::new_name(p, NameRule::Any, crate::complete::NewNameKind::Column);
                 }
                 item.complete(p, K::RENAME_ITEM);
-                if !parens || !p.eat(K::COMMA) {
+                if !parens || !p.eat_list_comma() {
                     break;
                 }
             }

@@ -77,7 +77,8 @@ pub(super) fn bump_name(p: &mut Parser) {
 pub(super) fn new_name(p: &mut Parser, rule: NameRule, kind: NewNameKind) -> bool {
     if p.at_hole() {
         p.record(Expected::NewName(kind));
-    } else if !at_name(p, rule) {
+    } else if !at_name(p, rule) && !(rule == NameRule::Any && p.current() == K::STRING) {
+        // DuckDB takes 'string' names after AS and in column alias lists
         p.error("expected a name");
         return false;
     }
@@ -181,7 +182,10 @@ pub(super) fn column_list(p: &mut Parser, parens_required: bool) {
         return;
     }
     loop {
-        if path(p, NameRule::Any, &|p, q| {
+        if p.current() == K::STRING {
+            // EXCLUDE ('col')
+            p.bump();
+        } else if path(p, NameRule::Any, &|p, q| {
             p.record(Expected::ColumnRef { qualifier: q })
         })
         .is_none()
@@ -191,7 +195,7 @@ pub(super) fn column_list(p: &mut Parser, parens_required: bool) {
             }
             break;
         }
-        if !parens || !p.eat(K::COMMA) {
+        if !parens || !p.eat_list_comma() {
             break;
         }
     }
@@ -203,7 +207,7 @@ pub(super) fn column_list(p: &mut Parser, parens_required: bool) {
 
 /// A path naming a table: records what a table position accepts at the hole.
 pub(super) fn table_path(p: &mut Parser) -> Option<super::super::CompletedMarker> {
-    path(p, NameRule::ColId, &record_table)
+    path(p, NameRule::NotReserved, &record_table)
 }
 
 pub(super) fn record_table(p: &mut Parser, q: Vec<Name>) {

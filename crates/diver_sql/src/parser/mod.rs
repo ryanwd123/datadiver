@@ -25,11 +25,13 @@ const FUEL: u32 = 16384;
 
 /// How deep expressions, FROM items and types may nest before the rest of
 /// the statement is skipped, so deep input can't overflow the stack.
-const MAX_NESTING: u32 = 200;
+const MAX_NESTING: u32 = 500;
 
 pub(crate) struct Parser<'a> {
     kinds: Vec<SyntaxKind>,
     texts: Vec<&'a str>,
+    /// The keyword each word spells, looked up once.
+    kws: Vec<Option<Kw>>,
     pos: usize,
     /// One past the last token the current statement may use (its `;`).
     limit: usize,
@@ -62,6 +64,7 @@ pub(crate) fn parse_tokens(
 ) -> ParseOutput {
     let mut kinds = Vec::with_capacity(tokens.len());
     let mut texts = Vec::with_capacity(tokens.len());
+    let mut kws = Vec::with_capacity(tokens.len());
     let (mut parser_hole, mut parser_string_hole) = (None, None);
     let mut offset = 0usize;
     for (i, t) in tokens.iter().enumerate() {
@@ -74,7 +77,9 @@ pub(crate) fn parse_tokens(
                 parser_string_hole = Some(kinds.len());
             }
             kinds.push(t.kind);
-            texts.push(&text[offset..offset + len]);
+            let word = &text[offset..offset + len];
+            kws.push(if t.kind == SyntaxKind::IDENT { Kw::lookup(word) } else { None });
+            texts.push(word);
         }
         offset += len;
     }
@@ -82,6 +87,7 @@ pub(crate) fn parse_tokens(
     let mut p = Parser {
         kinds,
         texts,
+        kws,
         pos: 0,
         limit,
         events: Vec::new(),
@@ -128,6 +134,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The n-th token without spending fuel, for bounded lookahead scans.
+    pub(crate) fn raw_nth(&self, n: usize) -> SyntaxKind {
+        let i = self.pos + n;
+        if i < self.limit { self.kinds[i] } else { SyntaxKind::EOF }
+    }
+
+    /// The keyword the n-th token spells, without spending fuel.
+    pub(crate) fn raw_nth_kw(&self, n: usize) -> Option<Kw> {
+        let i = self.pos + n;
+        if i < self.limit { self.kws[i] } else { None }
+    }
+
     pub(crate) fn current(&self) -> SyntaxKind {
         self.nth(0)
     }
@@ -139,11 +157,7 @@ impl<'a> Parser<'a> {
 
     /// The keyword the n-th token spells, if it is a plain word.
     pub(crate) fn nth_kw(&self, n: usize) -> Option<Kw> {
-        if self.nth(n) == SyntaxKind::IDENT {
-            Kw::lookup(self.nth_text(n))
-        } else {
-            None
-        }
+        if self.fuel() { self.raw_nth_kw(n) } else { None }
     }
 
     pub(crate) fn at_eof(&self) -> bool {
@@ -264,6 +278,15 @@ impl<'a> Parser<'a> {
         } else {
             false
         }
+    }
+
+    /// Eats a list's comma; false when there is none, or when it is a
+    /// trailing comma (DuckDB allows them in most lists).
+    pub(crate) fn eat_list_comma(&mut self) -> bool {
+        if !self.eat(SyntaxKind::COMMA) {
+            return false;
+        }
+        self.at_hole() || !(self.at_recovery(&[]) || self.current() == SyntaxKind::SEMICOLON)
     }
 
     pub(crate) fn expect(&mut self, kind: SyntaxKind) -> bool {

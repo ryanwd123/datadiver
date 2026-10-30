@@ -3,7 +3,7 @@
 //! CHECKPOINT, PREPARE / EXECUTE / DEALLOCATE, CALL, VACUUM / ANALYZE and the
 //! PIVOT / UNPIVOT statements.
 
-use super::super::Parser;
+use super::super::{CompletedMarker, Parser};
 use super::expressions::{self, expr};
 use super::names::{self, NameRule};
 use super::{from, select, statements};
@@ -65,6 +65,9 @@ pub(super) fn copy(p: &mut Parser) {
         db_name(p);
         p.expect_kw(Kw::To);
         db_name(p);
+        if p.current() == K::L_PAREN {
+            option_list(p);
+        }
     } else {
         if p.current() == K::L_PAREN {
             p.bump();
@@ -83,7 +86,10 @@ pub(super) fn copy(p: &mut Parser) {
         if !p.eat_kw(Kw::To) && !p.eat_kw(Kw::From) {
             p.error("expected TO or FROM");
         }
-        if !path_string(p) && names::path(p, NameRule::Any, &|_, _| {}).is_none() {
+        if p.current() == K::L_PAREN {
+            // TO (getvariable('target'))
+            expressions::paren_or_subquery(p);
+        } else if !path_string(p) && names::path(p, NameRule::Any, &|_, _| {}).is_none() {
             p.error("expected a file");
         }
         p.eat_kw(Kw::With);
@@ -328,6 +334,15 @@ fn setting_name(p: &mut Parser) -> bool {
 pub(super) fn set(p: &mut Parser) {
     let m = p.start();
     p.bump_kw(Kw::Set);
+    if p.at_phrase(&[Kw::Time, Kw::Zone]) && p.nth_at_kw(1, Kw::Zone) {
+        p.bump_kw(Kw::Time);
+        p.bump_kw(Kw::Zone);
+        if expr(p).is_none() {
+            p.error("expected a time zone");
+        }
+        m.complete(p, K::SET_STMT);
+        return;
+    }
     if p.eat_kw(Kw::Transaction) || p.peek_kw(Kw::Session) && p.nth_at_kw(1, Kw::Characteristics) {
         while !p.at_eof() {
             p.bump_any_kw();
@@ -528,7 +543,9 @@ pub(super) fn vacuum(p: &mut Parser) {
 
 /// `PIVOT t ON cols [IN (...)] USING aggs [GROUP BY ...]` and
 /// `UNPIVOT t ON cols INTO NAME n VALUE v`, with the query tail after them.
-pub(super) fn pivot_stmt(p: &mut Parser) {
+/// The PIVOT statement is a query term: ORDER BY, LIMIT and set operations
+/// after it belong to the query around it.
+pub(super) fn pivot_stmt(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     let unpivot = p.peek_kw(Kw::Unpivot) || p.peek_kw(Kw::PivotLonger);
     p.bump_any_kw();
@@ -540,9 +557,7 @@ pub(super) fn pivot_stmt(p: &mut Parser) {
         p.bump_kw(Kw::On);
         loop {
             let item = p.start();
-            if p.eat_kw(Kw::Columns) {
-                expressions::arg_list(p, false);
-            } else if expr(p).is_none() {
+            if expr(p).is_none() {
                 item.abandon(p);
                 p.err_recover("expected a column", &[Kw::Using, Kw::Into]);
                 break;
@@ -557,7 +572,7 @@ pub(super) fn pivot_stmt(p: &mut Parser) {
             }
             select::select_alias(p);
             item.complete(p, K::SELECT_ITEM);
-            if !p.eat(K::COMMA) {
+            if !p.eat_list_comma() {
                 break;
             }
         }
@@ -573,12 +588,14 @@ pub(super) fn pivot_stmt(p: &mut Parser) {
         p.bump_kw(Kw::Into);
         p.expect_kw(Kw::Name);
         names::new_name(p, NameRule::Any, NewNameKind::Column);
-        if p.expect_kw(Kw::Value) {
+        if p.eat_kw(Kw::Value) || p.eat_kw(Kw::Values) {
             loop {
                 if !names::new_name(p, NameRule::Any, NewNameKind::Column) || !p.eat(K::COMMA) {
                     break;
                 }
             }
+        } else {
+            p.error("expected VALUE");
         }
     }
     if p.at_phrase(&[Kw::Group, Kw::By]) {
@@ -588,14 +605,5 @@ pub(super) fn pivot_stmt(p: &mut Parser) {
         expressions::expr_list(p);
         g.complete(p, K::GROUP_BY_CLAUSE);
     }
-    if p.at_phrase(&[Kw::Order, Kw::By]) {
-        select::order_by(p);
-    }
-    if p.at_kw(Kw::Limit) {
-        let l = p.start();
-        p.bump_kw(Kw::Limit);
-        expr(p);
-        l.complete(p, K::LIMIT_CLAUSE);
-    }
-    m.complete(p, K::PIVOT_STMT);
+    m.complete(p, K::PIVOT_STMT)
 }

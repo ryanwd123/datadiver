@@ -22,7 +22,7 @@ pub(super) fn from_list(p: &mut Parser, stop: &[Kw]) {
             p.err_recover("expected a table", stop);
             break;
         }
-        if !p.eat(K::COMMA) {
+        if !p.eat_list_comma() {
             break;
         }
     }
@@ -37,33 +37,67 @@ fn from_item_inner(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
     let mut lhs = table_primary(p, stop)?;
     loop {
         let m = lhs.precede(p);
-        if !join_keywords(p) {
+        let Some(needs_condition) = join_keywords(p) else {
             m.abandon(p);
             break;
-        }
-        if table_primary(p, stop).is_none() {
+        };
+        if join_operand(p, stop, needs_condition).is_none() {
             p.error("expected a table");
         }
-        if p.at_kw(Kw::On) {
-            let c = p.start();
-            p.bump_kw(Kw::On);
-            if expr(p).is_none() {
-                p.err_recover("expected a join condition", stop);
-            }
-            c.complete(p, K::JOIN_ON);
-        } else if p.at_kw(Kw::Using) && p.nth(1) == K::L_PAREN {
-            let c = p.start();
-            p.bump_kw(Kw::Using);
-            names::column_list(p, true);
-            c.complete(p, K::JOIN_USING);
+        if needs_condition {
+            join_condition(p, stop);
         }
         lhs = m.complete(p, K::JOIN_EXPR);
     }
     Some(lhs)
 }
 
-/// `[NATURAL] [ASOF] [POSITIONAL] [CROSS | LEFT | ...] [OUTER] JOIN`.
-fn join_keywords(p: &mut Parser) -> bool {
+/// The right side of a join. When the join wants a condition but another
+/// join follows instead, that join nests: `a JOIN b JOIN c ON x ON y` is
+/// `a JOIN (b JOIN c ON x) ON y`.
+fn join_operand(p: &mut Parser, stop: &[Kw], needs_condition: bool) -> Option<CompletedMarker> {
+    let mut rhs = table_primary(p, stop)?;
+    if !needs_condition {
+        return Some(rhs);
+    }
+    while !p.peek_kw(Kw::On) && !p.peek_kw(Kw::Using) {
+        let inner = rhs.precede(p);
+        let Some(inner_needs) = join_keywords(p) else {
+            inner.abandon(p);
+            break;
+        };
+        let operand = p.nested(|p| join_operand(p, stop, inner_needs));
+        if operand.is_none() {
+            p.error("expected a table");
+        }
+        if inner_needs {
+            join_condition(p, stop);
+        }
+        rhs = inner.complete(p, K::JOIN_EXPR);
+    }
+    Some(rhs)
+}
+
+/// `ON cond` or `USING (cols)` after a join.
+fn join_condition(p: &mut Parser, stop: &[Kw]) {
+    if p.at_kw(Kw::On) {
+        let c = p.start();
+        p.bump_kw(Kw::On);
+        if expr(p).is_none() {
+            p.err_recover("expected a join condition", stop);
+        }
+        c.complete(p, K::JOIN_ON);
+    } else if p.at_kw(Kw::Using) && p.nth(1) == K::L_PAREN {
+        let c = p.start();
+        p.bump_kw(Kw::Using);
+        names::column_list(p, true);
+        c.complete(p, K::JOIN_USING);
+    }
+}
+
+/// `[NATURAL] [ASOF] [POSITIONAL] [CROSS | LEFT | ...] [OUTER] JOIN`; returns
+/// whether the join takes an ON or USING condition.
+fn join_keywords(p: &mut Parser) -> Option<bool> {
     const LEADING: &[Kw] = &[
         Kw::Natural,
         Kw::Asof,
@@ -84,19 +118,23 @@ fn join_keywords(p: &mut Parser) -> bool {
                 p.record(Expected::Keyword(kw));
             }
         }
-        return false;
+        return None;
     }
     let mut n = 0;
     while p.nth_kw(n).is_some_and(|kw| LEADING.contains(&kw)) {
         n += 1;
     }
     if !p.nth_at_kw(n, Kw::Join) {
-        return false;
+        return None;
     }
+    let mut needs = true;
     for _ in 0..=n {
+        if matches!(p.nth_kw(0), Some(Kw::Cross | Kw::Natural | Kw::Positional)) {
+            needs = false;
+        }
         p.bump_any_kw();
     }
-    true
+    Some(needs)
 }
 
 fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
@@ -224,7 +262,12 @@ pub(super) fn sample_spec(p: &mut Parser) {
             p.eat_kw(Kw::Row);
         }
     }
-    if names::at_name(p, NameRule::Any) && p.nth(1) == K::L_PAREN {
+    if p.current() == K::L_PAREN {
+        // USING SAMPLE (10000)
+        p.bump();
+        size(p);
+        p.expect(K::R_PAREN);
+    } else if names::at_name(p, NameRule::Any) && p.nth(1) == K::L_PAREN {
         p.bump_any_kw();
         p.bump();
         size(p);
@@ -255,8 +298,12 @@ fn pivot_body(p: &mut Parser) {
     p.bump_kw(Kw::Pivot);
     p.expect(K::L_PAREN);
     pivot_aggregates(p);
-    while p.at_kw(Kw::For) {
-        pivot_in(p);
+    if p.at_kw(Kw::For) {
+        p.bump_kw(Kw::For);
+        // `FOR a IN (...) b IN (...)` pivots on several columns
+        while !p.at(K::R_PAREN) && !p.at_eof() && !p.at_phrase(&[Kw::Group, Kw::By]) {
+            pivot_in(p);
+        }
     }
     if p.at_phrase(&[Kw::Group, Kw::By]) {
         let m = p.start();
@@ -305,7 +352,7 @@ pub(super) fn pivot_aggregates(p: &mut Parser) {
         }
         select::select_alias(p);
         m.complete(p, K::SELECT_ITEM);
-        if !p.eat(K::COMMA) {
+        if !p.eat_list_comma() {
             break;
         }
     }
@@ -314,14 +361,14 @@ pub(super) fn pivot_aggregates(p: &mut Parser) {
 /// `FOR col IN (a, b AS x, ...)` or `FOR (a, b) IN (...)`.
 fn pivot_in(p: &mut Parser) {
     let m = p.start();
-    p.bump_kw(Kw::For);
+    p.eat_kw(Kw::For);
     if p.current() == K::L_PAREN {
         names::column_list(p, true);
     } else if expressions::expr_bp(p, 14).is_none() {
         p.error("expected a column");
     }
     p.expect_kw(Kw::In);
-    if p.expect(K::L_PAREN) {
+    if p.eat(K::L_PAREN) {
         while !p.at(K::R_PAREN) && !p.at_eof() {
             let item = p.start();
             if expr(p).is_none() {

@@ -9,9 +9,13 @@ publish = false
 [features]
 # `MockCatalog`, an in-memory catalog for tests and examples.
 mock = []
+# Measures tests/duckdb_corpus.rs against DuckDB's own parser. The duckdb
+# dependency has the app's features, so the bundled build is shared.
+duckdb-diff = ["dep:duckdb"]
 
 [dependencies]
 rowan = "0.16"
+duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "appender-arrow"], optional = true }
 
 [dev-dependencies]
 # The integration tests use `MockCatalog`.

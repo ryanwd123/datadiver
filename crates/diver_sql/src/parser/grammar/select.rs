@@ -4,55 +4,79 @@
 use super::super::{CompletedMarker, Parser};
 use super::expressions::{self, expr};
 use super::names::{self, NameRule};
-use super::{from, statements};
+use super::{from, misc, statements};
 use crate::complete::{Expected, NewNameKind};
 use crate::{Kw, SyntaxKind as K};
 
-/// Whether a query starts here. With `through_parens`, `((SELECT` counts too.
-pub(super) fn at_query_start(p: &mut Parser, through_parens: bool) -> bool {
+/// Words a query (or a statement DuckDB takes as one) starts with.
+const QUERY_START: &[Kw] = &[
+    Kw::Select,
+    Kw::From,
+    Kw::With,
+    Kw::Values,
+    Kw::Table,
+    Kw::Pivot,
+    Kw::PivotWider,
+    Kw::Unpivot,
+    Kw::PivotLonger,
+    Kw::Summarize,
+    Kw::Describe,
+    Kw::Show,
+];
+
+/// Whether a query starts here. With `inside_paren`, the current token is a
+/// `(` and the question is whether it holds a query (`FROM (SELECT ...)`,
+/// `INSERT INTO t (SELECT ...)`) rather than a join or a column list.
+pub(super) fn at_query_start(p: &mut Parser, inside_paren: bool) -> bool {
     if p.at_hole() {
-        for kw in [
-            Kw::Select,
-            Kw::From,
-            Kw::With,
-            Kw::Values,
-            Kw::Table,
-            Kw::Pivot,
-            Kw::Unpivot,
-        ] {
+        for kw in [Kw::Select, Kw::From, Kw::With, Kw::Values, Kw::Table, Kw::Pivot, Kw::Unpivot] {
             p.record(Expected::Keyword(kw));
         }
         return false;
     }
-    let mut n = 0;
-    if through_parens {
-        while p.nth(n) == K::L_PAREN {
-            n += 1;
-        }
+    if inside_paren && p.current() == K::L_PAREN {
+        query_inside(p, 1)
+    } else {
+        query_inside(p, 0)
     }
-    matches!(
-        p.nth_kw(n),
-        Some(
-            Kw::Select
-                | Kw::From
-                | Kw::With
-                | Kw::Values
-                | Kw::Table
-                | Kw::Pivot
-                | Kw::Unpivot
-                | Kw::Summarize
-        )
-    ) || (n == 0 && p.current() == K::L_PAREN && at_query_start_quiet(p, 1))
 }
 
-pub(super) fn at_query_start_quiet(p: &Parser, mut n: usize) -> bool {
-    while p.nth(n) == K::L_PAREN {
-        n += 1;
+/// Whether the n-th token starts a query, possibly a parenthesized one.
+pub(super) fn query_inside(p: &Parser, n: usize) -> bool {
+    if p.raw_nth_kw(n).is_some_and(|kw| QUERY_START.contains(&kw)) {
+        return true;
     }
-    matches!(
-        p.nth_kw(n),
-        Some(Kw::Select | Kw::From | Kw::With | Kw::Values | Kw::Table)
-    )
+    p.raw_nth(n) == K::L_PAREN && paren_query(p, n)
+}
+
+/// Whether the `(` at n holds a query and is followed by what a query can
+/// continue with: `((SELECT 1) UNION ...)` is a query, `((VALUES (1)) t JOIN ...)`
+/// a join and `((SELECT 1) + 1)` an expression.
+fn paren_query(p: &Parser, n: usize) -> bool {
+    if !query_inside(p, n + 1) {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut i = n;
+    loop {
+        match p.raw_nth(i) {
+            K::EOF => return true,
+            K::L_PAREN | K::L_BRACK | K::L_CURLY => depth += 1,
+            K::R_PAREN | K::R_BRACK | K::R_CURLY => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    matches!(p.raw_nth(i + 1), K::R_PAREN | K::EOF)
+        || matches!(
+            p.raw_nth_kw(i + 1),
+            Some(Kw::Union | Kw::Except | Kw::Intersect | Kw::Order | Kw::Limit | Kw::Offset)
+        )
 }
 
 /// `[WITH ...] body [ORDER BY ...] [LIMIT ...] [OFFSET ...]`.
@@ -193,8 +217,9 @@ fn query_term(p: &mut Parser) -> Option<CompletedMarker> {
             from.complete(p, K::FROM_CLAUSE);
             Some(m.complete(p, K::SELECT_CORE))
         }
-        Some(Kw::Pivot | Kw::Unpivot | Kw::Summarize | Kw::Describe | Kw::Show) => {
-            // Statements DuckDB lets stand as a query (`FROM (PIVOT ...)`).
+        Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => Some(misc::pivot_stmt(p)),
+        Some(Kw::Summarize | Kw::Describe | Kw::Show) => {
+            // Statements DuckDB lets stand as a query (`FROM (DESCRIBE t)`).
             let m = p.start();
             statements::statement(p);
             Some(m.complete(p, K::PAREN_QUERY))
@@ -405,12 +430,19 @@ fn values(p: &mut Parser) -> CompletedMarker {
             row.abandon(p);
             break;
         }
-        if !p.at(K::R_PAREN) {
-            expressions::expr_list(p);
+        // DuckDB allows trailing commas in a row and after the last row
+        while !p.at(K::R_PAREN) && !p.at_eof() {
+            if expr(p).is_none() {
+                p.err_recover("expected an expression", &[]);
+                break;
+            }
+            if !p.eat(K::COMMA) {
+                break;
+            }
         }
         p.expect(K::R_PAREN);
         row.complete(p, K::VALUES_ROW);
-        if !p.eat(K::COMMA) {
+        if !p.eat(K::COMMA) || !p.at(K::L_PAREN) {
             break;
         }
     }
@@ -426,7 +458,7 @@ fn group_by(p: &mut Parser) {
     } else {
         loop {
             grouping_element(p);
-            if !p.eat(K::COMMA) {
+            if !p.eat_list_comma() {
                 break;
             }
         }

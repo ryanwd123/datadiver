@@ -202,9 +202,9 @@ fn set() {
     check(
         "SET |",
         expect![[r#"
-        expected: TRANSACTION, VARIABLE, GLOBAL, SESSION, LOCAL, SettingName
-        replace: 4..4 ""
-    "#]],
+            expected: TIME ZONE, TRANSACTION, VARIABLE, GLOBAL, SESSION, LOCAL, SettingName
+            replace: 4..4 ""
+        "#]],
     );
 }
 

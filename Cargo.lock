@@ -914,6 +914,7 @@ name = "diver_sql"
 version = "0.1.0"
 dependencies = [
  "diver_sql",
+ "duckdb",
  "expect-test",
  "proptest",
  "rowan",

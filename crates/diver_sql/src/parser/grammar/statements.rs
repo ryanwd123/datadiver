@@ -101,7 +101,7 @@ pub(super) fn statement(p: &mut Parser) {
         Some(Kw::Call) => misc::call(p),
         Some(Kw::Vacuum | Kw::Analyze | Kw::Analyse) => misc::vacuum(p),
         Some(Kw::Truncate) => dml::truncate(p),
-        Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => misc::pivot_stmt(p),
+        Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => select_stmt(p),
         _ => unknown(p),
     }
 }

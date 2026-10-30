@@ -31,6 +31,9 @@ pub(super) fn create(p: &mut Parser) {
     if !p.eat_kw(Kw::Temp) && !p.eat_kw(Kw::Temporary) {
         p.eat_kw(Kw::Persistent);
     }
+    if p.peek_kw(Kw::Recursive) {
+        p.bump_kw(Kw::Recursive);
+    }
     if !or_replace {
         p.eat_kw(Kw::Unique);
     }
@@ -47,6 +50,14 @@ pub(super) fn create(p: &mut Parser) {
             object_name(p, NewNameKind::Table);
             if p.current() == K::L_PAREN && !select::at_query_start(p, true) {
                 table_elements(p);
+            }
+            if p.at_kw(Kw::On) && p.nth_at_kw(1, Kw::Commit) {
+                p.bump_kw(Kw::On);
+                p.bump_kw(Kw::Commit);
+                if !p.eat_kw(Kw::Preserve) {
+                    p.expect_kw(Kw::Delete);
+                }
+                p.expect_kw(Kw::Rows);
             }
             if p.at_kw(Kw::As) {
                 p.bump_kw(Kw::As);
@@ -94,7 +105,7 @@ pub(super) fn create(p: &mut Parser) {
             if_not_exists(p);
             object_name(p, NewNameKind::Type);
             if p.expect_kw(Kw::As) {
-                if p.at_kw(Kw::Enum) && p.nth(1) == K::L_PAREN && select::at_query_start_quiet(p, 2)
+                if p.at_kw(Kw::Enum) && p.nth(1) == K::L_PAREN && select::query_inside(p, 2)
                 {
                     p.bump_kw(Kw::Enum);
                     p.bump();
@@ -133,7 +144,18 @@ pub(super) fn create(p: &mut Parser) {
                 names::new_name(p, NameRule::Any, NewNameKind::Other);
             }
             if p.expect(K::L_PAREN) {
-                expressions::expr_list(p);
+                loop {
+                    if expr(p).is_none() {
+                        p.err_recover("expected an expression", &[]);
+                        break;
+                    }
+                    if !p.eat_kw(Kw::Asc) {
+                        p.eat_kw(Kw::Desc);
+                    }
+                    if !p.eat(K::COMMA) {
+                        break;
+                    }
+                }
                 p.expect(K::R_PAREN);
             }
             if p.at_kw(Kw::With) {
@@ -189,7 +211,12 @@ fn object_name(p: &mut Parser, kind: NewNameKind) {
             });
         }
     };
-    if names::path(p, NameRule::ColId, &on_hole).is_none() {
+    if p.current() == K::STRING {
+        // CREATE TABLE 'name'
+        let m = p.start();
+        p.bump();
+        m.complete(p, K::PATH);
+    } else if names::path(p, NameRule::NotReserved, &on_hole).is_none() {
         p.error("expected a name");
     }
 }
@@ -275,15 +302,34 @@ fn references(p: &mut Parser) {
         if p.current() == K::L_PAREN {
             names::column_list(p, true);
         }
+        // ON UPDATE / ON DELETE actions
+        while p.at_kw(Kw::On) && (p.nth_at_kw(1, Kw::Update) || p.nth_at_kw(1, Kw::Delete)) {
+            p.bump_kw(Kw::On);
+            p.bump_any_kw();
+            if p.eat_kw(Kw::No) {
+                p.expect_kw(Kw::Action);
+            } else if p.eat_kw(Kw::Set) {
+                if !p.eat_kw(Kw::Null) {
+                    p.expect_kw(Kw::Default);
+                }
+            } else if !p.eat_kw(Kw::Restrict) && !p.eat_kw(Kw::Cascade) {
+                p.error("expected NO ACTION, RESTRICT, CASCADE or SET");
+            }
+        }
     }
 }
 
 pub(super) fn column_def(p: &mut Parser) {
     let m = p.start();
-    if !names::new_name(p, NameRule::ColId, NewNameKind::Column) {
+    if !names::new_name(p, NameRule::NotReserved, NewNameKind::Column) {
         m.abandon(p);
         p.err_recover("expected a column", &[]);
         return;
+    }
+    // `ADD COLUMN s.field.sub INTEGER` adds a struct field
+    while p.current() == K::DOT && names::nth_is_word(p, 1) {
+        p.bump();
+        names::bump_name(p);
     }
     if !at_column_constraint(p) && !p.at(K::COMMA) && !p.at(K::R_PAREN) {
         types::type_name(p);
@@ -329,7 +375,8 @@ fn column_constraint(p: &mut Parser) {
         Some(Kw::Unique) => p.bump_kw(Kw::Unique),
         Some(Kw::Default) => {
             p.bump_kw(Kw::Default);
-            if expressions::expr_bp(p, 17).is_none() {
+            // stops before a following NOT NULL constraint
+            if expressions::expr_bp(p, expressions::BP_IS).is_none() {
                 p.error("expected a default");
             }
         }
@@ -340,7 +387,9 @@ fn column_constraint(p: &mut Parser) {
         Some(Kw::References) => references(p),
         Some(Kw::Collate) => {
             p.bump_kw(Kw::Collate);
-            names::new_name(p, NameRule::Any, NewNameKind::Other);
+            if names::path(p, NameRule::Any, &|_, _| {}).is_none() {
+                p.error("expected a collation");
+            }
         }
         Some(Kw::Using) => {
             // USING COMPRESSION name
@@ -455,7 +504,7 @@ fn object_ref(p: &mut Parser, kind: Option<Kw>) {
         Some(Kw::Index | Kw::Secret | Kw::Sequence) => {}
         _ => names::record_table(p, q),
     };
-    if names::path(p, NameRule::ColId, &on_hole).is_none() {
+    if names::path(p, NameRule::NotReserved, &on_hole).is_none() {
         p.error("expected a name");
     }
 }
@@ -589,12 +638,16 @@ fn alter_action(p: &mut Parser, kind: Option<Kw>) {
         p.bump_kw(Kw::Alter);
         p.eat_kw(Kw::Column);
         column(p);
-        if p.at_kw(Kw::Type) || p.at_kw(Kw::Set) && p.nth_at_kw(1, Kw::Data) {
+        let set_type = p.peek_kw(Kw::Set) && (p.nth_at_kw(1, Kw::Data) || p.nth_at_kw(1, Kw::Type));
+        if p.at_kw(Kw::Type) || set_type {
             if p.eat_kw(Kw::Set) {
-                p.bump_kw(Kw::Data);
+                p.eat_kw(Kw::Data);
             }
             p.expect_kw(Kw::Type);
-            types::type_name(p);
+            // ALTER col TYPE USING expr leaves the type to the expression
+            if !p.peek_kw(Kw::Using) {
+                types::type_name(p);
+            }
             if p.eat_kw(Kw::Using) && expr(p).is_none() {
                 p.error("expected an expression");
             }

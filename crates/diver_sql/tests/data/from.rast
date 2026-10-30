@@ -98,8 +98,8 @@ SOURCE_FILE@0..186
                     PATH@159..160
                       IDENT@159..160 "x"
                   R_PAREN@160..161 ")"
-            PIVOT_IN@162..181
-              FOR_KW@162..165 "FOR"
+            FOR_KW@162..165 "FOR"
+            PIVOT_IN@166..181
               COLUMN_REF@166..167
                 PATH@166..167
                   IDENT@166..167 "y"

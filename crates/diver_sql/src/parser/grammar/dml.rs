@@ -135,6 +135,11 @@ fn returning(p: &mut Parser) {
 fn set_clause(p: &mut Parser) {
     let m = p.start();
     p.expect_kw(Kw::Set);
+    // MERGE ... UPDATE SET *
+    if p.eat(K::STAR) {
+        m.complete(p, K::SET_CLAUSE);
+        return;
+    }
     loop {
         let item = p.start();
         if p.current() == K::L_PAREN {
@@ -152,7 +157,7 @@ fn set_clause(p: &mut Parser) {
             p.error("expected an expression");
         }
         item.complete(p, K::SET_ITEM);
-        if !p.eat(K::COMMA) {
+        if !p.eat_list_comma() {
             break;
         }
     }
@@ -234,11 +239,13 @@ fn merge_when(p: &mut Parser) {
     p.expect_kw(Kw::Then);
     if p.at_kw(Kw::Update) {
         p.bump_kw(Kw::Update);
+        by_name_or_position(p);
         if p.at_kw(Kw::Set) {
             set_clause(p);
         }
     } else if p.at_kw(Kw::Insert) {
         p.bump_kw(Kw::Insert);
+        by_name_or_position(p);
         if p.current() == K::L_PAREN {
             names::column_list(p, true);
         }
@@ -260,6 +267,15 @@ fn merge_when(p: &mut Parser) {
         p.err_recover("expected UPDATE, INSERT, DELETE or DO NOTHING", &[Kw::When]);
     }
     m.complete(p, K::MERGE_WHEN);
+}
+
+fn by_name_or_position(p: &mut Parser) {
+    if p.at_kw(Kw::By) {
+        p.bump_kw(Kw::By);
+        if !p.eat_kw(Kw::Name) {
+            p.expect_kw(Kw::Position);
+        }
+    }
 }
 
 pub(super) fn truncate(p: &mut Parser) {
