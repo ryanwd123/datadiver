@@ -31,14 +31,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - remove some calculated values from info panel?
 ## Tier 2: SQL editor
 
-- [x] **7. Monaco-style SQL editor.** `crates/code_editor` hosted in the SQL panel
-  (`ui::widgets::hosted_editor`). DataDiver translates its own events into the editor's input
-  calls rather than forwarding window messages, so the keymap keeps priority and headless tests
-  drive it. The editor's find widget replaced the panel's. The SQL Editor key context holds Run,
-  Run script, Ask AI and the editor's actions (rebindable; an unbound default stays off), and the
-  palette lists them while the editor is open. Hovers come from the editor's own rest timer.
-  Caret blink while active: about two full-window repaints a second, 16 ms of CPU over 8 s in a
-  debug build.
 - [~] **8. SQL language features from `diver_sql`.** Done for the SQL panel through the editor's
   `LanguageService` (`ui::sql_language`) and `domain::sql_editor::SqlCatalog` (relations with
   column types, databases, schemas, functions with signatures from `duckdb_functions()`,
@@ -57,67 +49,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
     background `DESCRIBE` and a way to reopen the list when it finishes.
   - Left: drop tree-sitter-sequel (about 2.4 MB) once brackets and auto-close contexts come
     from the service too.
-
-### Design: the Monaco-style editor (item 7)
-
-**Where the code lives.** Copy `win_monaco/editor` into this repo as `crates/code_editor` (package
-renamed from `editor` so it isn't confused with `ui::widgets::editor`), recording win_monaco's commit
-(`4924080`) in the commit message. win_monaco has no remote, so a path dependency outside the repo
-would break the GitHub release build; this copy becomes the maintained one, and the win_monaco demo
-can later point at it by path. Build with `default-features = false, features = ["lang-sql"]`
-(no Python grammar); `windows` 0.62 already matches.
-
-**Hosting.** DataDiver paints one window through `Canvas` over an `ID2D1RenderTarget`, which is the
-case win_monaco's hosted mode was built for:
-- `Editor::create_hosted(hwnd, ..)` when the SQL panel opens; `set_bounds` from the panel's layout
-  each paint; `set_visible(false)` when the panel hides (keeps text, undo and scroll; frees timers).
-- Paint: `paint_into(canvas.target())` at the panel's place in the frame, so dialogs and the command
-  palette still draw over it. The editor clips itself (popups included) to its bounds.
-- Input: the platform layer gets an escape hatch, `View::raw_message(msg, wparam, lparam) ->
-  Option<LRESULT>`, called before DataDiver's own translation. The SQL panel forwards mouse
-  messages over the editor's bounds and keyboard/IME messages while it has focus, so the editor
-  sees exactly what it would in its own window. Focus moves between the two by DataDiver's focus
-  model (`focus` / `has_focus`), with Escape and the app's panel keys leaving the editor.
-- Timers live on the editor's own message-only window, so they don't collide with DataDiver's.
-- To check: the editor creates its own D2D factory; drawing with brushes and DWrite layouts into a
-  target from another factory is fine, but any geometry it draws must come from the target's
-  factory (`rt.GetFactory()`). Verify with the debug layer on first paint.
-- Snapshots: `--capture` must paint the hosted editor into the headless target too.
-
-**Keys and commands.** Monaco's defaults cover old item 8 entirely (multi-cursor, Ctrl+D,
-line moves, comments, bracket jump, go to line, expand selection, folding, zoom). DataDiver's
-keymap stays in charge where they clash:
-- `ctrl-enter` runs the statement (Monaco: insert line below), `ctrl-shift-enter` follows the
-  keymap too; registered with `add_command(chord, id)` from DataDiver's keymap, so rebinding a key
-  in the keymap editor rebinds it here.
-- The command palette lists the editor's actions (`run(Action)`), with their keys.
-- The editor's find/replace widget (regex, whole word, case) replaces the SQL panel's find bar.
-
-**Look.** Theme colors from DataDiver's theme (`set_theme` / `set_theme_color`), the font and size
-from the font picker, zoom saved with the other editor settings.
-
-**Wiring to the panel.** `Event::ContentChanged` → `SqlPanelEvent::Changed`; statement under the
-cursor from `selections()`; the AI proposal uses `apply_edits` (one undo step) and `set_selections`.
-Completion first goes through a `CompletionProvider` wrapping today's `domain::sql_editor`
-completions and path completion, so nothing is lost before `diver_sql` arrives.
-
-**Editor API additions** (needed for item 8, done in `crates/code_editor`):
-- Completion items with their own replace range (quoted names, paths with slashes) and
-  documentation, and a way to reopen the list when a background `DESCRIBE` finishes.
-- An external highlighter hook (token classes for a changed range) so `diver_sql` can replace
-  tree-sitter-sequel (≈2.4 MB of the binary) once its highlighting lands; folding ranges and
-  selection ranges from the host too, with today's indentation/scan fallbacks.
-- Hover providers (function and statement docs, not just decoration messages) and a signature
-  help popup.
-
-**Tests.** `ui::dataframe_view::sql_tests` drives the old editor's API; port them to the hosted
-editor's headless API (`editor.rs` is testable without a window). The old widget stays for
-single-line inputs and the smaller editors; moving the multi-line expression editors and the cell
-detail view is a later step.
-
-**Phases.** (1) vendor the crate and get it building in the workspace; (2) host it in the SQL
-panel with keys, theme, persistence and the old completions, porting the SQL tests; (3) the API
-additions; (4) `diver_sql` integration (its phase 6).
 
 ## Tier 4: bigger features
 
@@ -223,7 +154,7 @@ the features that assume a flat result, so the design keeps them unchanged until
 ## Loose ends from finished work
 
 - Aggregate function reference: the structured operations (`pivot_editor::OPERATIONS`) as a
-  "common" group, and feeding the list to SQL editor completion (item 7).
+  "common" group.
 - SQL path completion: modified time as detail.
 - Database tree: share item building with `open_file_palette`, and refresh while open (it reloads
   each time it opens).
