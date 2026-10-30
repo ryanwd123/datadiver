@@ -66,6 +66,11 @@ pub trait Catalog {
     fn columns(&self, _relation: &RelationSource) -> Option<Vec<ColumnInfo>> {
         None
     }
+    /// Columns in scope when the text names no relation, such as the frame
+    /// an expression editor (`Entry::Expression`) works on.
+    fn implicit_columns(&self) -> Vec<ColumnInfo> {
+        Vec::new()
+    }
     fn functions(&self) -> Vec<FunctionInfo> {
         Vec::new()
     }
@@ -193,6 +198,7 @@ mod mock {
         pub settings: Vec<SettingInfo>,
         pub extensions: Vec<String>,
         pub paths: Vec<PathInfo>,
+        pub implicit: Vec<ColumnInfo>,
     }
 
     impl MockCatalog {
@@ -330,6 +336,15 @@ mod mock {
             self
         }
 
+        /// Columns of the frame an expression is written against.
+        pub fn implicit_columns(mut self, columns: &[&str]) -> Self {
+            self.implicit.extend(columns.iter().map(|c| ColumnInfo {
+                name: c.to_string(),
+                data_type: None,
+            }));
+            self
+        }
+
         pub fn path(mut self, path: &str, is_dir: bool) -> Self {
             self.paths.push(PathInfo {
                 path: path.into(),
@@ -414,6 +429,10 @@ mod mock {
                 }
                 _ => None,
             }
+        }
+
+        fn implicit_columns(&self) -> Vec<ColumnInfo> {
+            self.implicit.clone()
         }
 
         fn functions(&self) -> Vec<FunctionInfo> {

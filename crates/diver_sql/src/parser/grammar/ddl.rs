@@ -5,6 +5,7 @@ use super::expressions::{self, expr};
 use super::names::{self, NameRule};
 use super::{misc, select, types};
 use crate::complete::{Expected, FunctionKind, Name, NewNameKind};
+use crate::dialect::Feature;
 use crate::{Kw, SyntaxKind as K};
 
 /// What follows `CREATE [OR REPLACE] [TEMP]`.
@@ -38,10 +39,15 @@ pub(super) fn create(p: &mut Parser) {
         p.eat_kw(Kw::Unique);
     }
     for &kw in CREATE_KINDS {
-        // DuckDB refuses CREATE OR REPLACE INDEX
-        if !(or_replace && kw == Kw::Index) {
+        // DuckDB refuses CREATE OR REPLACE INDEX; Polars creates only tables
+        if !(or_replace && kw == Kw::Index) && (p.allows(Feature::Statement) || kw == Kw::Table) {
             p.record(Expected::Keyword(kw));
         }
+    }
+    if p.nth_kw(0)
+        .is_some_and(|kw| kw != Kw::Table && CREATE_KINDS.contains(&kw))
+    {
+        p.gate(Feature::Statement);
     }
     match p.nth_kw(0) {
         Some(Kw::Table) => {
@@ -476,7 +482,14 @@ fn signed_number(p: &mut Parser) {
 /// What DROP and COMMENT ON name, and what to offer after them.
 fn object_kind(p: &mut Parser, kinds: &[Kw]) -> Option<Kw> {
     for &kw in kinds {
-        p.record(Expected::Keyword(kw));
+        if p.allows(Feature::Statement) || kw == Kw::Table {
+            p.record(Expected::Keyword(kw));
+        }
+    }
+    if p.nth_kw(0)
+        .is_some_and(|kw| kw != Kw::Table && kinds.contains(&kw))
+    {
+        p.gate(Feature::Statement);
     }
     let kw = p.nth_kw(0).filter(|kw| kinds.contains(kw))?;
     p.bump_kw(kw);

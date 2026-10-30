@@ -3,6 +3,7 @@
 use super::super::Parser;
 use super::{ddl, dml, misc, select};
 use crate::complete::Expected;
+use crate::dialect::Feature;
 use crate::{Kw, SyntaxKind as K};
 
 /// Words a statement can start with, offered at the start of a statement.
@@ -54,11 +55,34 @@ pub(super) const STATEMENT_START: &[Kw] = &[
     Kw::Unpivot,
 ];
 
+/// The statements Polars SQL runs (CREATE and DROP only for tables).
+const POLARS_STATEMENTS: &[Kw] = &[
+    Kw::Select,
+    Kw::From,
+    Kw::With,
+    Kw::Values,
+    Kw::Table,
+    Kw::Show,
+    Kw::Create,
+    Kw::Drop,
+    Kw::Explain,
+    Kw::Truncate,
+    Kw::Delete,
+];
+
 pub(super) fn statement(p: &mut Parser) {
     if p.at_hole() {
         for &kw in STATEMENT_START {
-            p.record(Expected::Keyword(kw));
+            if p.allows(Feature::Statement) || POLARS_STATEMENTS.contains(&kw) {
+                p.record(Expected::Keyword(kw));
+            }
         }
+    }
+    if !p.allows(Feature::Statement)
+        && p.nth_kw(0)
+            .is_some_and(|kw| !POLARS_STATEMENTS.contains(&kw) && STATEMENT_START.contains(&kw))
+    {
+        p.gate(Feature::Statement);
     }
     if p.current() == K::L_PAREN {
         select_stmt(p);

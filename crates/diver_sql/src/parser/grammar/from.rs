@@ -6,7 +6,8 @@ use super::expressions::{self, expr};
 use super::names::{self, NameRule};
 use super::select;
 use crate::complete::{Expected, FunctionKind, NewNameKind};
-use crate::{Kw, SyntaxKind as K, dialect};
+use crate::dialect::{self, Feature};
+use crate::{Kw, SyntaxKind as K};
 
 pub(super) fn from_clause(p: &mut Parser) {
     let m = p.start();
@@ -114,7 +115,13 @@ fn join_keywords(p: &mut Parser) -> Option<bool> {
     if p.at_hole() {
         p.record(Expected::Keyword(Kw::Join));
         for &kw in LEADING {
-            if kw != Kw::Outer {
+            let allowed = match kw {
+                Kw::Outer => false,
+                Kw::Asof => p.allows(Feature::AsofJoin),
+                Kw::Positional => p.allows(Feature::PositionalJoin),
+                _ => true,
+            };
+            if allowed {
                 p.record(Expected::Keyword(kw));
             }
         }
@@ -132,6 +139,11 @@ fn join_keywords(p: &mut Parser) -> Option<bool> {
         if matches!(p.nth_kw(0), Some(Kw::Cross | Kw::Natural | Kw::Positional)) {
             needs = false;
         }
+        match p.nth_kw(0) {
+            Some(Kw::Asof) => p.gate(Feature::AsofJoin),
+            Some(Kw::Positional) => p.gate(Feature::PositionalJoin),
+            _ => {}
+        }
         p.bump_any_kw();
     }
     Some(needs)
@@ -145,6 +157,9 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
         names::new_name(p, NameRule::ColId, NewNameKind::Alias);
         a.complete(p, K::ALIAS);
         p.bump();
+    }
+    if p.peek_kw(Kw::Lateral) {
+        p.gate(Feature::Lateral);
     }
     let lateral = p.eat_kw(Kw::Lateral);
     let kind = if p.at_hole() {
@@ -212,7 +227,13 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
         return None;
     };
     names::table_alias(p, stop);
-    if p.at_kw(Kw::Tablesample) || (p.peek_kw(Kw::Using) && p.nth_at_kw(1, Kw::Sample)) {
+    let tablesample = if p.allows(Feature::Sample) {
+        p.at_kw(Kw::Tablesample)
+    } else {
+        p.peek_kw(Kw::Tablesample)
+    };
+    if tablesample || (p.peek_kw(Kw::Using) && p.nth_at_kw(1, Kw::Sample)) {
+        p.gate(Feature::Sample);
         let s = p.start();
         if !p.eat_kw(Kw::Tablesample) {
             p.bump_kw(Kw::Using);
@@ -223,12 +244,25 @@ fn table_primary(p: &mut Parser, stop: &[Kw]) -> Option<CompletedMarker> {
     }
     let mut done = m.complete(p, kind);
     loop {
-        if p.at_kw(Kw::Pivot) {
+        let pivot = if p.allows(Feature::Pivot) {
+            p.at_kw(Kw::Pivot)
+        } else {
+            p.peek_kw(Kw::Pivot)
+        };
+        let unpivot = if p.allows(Feature::Pivot) {
+            p.at_kw(Kw::Unpivot)
+        } else {
+            p.peek_kw(Kw::Unpivot)
+        };
+        if pivot || unpivot {
+            p.gate(Feature::Pivot);
+        }
+        if pivot {
             let m = done.precede(p);
             pivot_body(p);
             names::table_alias(p, stop);
             done = m.complete(p, K::PIVOT_REF);
-        } else if p.at_kw(Kw::Unpivot) {
+        } else if unpivot {
             let m = done.precede(p);
             unpivot_body(p);
             names::table_alias(p, stop);
@@ -302,7 +336,14 @@ fn pivot_body(p: &mut Parser) {
         p.bump_kw(Kw::For);
         // `FOR a IN (...) b IN (...)` pivots on several columns
         while !p.at(K::R_PAREN) && !p.at_eof() && !p.at_phrase(&[Kw::Group, Kw::By]) {
+            let before = p.position();
             pivot_in(p);
+            if p.position() == before {
+                p.err_recover("expected a pivot column", &[Kw::Group]);
+                if p.position() == before {
+                    break;
+                }
+            }
         }
     }
     if p.at_phrase(&[Kw::Group, Kw::By]) {

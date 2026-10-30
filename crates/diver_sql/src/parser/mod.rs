@@ -16,6 +16,7 @@ use std::cell::Cell;
 use rowan::GreenNode;
 
 use crate::complete::Expected;
+use crate::dialect::Feature;
 use crate::lexer::Token;
 use crate::{Dialect, Entry, Kw, ParseOptions, SyntaxError, SyntaxKind};
 use event::Event;
@@ -42,7 +43,6 @@ pub(crate) struct Parser<'a> {
     string_hole: Option<usize>,
     expected: Vec<Expected>,
     nesting: u32,
-    #[allow(dead_code)] // the Polars grammar gates read it
     pub(crate) dialect: Dialect,
 }
 
@@ -152,6 +152,11 @@ impl<'a> Parser<'a> {
     pub(crate) fn raw_nth_kw(&self, n: usize) -> Option<Kw> {
         let i = self.pos + n;
         if i < self.limit { self.kws[i] } else { None }
+    }
+
+    /// How many tokens have been consumed, to tell whether a rule made progress.
+    pub(crate) fn position(&self) -> usize {
+        self.pos
     }
 
     pub(crate) fn current(&self) -> SyntaxKind {
@@ -441,6 +446,19 @@ impl<'a> Parser<'a> {
         let out = rule(self);
         self.nesting -= 1;
         out
+    }
+
+    /// Whether the dialect has `feature`; completion offers only what it has.
+    pub(crate) fn allows(&self, feature: Feature) -> bool {
+        self.dialect.supports(feature)
+    }
+
+    /// Reports `feature` at the current token when the dialect lacks it.
+    pub(crate) fn gate(&mut self, feature: Feature) {
+        if !self.dialect.supports(feature) {
+            let msg = self.dialect.unsupported(feature);
+            self.error(msg);
+        }
     }
 
     pub(crate) fn reset_fuel(&mut self) {

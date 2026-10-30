@@ -6,6 +6,7 @@ use super::expressions::{self, expr};
 use super::names::{self, NameRule};
 use super::{from, misc, statements};
 use crate::complete::{Expected, NewNameKind};
+use crate::dialect::Feature;
 use crate::{Kw, SyntaxKind as K};
 
 /// Words a query (or a statement DuckDB takes as one) starts with.
@@ -226,6 +227,7 @@ fn query_term(p: &mut Parser) -> Option<CompletedMarker> {
             Some(m.complete(p, K::SELECT_CORE))
         }
         Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => {
+            p.gate(Feature::Pivot);
             Some(misc::pivot_stmt(p))
         }
         Some(Kw::Summarize | Kw::Describe | Kw::Show) => {
@@ -279,7 +281,13 @@ fn select_core(p: &mut Parser) -> CompletedMarker {
         condition(p);
         c.complete(p, K::QUALIFY_CLAUSE);
     }
-    if p.at_phrase(&[Kw::Using, Kw::Sample]) && p.nth_at_kw(1, Kw::Sample) {
+    let sample = if p.allows(Feature::Sample) {
+        p.at_phrase(&[Kw::Using, Kw::Sample])
+    } else {
+        p.peek_kw(Kw::Using)
+    };
+    if sample && p.nth_at_kw(1, Kw::Sample) {
+        p.gate(Feature::Sample);
         let c = p.start();
         p.bump_kw(Kw::Using);
         p.bump_kw(Kw::Sample);
@@ -340,6 +348,7 @@ fn select_item(p: &mut Parser) {
     let m = p.start();
     // `alias: expr`
     if names::at_name(p, NameRule::ColId) && p.nth(1) == K::COLON {
+        p.gate(Feature::PrefixAlias);
         let a = p.start();
         names::new_name(p, NameRule::ColId, NewNameKind::Alias);
         a.complete(p, K::ALIAS);
@@ -480,6 +489,7 @@ fn grouping_element(p: &mut Parser) {
     let is_sets = p.at_kw(Kw::Grouping) && p.nth_at_kw(1, Kw::Sets);
     let is_cube = (p.at_kw(Kw::Cube) || p.at_kw(Kw::Rollup)) && p.nth(1) == K::L_PAREN;
     if is_sets || is_cube {
+        p.gate(Feature::GroupingSets);
         let m = p.start();
         p.bump_any_kw();
         if is_sets {

@@ -273,6 +273,9 @@ impl Items<'_> {
                     );
                 }
             }
+            for c in catalog.implicit_columns() {
+                self.name(&c.name, ItemKind::Column, c.data_type, rank::COLUMN);
+            }
             for alias in &scope.aliases {
                 self.name(
                     &alias.text,

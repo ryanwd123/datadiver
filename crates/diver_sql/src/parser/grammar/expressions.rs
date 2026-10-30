@@ -10,7 +10,8 @@ use super::super::{CompletedMarker, Parser};
 use super::names::{self, NameRule};
 use super::{select, types};
 use crate::complete::{Expected, FunctionKind, Name};
-use crate::{Kw, SyntaxKind as K, dialect};
+use crate::dialect::{self, Feature};
+use crate::{Kw, SyntaxKind as K};
 
 const BP_ARROW: u8 = 1;
 const BP_OR: u8 = 3;
@@ -72,6 +73,7 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
                 K::BIN_EXPR
             }
             Op::Arrow => {
+                p.gate(Feature::Lambda);
                 p.bump();
                 rhs(p, l_bp);
                 K::LAMBDA_EXPR
@@ -92,6 +94,7 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
                 K::IS_EXPR
             }
             Op::Postfix => {
+                p.gate(Feature::Factorial);
                 p.bump();
                 K::POSTFIX_EXPR
             }
@@ -119,7 +122,11 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
             }
             Op::Like => {
                 p.eat_kw(Kw::Not);
+                if p.peek_kw(Kw::Glob) {
+                    p.gate(Feature::Glob);
+                }
                 if p.peek_kw(Kw::Similar) {
+                    p.gate(Feature::SimilarTo);
                     p.bump_kw(Kw::Similar);
                     p.expect_kw(Kw::To);
                 } else {
@@ -132,6 +139,7 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
                 K::LIKE_EXPR
             }
             Op::Collate => {
+                p.gate(Feature::Collate);
                 p.bump_kw(Kw::Collate);
                 if names::path(p, NameRule::Any, &|_, _| {}).is_none() {
                     p.error("expected a collation");
@@ -139,6 +147,7 @@ fn expr_bp_inner(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
                 K::COLLATE_EXPR
             }
             Op::AtTimeZone => {
+                p.gate(Feature::AtTimeZone);
                 p.bump_kw(Kw::At);
                 p.expect_kw(Kw::Time);
                 p.expect_kw(Kw::Zone);
@@ -317,6 +326,9 @@ fn prefix(p: &mut Parser) -> Option<CompletedMarker> {
         _ => None,
     };
     if let Some(bp) = op_bp {
+        if p.current() == K::STAR {
+            p.gate(Feature::Columns);
+        }
         let m = p.start();
         p.bump_any_kw_if(Kw::Not);
         rhs(p, bp);
@@ -402,7 +414,14 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
     if p.at_hole() {
         p.record(Expected::Expr);
         for &kw in EXPR_START {
-            p.record(Expected::Keyword(kw));
+            let gated = match kw {
+                Kw::Lambda => Some(Feature::Lambda),
+                Kw::Columns => Some(Feature::Columns),
+                _ => None,
+            };
+            if gated.is_none_or(|f| p.allows(f)) {
+                p.record(Expected::Keyword(kw));
+            }
         }
         return name_expr(p);
     }
@@ -421,6 +440,7 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
             K::PARAM_EXPR
         }
         K::HASH if p.nth(1) == K::INT_NUMBER => {
+            p.gate(Feature::PositionalRef);
             p.bump();
             p.bump();
             K::POSITIONAL_REF
@@ -434,6 +454,7 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
             K::LIST_EXPR
         }
         K::L_CURLY => {
+            p.gate(Feature::StructLiteral);
             struct_body(p);
             K::STRUCT_EXPR
         }
@@ -496,12 +517,16 @@ fn keyword_atom(p: &mut Parser) -> Option<CompletedMarker> {
             return Some(m.complete(p, K::LIST_EXPR));
         }
         Some(Kw::Map) if next == K::L_CURLY => {
+            p.gate(Feature::MapLiteral);
             let m = p.start();
             p.bump_kw(Kw::Map);
             struct_body(p);
             return Some(m.complete(p, K::MAP_EXPR));
         }
-        Some(Kw::Lambda) => return Some(lambda(p)),
+        Some(Kw::Lambda) => {
+            p.gate(Feature::Lambda);
+            return Some(lambda(p));
+        }
         Some(Kw::Default) => {
             let m = p.start();
             p.bump_kw(Kw::Default);
@@ -515,7 +540,7 @@ fn keyword_atom(p: &mut Parser) -> Option<CompletedMarker> {
         Some(Kw::Any | Kw::All | Kw::Some) if next == K::L_PAREN => {
             // `x = ANY (...)` is taken by the comparison; here it is a plain call.
         }
-        Some(Kw::Columns | Kw::Unpack) if next == K::L_PAREN => {}
+        Some(Kw::Columns | Kw::Unpack) if next == K::L_PAREN => p.gate(Feature::Columns),
         Some(kw) if kw.is_reserved() && next != K::L_PAREN => return None,
         _ => {}
     }
@@ -601,6 +626,7 @@ pub(super) fn call_rest(p: &mut Parser, path_fn: bool) {
     }
     // `count(*) EXPORT_STATE` returns the aggregate state
     if p.current() == K::IDENT && p.nth_text(0).eq_ignore_ascii_case("export_state") {
+        p.gate(Feature::ExportState);
         p.bump();
     }
 }
@@ -803,6 +829,7 @@ fn list(p: &mut Parser) {
             break;
         }
         if first && p.at_kw(Kw::For) {
+            p.gate(Feature::ListComprehension);
             p.bump_kw(Kw::For);
             names::new_name(p, NameRule::ColId, crate::complete::NewNameKind::Other);
             while p.eat(K::COMMA) {

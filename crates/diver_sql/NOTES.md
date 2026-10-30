@@ -109,6 +109,37 @@ UNION ...)` is a query, `((VALUES (1)) t JOIN ...)` a join and `((SELECT 1) +
   from the statement node the hovered keyword belongs to, so `DO UPDATE` in
   ON CONFLICT doesn't show the UPDATE doc.
 
+## Polars dialect
+
+`ParseOptions { dialect: Dialect::Polars, .. }` parses the same grammar and
+reports, as errors, what polars-sql 0.55 lacks; completion stops offering
+it. What Polars has was read from polars-sql's source (sqlparser's
+`GenericDialect`, plus the `Statement` / `SQLExpr` / `JoinOperator` cases
+its context handles):
+
+- Statements: queries (FROM-first included), SHOW TABLES, CREATE TABLE
+  [AS], DROP TABLE, EXPLAIN, TRUNCATE, DELETE.
+- Not in Polars: lambdas, struct and MAP literals, list comprehensions,
+  COLUMNS(...), prefix aliases, `#n`, `!`, EXPORT_STATE, GLOB, SIMILAR TO,
+  COLLATE, AT TIME ZONE, PIVOT / UNPIVOT, samples, ASOF / POSITIONAL joins,
+  LATERAL, GROUPING SETS / CUBE / ROLLUP.
+- Polars has: QUALIFY, named windows, NATURAL / SEMI / ANTI / CROSS joins,
+  UNION BY NAME, `* EXCLUDE / REPLACE / RENAME`, FILTER, `~` regex matches,
+  `::` casts, TRY_CAST, list literals, read_csv / read_parquet / read_ipc /
+  read_json.
+
+`tests/polars_corpus` holds the app's Polars SQL: the aggregate examples of
+`infrastructure::polars::functions`, expressions and conditions the
+aggregation and pivot editors take, and queries. Every line was run through
+Polars 0.55 (`polars::sql::sql_expr` for expressions, an `SQLContext` with a
+table `t` for queries); the one it refused, `x > ALL (1, 2)`, was dropped.
+`year(day)` stays: it is the app's own shorthand, rewritten before Polars
+sees it.
+
+`Entry::Expression` parses one expression with an optional alias
+(`EXPRESSION_ROOT`). Expression editors have no FROM clause, so
+`Catalog::implicit_columns` supplies the columns of the frame being edited.
+
 ## Performance
 
 `cargo bench -p diver_sql` (release, this machine):
