@@ -33,15 +33,17 @@ pub fn file_read(
     table_writer: &TablePreferencesWriter,
     path: &Path,
 ) -> (ReadOptions, FileSettings) {
-    let settings = repository.load_settings().unwrap_or_default();
+    let default_engine = repository
+        .load_settings()
+        .map(|settings| settings.default_engine)
+        .unwrap_or_default();
     let file = table_writer
         .load(path)
         .map(|preferences| preferences.file)
         .unwrap_or_default();
     let options = ReadOptions {
-        engine: file.engine_or(settings.default_engine),
+        engine: file.engine_or(default_engine),
         preserve_order: file.preserve_order,
-        memory_limit_percent: settings.memory_limit_percent,
     };
     (options, file)
 }

@@ -586,24 +586,6 @@ impl SourceDatabase {
         }
     }
 
-    /// Whether the files catalog holds a table read from `path` as it is now,
-    /// which a load in [`LoadMode::Check`] would reuse.
-    pub fn holds_current(&self, path: &Path, preserve_order: bool) -> bool {
-        let Ok(state) = self.state.lock() else {
-            return false;
-        };
-        let source_path = absolute_source_path(path);
-        let Some(entry) = state
-            .as_ref()
-            .and_then(|state| state.files.get(&path_key(&source_path)))
-        else {
-            return false;
-        };
-        entry.table.strong_count() > 0
-            && entry.preserve_order == preserve_order
-            && file_stamp(&source_path).is_ok_and(|stamp| stamp == entry.stamp)
-    }
-
     /// The table name of `path` in the files catalog, while a store reads it.
     pub fn loaded_table(&self, path: &Path) -> Option<String> {
         let state = self.state.lock().ok()?;
