@@ -112,13 +112,16 @@ pub(crate) struct Fonts {
     pub ui: IDWriteTextFormat,
     /// Segoe UI, centered, for buttons.
     pub ui_center: IDWriteTextFormat,
+    /// The suggest popup's labels and details, and its centered icons.
+    pub suggest: IDWriteTextFormat,
+    pub suggest_center: IDWriteTextFormat,
     typography: IDWriteTypography,
     pub line_h: f32,
     pub char_w: f32,
 }
 
 impl Fonts {
-    fn new(dw: &IDWriteFactory, family: &str, size: f32, tab: usize, dpi: f32) -> Result<Fonts> {
+    fn new(dw: &IDWriteFactory, family: &str, size: f32, tab: usize, dpi: f32, suggest: (&str, f32)) -> Result<Fonts> {
         unsafe {
             let fam = HSTRING::from(family);
             let make = |size: f32, fam: &HSTRING| {
@@ -160,6 +163,14 @@ impl Fonts {
             ui_center.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             ui_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             ui_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            let (suggest_family, suggest_size) = (HSTRING::from(suggest.0), suggest.1.clamp(6.0, 48.0));
+            let suggest = make(suggest_size, &suggest_family)?;
+            suggest.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            suggest.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            let suggest_center = make(suggest_size, &suggest_family)?;
+            suggest_center.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            suggest_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            suggest_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
             let typography = dw.CreateTypography()?;
             for tag in [
@@ -176,6 +187,8 @@ impl Fonts {
                 numbers,
                 ui,
                 ui_center,
+                suggest,
+                suggest_center,
                 typography,
                 line_h,
                 char_w,
@@ -271,9 +284,17 @@ impl Renderer {
     }
 
     /// Builds the fonts for a family, size (zoom applied) and tab size.
-    pub fn set_font(&mut self, family: Option<&str>, size: f32, tab: usize, dpi: f32) -> Result<Rc<Fonts>> {
+    pub fn set_font(
+        &mut self,
+        family: Option<&str>,
+        size: f32,
+        tab: usize,
+        dpi: f32,
+        suggest: (Option<&str>, f32),
+    ) -> Result<Rc<Fonts>> {
         let family = family.unwrap_or(&self.shared.mono).to_string();
-        let f = Rc::new(Fonts::new(&self.shared.dw, &family, size, tab, dpi)?);
+        let suggest = (suggest.0.unwrap_or("Segoe UI"), suggest.1);
+        let f = Rc::new(Fonts::new(&self.shared.dw, &family, size, tab, dpi, suggest)?);
         self.fonts = Some(f.clone());
         self.cache.clear();
         Ok(f)
@@ -523,6 +544,16 @@ impl Renderer {
         unsafe { rt.DrawTextLayout(v2(x, y), l, self.brush(ink), D2D1_DRAW_TEXT_OPTIONS_CLIP) };
     }
 
+    /// The width of `s` in `format`.
+    pub fn text_w(&self, s: &str, format: &IDWriteTextFormat) -> f32 {
+        let Some(l) = self.ui_layout(s, format, 1e6, 100.0) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            let _ = l.GetMetrics(&mut m);
+        }
+        m.widthIncludingTrailingWhitespace
+    }
+
     /// x of byte `col` in overlay text `s`.
     pub fn ui_x(&self, s: &str, col: usize) -> f32 {
         let Some(l) = self.ui_text(s) else { return 0.0 };
@@ -633,7 +664,7 @@ fn paint_button(r: &Renderer, rt: &ID2D1RenderTarget, rc: crate::widgets::Rect, 
 impl crate::editor::State {
     /// Draws the suggest popup.
     fn paint_suggest(&mut self, rt: &ID2D1RenderTarget) {
-        use crate::widgets::suggest::{CompletionKind, MAX_ROWS, ROW_H};
+        use crate::widgets::suggest::CompletionKind;
         let Some(fr) = self.suggest_frame() else { return };
         let r = &self.render;
         let Some(f) = r.fonts.clone() else { return };
@@ -641,14 +672,16 @@ impl crate::editor::State {
         r.fill(rt, fr.l, fr.t, fr.r, fr.b, Ink::WidgetBg);
         r.stroke(rt, fr.l + 0.5, fr.t + 0.5, fr.r - 0.5, fr.b - 0.5, 1.0, Ink::WidgetBorder);
         let s = &self.suggest;
+        let (row_h, rows) = (s.style.row_h, s.style.max_rows);
+        let icon_w = (22.0 * row_h / 22.0).round();
         unsafe {
             rt.PushAxisAlignedClip(&rect(fr.l + 1.0, fr.t + 1.0, fr.r - 1.0, fr.b - 1.0), D2D1_ANTIALIAS_MODE_ALIASED);
         }
-        for (n, row) in s.rows.iter().enumerate().skip(s.top).take(MAX_ROWS) {
+        for (n, row) in s.rows.iter().enumerate().skip(s.top).take(rows) {
             let it = &s.items[row.item];
-            let y = fr.t + 1.0 + (n - s.top) as f32 * ROW_H;
+            let y = fr.t + 1.0 + (n - s.top) as f32 * row_h;
             if n == s.selected {
-                r.fill(rt, fr.l + 1.0, y, fr.r - 1.0, y + ROW_H, Ink::ListSelected);
+                r.fill(rt, fr.l + 1.0, y, fr.r - 1.0, y + row_h, Ink::ListSelected);
             }
             let icon = match it.kind {
                 CompletionKind::Keyword => Ink::Keyword,
@@ -658,10 +691,10 @@ impl crate::editor::State {
                 CompletionKind::Constant => Ink::Constant,
                 CompletionKind::Text => Ink::WidgetDim,
             };
-            r.text(rt, it.kind.icon(), &f.ui_center, fr.l + 4.0, y, fr.l + 22.0, y + ROW_H, icon);
-            let detail_w = it.detail.as_deref().map_or(0.0, |d| r.ui_x(d, d.len()) + 12.0);
-            let lx = fr.l + 26.0;
-            if let Some(l) = r.ui_layout(&it.label, &f.ui, (fr.r - lx - detail_w).max(10.0), ROW_H) {
+            r.text(rt, it.kind.icon(), &f.suggest_center, fr.l + 4.0, y, fr.l + icon_w, y + row_h, icon);
+            let detail_w = it.detail.as_deref().map_or(0.0, |d| r.text_w(d, &f.suggest) + 12.0);
+            let lx = fr.l + icon_w + 4.0;
+            if let Some(l) = r.ui_layout(&it.label, &f.suggest, (fr.r - lx - detail_w).max(10.0), row_h) {
                 let text16: Vec<u32> = {
                     let mut acc = 0u32;
                     it.label.chars().map(|c| { let a = acc; acc += c.len_utf16() as u32; a }).collect()
@@ -674,7 +707,7 @@ impl crate::editor::State {
                 r.draw_layout(rt, &l, lx, y, Ink::WidgetText);
             }
             if let Some(d) = &it.detail {
-                r.text(rt, d, &f.ui, fr.r - detail_w, y, fr.r - 4.0, y + ROW_H, Ink::WidgetDim);
+                r.text(rt, d, &f.suggest, fr.r - detail_w, y, fr.r - 4.0, y + row_h, Ink::WidgetDim);
             }
         }
         unsafe { rt.PopAxisAlignedClip() };

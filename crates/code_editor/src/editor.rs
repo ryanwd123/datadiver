@@ -202,6 +202,10 @@ impl State {
             ..Default::default()
         };
         view.folding = opts.folding;
+        let suggest = Suggest {
+            style: suggest::SuggestStyle::for_font(opts.suggest_font_size, opts.suggest_rows),
+            ..Default::default()
+        };
         Ok(State {
             hwnd,
             own_hwnd: hwnd,
@@ -236,7 +240,7 @@ impl State {
             rows: LineMap::default(),
             folds: Vec::new(),
             gutter_hover: false,
-            suggest: Suggest::default(),
+            suggest,
             provider: None,
             suggest_dead: None,
             tooltip: None,
@@ -268,11 +272,13 @@ impl State {
             return;
         }
         let size = self.opts.font_size * self.zoom;
+        let suggest = (self.opts.suggest_font_family.as_deref(), self.opts.suggest_font_size);
         if let Ok(f) = self.render.set_font(
             self.opts.font_family.as_deref(),
             size,
             self.opts.tab_size.max(1),
             self.view.dpi,
+            suggest,
         ) {
             let line = self.view.first_line();
             self.view.line_h = f.line_h;
@@ -932,7 +938,7 @@ impl State {
 
     /// `(` and `,` open the signature popup; `)` may close it.
     fn typed_for_signature(&mut self, c: char) {
-        if matches!(c, '(' | ',') {
+        if self.opts.parameter_hints && matches!(c, '(' | ',') {
             self.update_signature(true);
         }
     }
@@ -1091,7 +1097,10 @@ impl State {
 
     pub fn close_suggest(&mut self) {
         if self.suggest.open {
-            self.suggest = Suggest::default();
+            self.suggest = Suggest {
+                style: self.suggest.style,
+                ..Default::default()
+            };
             self.invalidate();
         }
     }
@@ -1115,7 +1124,7 @@ impl State {
             if item.retrigger {
                 self.open_ranged();
             }
-            if insert.ends_with('(') {
+            if self.opts.parameter_hints && insert.ends_with('(') {
                 self.update_signature(true);
             }
             return;
@@ -1131,7 +1140,7 @@ impl State {
             commands::Replace::caret_after(start.min(s.start()), s.end(), insert.clone())
         });
         self.edit(o, EditKind::Other);
-        if insert.ends_with('(') {
+        if self.opts.parameter_hints && insert.ends_with('(') {
             self.update_signature(true);
         }
     }
@@ -1145,8 +1154,8 @@ impl State {
         match VIRTUAL_KEY(c.key) {
             VK_UP if !c.shift => self.suggest.step(-1),
             VK_DOWN if !c.shift => self.suggest.step(1),
-            VK_PRIOR if !c.shift => self.suggest.step(-(suggest::MAX_ROWS as isize)),
-            VK_NEXT if !c.shift => self.suggest.step(suggest::MAX_ROWS as isize),
+            VK_PRIOR if !c.shift => self.suggest.step(-(self.suggest.style.max_rows as isize)),
+            VK_NEXT if !c.shift => self.suggest.step(self.suggest.style.max_rows as isize),
             VK_RETURN | VK_TAB if !c.shift => self.accept_suggest(),
             VK_ESCAPE => self.close_suggest(),
             _ => return None,
@@ -1161,7 +1170,7 @@ impl State {
             return None;
         }
         let start = self.suggest.word_start;
-        let x = self.x_of(start) + self.view.text_x() - self.view.scroll_x - 26.0;
+        let x = self.x_of(start) + self.view.text_x() - self.view.scroll_x - 1.0;
         let y = self.view.line_y(self.row_of(start));
         Some(self.suggest.frame(x, y, self.view.line_h, self.view.width, self.view.height))
     }
@@ -1569,7 +1578,10 @@ impl State {
         let at_end = off == self.doc.buffer.line_end(self.doc.buffer.line_of(off))
             && x - self.view.text_x() + self.view.scroll_x > self.x_of(off) + self.view.char_w;
         let mut msg = if at_end { None } else { self.decorations.hover_at(off).map(str::to_string) };
-        if !at_end && let Some(service) = self.service.clone() {
+        if !at_end
+            && self.opts.hover
+            && let Some(service) = self.service.clone()
+        {
             let text = self.snapshot();
             if let Some(h) = service.hover(&text, off).filter(|h| !h.trim().is_empty()) {
                 msg = Some(match msg {
@@ -2470,7 +2482,7 @@ impl State {
             && let Some(f) = self.suggest_frame()
             && f.contains(mx, my)
         {
-            let n = self.suggest.rows.len().saturating_sub(suggest::MAX_ROWS);
+            let n = self.suggest.rows.len().saturating_sub(self.suggest.style.max_rows);
             let top = self.suggest.top as f32 - notches * 3.0;
             self.suggest.top = (top.max(0.0) as usize).min(n);
             self.invalidate();
@@ -2545,8 +2557,8 @@ impl State {
     /// Replaces the underlined problems with the service's for the current text.
     pub fn refresh_diagnostics(&mut self) {
         let found = match self.service.clone() {
-            Some(service) => service.diagnostics(&self.snapshot()),
-            None => Vec::new(),
+            Some(service) if self.opts.diagnostics => service.diagnostics(&self.snapshot()),
+            _ => Vec::new(),
         };
         if found.is_empty() && self.diagnostics.is_empty() {
             return;
@@ -2729,7 +2741,14 @@ impl State {
     pub fn set_options(&mut self, o: Options) {
         let fonts = o.font_family != self.opts.font_family
             || o.font_size != self.opts.font_size
-            || o.tab_size != self.opts.tab_size;
+            || o.tab_size != self.opts.tab_size
+            || o.suggest_font_family != self.opts.suggest_font_family
+            || o.suggest_font_size != self.opts.suggest_font_size;
+        self.suggest.style = suggest::SuggestStyle::for_font(o.suggest_font_size, o.suggest_rows);
+        let diagnostics = o.diagnostics != self.opts.diagnostics;
+        if !o.parameter_hints {
+            self.close_signature();
+        }
         let wrap = o.word_wrap != self.opts.word_wrap;
         if !o.folding {
             self.folds.clear();
@@ -2743,6 +2762,9 @@ impl State {
         if wrap || fonts {
             self.view.scroll_x = 0.0;
             self.sync_rows();
+        }
+        if diagnostics {
+            self.refresh_diagnostics();
         }
         self.invalidate();
     }
@@ -3313,6 +3335,26 @@ mod suggest_tests {
         assert!(st.signature.is_some());
         st.run(Action::Cancel);
         assert_eq!(st.signature, None);
+
+        // Switched off, typing `(` opens nothing and problems go away.
+        let mut st = state(None, "bad |");
+        st.set_service(Some(Rc::new(Toy)));
+        assert!(!st.decorations.is_empty());
+        let off = Options {
+            parameter_hints: false,
+            diagnostics: false,
+            suggest_font_size: 26.0,
+            suggest_rows: 5,
+            ..st.opts.clone()
+        };
+        st.set_options(off);
+        assert!(st.decorations.is_empty());
+        type_in(&mut st, "f(");
+        assert_eq!(st.signature, None);
+        // A bigger suggest font makes taller, wider rows.
+        assert_eq!(st.suggest.style, suggest::SuggestStyle { row_h: 44.0, max_rows: 5, width: 860.0 });
+        st.close_suggest();
+        assert_eq!(st.suggest.style.max_rows, 5);
 
         // Folding from the service: the closer's own line stays visible.
         let mut st = state(None, "f(\n  1,\n  2\n)|");

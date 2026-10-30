@@ -103,6 +103,18 @@ pub struct Options {
     pub cursor_blinking: bool,
     /// Open the suggest popup while typing words and on trigger characters.
     pub quick_suggestions: bool,
+    /// The suggest popup's font; `None` uses Segoe UI.
+    pub suggest_font_family: Option<String>,
+    /// The suggest popup's font size in DIPs; its rows grow with it.
+    pub suggest_font_size: f32,
+    /// Rows the suggest popup shows before it scrolls.
+    pub suggest_rows: usize,
+    /// Show the signature of the call being typed after `(` and `,`.
+    pub parameter_hints: bool,
+    /// Show the language service's hover text when the mouse rests.
+    pub hover: bool,
+    /// Underline the language service's problems.
+    pub diagnostics: bool,
 }
 
 impl Default for Options {
@@ -127,6 +139,12 @@ impl Default for Options {
             mouse_wheel_zoom: true,
             cursor_blinking: true,
             quick_suggestions: true,
+            suggest_font_family: None,
+            suggest_font_size: 13.0,
+            suggest_rows: 12,
+            parameter_hints: true,
+            hover: true,
+            diagnostics: true,
         }
     }
 }

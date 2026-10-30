@@ -106,9 +106,40 @@ pub struct Row {
     pub matches: Vec<u32>,
 }
 
+/// Row height, rows and width at the default 13 DIP font.
 pub const ROW_H: f32 = 22.0;
 pub const MAX_ROWS: usize = 12;
 const WIDTH: f32 = 430.0;
+
+/// How big the popup draws, from the editor's suggest options.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SuggestStyle {
+    pub row_h: f32,
+    pub max_rows: usize,
+    pub width: f32,
+}
+
+impl Default for SuggestStyle {
+    fn default() -> Self {
+        SuggestStyle {
+            row_h: ROW_H,
+            max_rows: MAX_ROWS,
+            width: WIDTH,
+        }
+    }
+}
+
+impl SuggestStyle {
+    /// Rows and width grow with the font, as at 13 DIPs they are 22 and 430.
+    pub fn for_font(size: f32, rows: usize) -> Self {
+        let k = size.clamp(6.0, 48.0) / 13.0;
+        SuggestStyle {
+            row_h: (ROW_H * k).round(),
+            max_rows: rows.clamp(3, 40),
+            width: (WIDTH * k).round(),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Suggest {
@@ -123,6 +154,7 @@ pub struct Suggest {
     pub word_start: usize,
     /// The items replace the provider's own range from `word_start`.
     pub ranged: bool,
+    pub style: SuggestStyle,
 }
 
 impl Suggest {
@@ -191,8 +223,8 @@ impl Suggest {
         };
         if self.selected < self.top {
             self.top = self.selected;
-        } else if self.selected >= self.top + MAX_ROWS {
-            self.top = self.selected + 1 - MAX_ROWS;
+        } else if self.selected >= self.top + self.style.max_rows {
+            self.top = self.selected + 1 - self.style.max_rows;
         }
     }
 
@@ -200,9 +232,9 @@ impl Suggest {
     /// editor of `width` x `height`: below the caret, or above when there is no
     /// room below.
     pub fn frame(&self, x: f32, y: f32, lh: f32, width: f32, height: f32) -> Rect {
-        let n = self.rows.len().min(MAX_ROWS) as f32;
-        let h = n * ROW_H + 2.0;
-        let w = WIDTH.min(width - 8.0).max(120.0);
+        let n = self.rows.len().min(self.style.max_rows) as f32;
+        let h = n * self.style.row_h + 2.0;
+        let w = self.style.width.min(width - 8.0).max(120.0);
         let l = x.min(width - w - 4.0).max(0.0);
         let t = if y + lh + h <= height || y - h < 0.0 { y + lh } else { y - h };
         Rect::new(l, t, l + w, t + h)
@@ -210,9 +242,9 @@ impl Suggest {
 
     /// The row at y inside `frame`.
     pub fn row_at(&self, frame: Rect, y: f32) -> Option<usize> {
-        let i = ((y - frame.t - 1.0) / ROW_H).floor();
+        let i = ((y - frame.t - 1.0) / self.style.row_h).floor();
         let i = self.top + (i.max(0.0) as usize);
-        (i < self.rows.len() && i < self.top + MAX_ROWS).then_some(i)
+        (i < self.rows.len() && i < self.top + self.style.max_rows).then_some(i)
     }
 }
 

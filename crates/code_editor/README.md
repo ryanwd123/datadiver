@@ -49,7 +49,8 @@ ed.on_event(|ed, e| match e {
 - **Completion:** a `CompletionProvider` returns items for the text and caret;
   the popup merges them with the language's keywords and nearby words (unless
   the provider's `extra_words` says no) and filters them with `nucleo-matcher`,
-  breaking ties by `sort_text`. Items with their own `range` replace it and are
+  breaking ties by `sort_text`. `suggest_font_family`, `suggest_font_size` and
+  `suggest_rows` size the popup; its left edge sits at the start of the word. Items with their own `range` replace it and are
   asked for again as the user types.
 - **Language service:** a host's `LanguageService` (`set_language_service`)
   can supply colors for the whole text, problems (asked once typing pauses and
