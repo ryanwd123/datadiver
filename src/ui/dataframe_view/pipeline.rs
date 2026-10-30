@@ -737,9 +737,7 @@ impl DataFrameView {
             return None;
         };
         let cache = self.query_cache.as_ref()?;
-        if cache.frame.cut_at.is_none() {
-            return None;
-        }
+        cache.frame.cut_at?;
         let tokens = query::parse(&self.session.search_text).ok()?;
         Some(UnlimitedQuery {
             source: self.session.source.clone(),
