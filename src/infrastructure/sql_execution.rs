@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -169,7 +170,42 @@ impl SqlExecution {
             settings,
             extensions: strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?,
             files: Default::default(),
+            table_functions: self.metadata_function_columns().unwrap_or_default(),
         })
+    }
+
+    /// The columns of the metadata table functions that take no arguments
+    /// (`duckdb_columns()`, `pragma_version()`), as DESCRIBE binds them
+    /// without running them.
+    fn metadata_function_columns(&self) -> Result<HashMap<String, Vec<diver_sql::ColumnInfo>>, String> {
+        let error = |e: duckdb::Error| e.to_string();
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_type = 'table' AND len(parameters) = 0 AND regexp_matches(function_name, '^(duckdb|pragma)_[a-z0-9_]+$')")
+            .map_err(error)?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error)?;
+        let mut out = HashMap::new();
+        for name in names {
+            let Ok(mut describe) = self.connection.prepare(&format!("DESCRIBE SELECT * FROM {name}()")) else {
+                continue;
+            };
+            let columns = describe
+                .query_map([], |row| {
+                    Ok(diver_sql::ColumnInfo {
+                        name: row.get(0)?,
+                        data_type: row.get(1)?,
+                    })
+                })
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>());
+            if let Ok(columns) = columns {
+                out.insert(name, columns);
+            }
+        }
+        Ok(out)
     }
 
     /// Functions and macros by name, with up to a dozen signatures each like
@@ -1168,6 +1204,23 @@ mod tests {
         assert!(catalog.iter().any(|r| r.name == "fruit" && r.is_view));
         assert!(!catalog.iter().any(|r| r.name.starts_with("__qp_")));
     }
+    #[test]
+    fn metadata_functions_complete_their_columns() {
+        use crate::domain::sql_editor::completions;
+        let (_dir, service) = service();
+        let catalog = service.sql_catalog().unwrap();
+        for sql in [
+            "from duckdb_columns d select d.",
+            "from duckdb_columns() d select d.",
+            "from main.duckdb_tables t select t.",
+            "select v. from pragma_version() v",
+        ] {
+            let at = sql.find(". ").map_or(sql.len(), |i| i + 1);
+            let labels = completions(sql, at, &catalog).into_iter().map(|c| c.label).collect::<Vec<_>>();
+            assert!(labels.iter().any(|l| l == "database_name" || l == "library_version"), "{sql}: {labels:?}");
+        }
+    }
+
     #[test]
     fn attached_database_completions_name_the_database() {
         use crate::domain::sql_editor::completions;

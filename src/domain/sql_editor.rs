@@ -162,6 +162,10 @@ pub struct SqlCatalog {
     /// Columns of the files and table functions scripts read, by
     /// [`FileSource::key`], as DESCRIBE told them.
     pub files: HashMap<String, Vec<ColumnInfo>>,
+    /// Columns of the metadata table functions that take no arguments, by
+    /// lowercase name: `duckdb_columns()`, and `duckdb_columns`, which DuckDB
+    /// reads through a system view of the same name.
+    pub table_functions: HashMap<String, Vec<ColumnInfo>>,
 }
 
 impl SqlCatalog {
@@ -264,11 +268,17 @@ impl Catalog for SqlCatalog {
     }
 
     fn columns(&self, relation: &RelationSource) -> Option<Vec<ColumnInfo>> {
-        let RelationSource::Table { path } = relation else {
-            return self.files.get(&file_key(relation)?).cloned();
+        let path = match relation {
+            RelationSource::Table { path } => path,
+            RelationSource::TableFunction { name, args, .. } if args.is_empty() => {
+                return self.table_function_columns(name);
+            }
+            _ => return self.files.get(&file_key(relation)?).cloned(),
         };
-        let path = path.iter().map(|n| n.text.as_str()).collect::<Vec<_>>();
-        let relation = self.resolve(&path)?;
+        let names = path.iter().map(|n| n.text.as_str()).collect::<Vec<_>>();
+        let Some(relation) = self.resolve(&names) else {
+            return self.table_function_columns(path);
+        };
         Some(
             relation
                 .columns
@@ -292,6 +302,21 @@ impl Catalog for SqlCatalog {
 
     fn extensions(&self) -> Vec<String> {
         self.extensions.clone()
+    }
+}
+
+impl SqlCatalog {
+    /// The columns of a table function without arguments, called (`name()`)
+    /// or named like a table (`name`, `main.name`, `system.main.name`).
+    fn table_function_columns(&self, path: &[diver_sql::Name]) -> Option<Vec<ColumnInfo>> {
+        let (name, qualifier) = path.split_last()?;
+        let system = match qualifier {
+            [] => true,
+            [schema] => schema.matches("main") || schema.matches("system"),
+            [database, schema] => database.matches("system") && schema.matches("main"),
+            _ => false,
+        };
+        system.then(|| self.table_functions.get(&name.text.to_lowercase()).cloned())?
     }
 }
 
