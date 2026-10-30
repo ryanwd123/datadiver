@@ -40,6 +40,9 @@ impl View for DataFrameView {
             Event::Wheel { delta, modifiers, hit, .. } => self.wheel(*delta, *modifiers, hit.as_ref(), cx),
             Event::MouseLeave => {
                 self.grid.mouse_leave();
+                if let Some(panel) = &mut self.sql_panel {
+                    panel.mouse_leave();
+                }
                 cx.notify();
                 false
             }
@@ -52,6 +55,10 @@ impl View for DataFrameView {
                 true
             }
             Event::Activated(active) => {
+                if let Some(panel) = &mut self.sql_panel {
+                    panel.window_active = *active;
+                    cx.notify();
+                }
                 if *active {
                     self.check_source(cx);
                 }
@@ -381,6 +388,16 @@ impl DataFrameView {
                 self.drain_grid_events(cx);
             }
             self.capture = None;
+            let mut focus = self.focus;
+            if self.dialog.is_none()
+                && self.keymap_editor.is_none()
+                && let Some(panel) = &mut self.sql_panel
+                && self.sql_panel_open
+                && panel.context_menu(hit, pos, &mut focus)
+            {
+                self.focus = focus;
+                self.handle_sql_panel_events(cx);
+            }
             return;
         }
         if button != MouseButton::Left {
@@ -454,7 +471,7 @@ impl DataFrameView {
                 let mut focus = self.focus;
                 if let Some(panel) = &mut self.sql_panel
                     && self.sql_panel_open
-                    && panel.mouse_down(hit, pos, clicks, modifiers.shift, &mut focus)
+                    && panel.mouse_down(hit, pos, clicks, modifiers, &mut focus)
                 {
                     self.focus = focus;
                     self.handle_sql_panel_events(cx);
@@ -503,7 +520,7 @@ impl DataFrameView {
                 let hit = Hit::Button(other);
                 let mut focus = self.focus;
                 if let Some(panel) = &mut self.sql_panel
-                    && panel.mouse_down(&hit, Point::default(), 1, false, &mut focus)
+                    && panel.mouse_down(&hit, Point::default(), 1, Modifiers::NONE, &mut focus)
                 {
                     self.focus = focus;
                     self.handle_sql_panel_events(cx);
@@ -538,6 +555,11 @@ impl DataFrameView {
                 _ => None,
             };
             self.grid.mouse_move(grid_hit, cx);
+            if let Some(panel) = &mut self.sql_panel
+                && self.sql_panel_open
+            {
+                panel.mouse_move(pos, hit);
+            }
         }
     }
 
@@ -644,12 +666,12 @@ impl DataFrameView {
                 }
                 Hit::Slicer(_) => self.slicer_sidebar.wheel(hit, delta, line),
                 Hit::Tree(..) => self.database_tree.wheel(delta),
+                Hit::CodeEditor(_) => self
+                    .sql_panel
+                    .as_mut()
+                    .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),
                 Hit::Editor(id, _) => {
-                    if let Some(panel) = &mut self.sql_panel
-                        && panel.contains(*id)
-                    {
-                        panel.wheel(hit, delta, line)
-                    } else if let Some(pane) = &mut self.cell_detail
+                    if let Some(pane) = &mut self.cell_detail
                         && pane.editor.id == *id
                     {
                         pane.editor.wheel(delta)
@@ -660,7 +682,7 @@ impl DataFrameView {
                 Hit::DialogScroll | Hit::DialogBar => self
                     .sql_panel
                     .as_mut()
-                    .is_some_and(|panel| panel.wheel(hit, delta, line)),
+                    .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),
                 _ => false,
             }
         };

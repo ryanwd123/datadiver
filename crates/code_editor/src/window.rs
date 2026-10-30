@@ -1071,6 +1071,15 @@ impl Editor {
         context_menu(&self.shell, lparam);
     }
 
+    /// The labels the suggest popup shows, in order, while it is open.
+    pub fn suggestions(&self) -> Option<Vec<String>> {
+        self.read(|s| {
+            s.suggest
+                .open
+                .then(|| s.suggest.rows.iter().map(|r| s.suggest.items[r.item].label.clone()).collect())
+        })
+    }
+
     /// The caret in DIPs from the editor's top-left: (x, y, height).
     pub fn caret(&self) -> (f32, f32, f32) {
         self.with(|s| s.caret_point())

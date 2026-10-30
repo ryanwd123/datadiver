@@ -134,6 +134,23 @@ impl<'a, H: Clone> Canvas<'a, H> {
         rect(0.0, 0.0, self.width, self.height)
     }
 
+    /// Device pixels per DIP.
+    pub fn scale(&self) -> f32 {
+        let (mut x, mut y) = (0.0, 0.0);
+        unsafe { self.target.GetDpi(&mut x, &mut y) };
+        if x > 0.0 { x / 96.0 } else { 1.0 }
+    }
+
+    /// Lets a component that draws itself (the hosted code editor) paint into
+    /// the target, then restores the canvas's drawing modes.
+    pub fn paint_native(&mut self, paint: impl FnOnce(&ID2D1RenderTarget)) {
+        paint(self.target);
+        unsafe {
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+            self.target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+        }
+    }
+
     pub fn into_hits(self) -> Vec<HitRegion<H>> {
         self.hits
     }

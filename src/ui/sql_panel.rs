@@ -7,9 +7,10 @@ use crate::domain::ai::{AiEvent, SqlCheck, SqlProposal, insertion, relation_name
 use crate::domain::sql_editor::{Relation, current_statement};
 use crate::infrastructure::path_completion::PathRoots;
 use crate::ui::hit::{Button, Hit};
-use crate::ui::platform::keys::KeyEvent;
+use crate::ui::platform::keys::{KeyEvent, Modifiers};
 use crate::ui::platform::{Align, Canvas, Color, Font, Point, Rect, TextOptions, point, rect, text};
 use crate::ui::widgets::editor::Editor;
+use crate::ui::widgets::hosted_editor::HostedEditor;
 use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors, scroll};
 
 pub enum SqlPanelEvent {
@@ -64,16 +65,10 @@ struct AskTarget {
     text: String,
 }
 
-/// Find and replace in the SQL editor.
-pub(crate) struct Find {
-    pub(crate) query: Editor,
-    pub(crate) replacement: Editor,
-    pub(crate) replace: bool,
-    pub(crate) case_sensitive: bool,
-}
-
 pub struct SqlPanel {
-    pub editor: Editor,
+    pub editor: HostedEditor,
+    /// Whether the window is the active one; the caret blinks only then.
+    pub window_active: bool,
     pub catalog: Arc<RwLock<Vec<Relation>>>,
     pub path_roots: Arc<RwLock<PathRoots>>,
     pub busy: bool,
@@ -101,19 +96,21 @@ pub struct SqlPanel {
     log_area: Rect,
     log_height: f32,
     proposal_scroll: scroll::Scroll,
-    pub(crate) find: Option<Find>,
     events: Vec<SqlPanelEvent>,
 }
 
 impl SqlPanel {
-    pub fn new(text: String) -> Self {
+    /// A panel whose editor paints into `host`'s frames (none in headless tests).
+    pub fn new(text: String, host: Option<windows::Win32::Foundation::HWND>) -> Self {
         let catalog = Arc::new(RwLock::new(Vec::new()));
         let path_roots = Arc::new(RwLock::new(PathRoots::default()));
-        let mut editor = input_with_autocompletion::sql_catalog(catalog.clone(), path_roots.clone());
+        let completions = input_with_autocompletion::sql_catalog(catalog.clone(), path_roots.clone());
+        let mut editor = HostedEditor::sql(host, completions);
         editor.set_text(text);
         editor.set_selection(0..0);
         Self {
             editor,
+            window_active: true,
             catalog,
             path_roots,
             busy: false,
@@ -137,22 +134,21 @@ impl SqlPanel {
             log_area: Rect::default(),
             log_height: 0.0,
             proposal_scroll: scroll::Scroll::default(),
-            find: None,
             events: Vec::new(),
         }
     }
 
+    /// What happened since the last call. A change to the SQL comes first, so
+    /// a run asked for with it sees the new text.
     pub fn take_events(&mut self) -> Vec<SqlPanelEvent> {
+        if self.editor.take_changed() {
+            self.events.insert(0, SqlPanelEvent::Changed(self.editor.text()));
+        }
         std::mem::take(&mut self.events)
     }
 
     pub fn contains(&self, id: WidgetId) -> bool {
-        id == self.editor.id
-            || id == self.ask_input.id
-            || self
-                .find
-                .as_ref()
-                .is_some_and(|find| id == find.query.id || id == find.replacement.id)
+        id == self.editor.id || id == self.ask_input.id
     }
 
     /// Shows the ask strip and focuses its prompt.
@@ -169,7 +165,7 @@ impl SqlPanel {
         if prompt.is_empty() {
             return;
         }
-        let text = self.editor.text().to_owned();
+        let text = self.editor.text();
         let range = self.editor.selected_range();
         let selection = (!range.is_empty()).then(|| text[range.clone()].to_owned());
         self.ask_target = Some(AskTarget {
@@ -222,7 +218,7 @@ impl SqlPanel {
             return false;
         };
         let sql = proposal.sql.clone();
-        let current = self.editor.text().to_owned();
+        let current = self.editor.text();
         let range = match self.ask_target.take() {
             Some(target) if target.text == current => target.range,
             _ => self.editor.selected_range(),
@@ -231,7 +227,6 @@ impl SqlPanel {
         self.editor.replace(range.clone(), &text);
         self.editor
             .set_selection(range.start + inner.start..range.start + inner.end);
-        self.events.push(SqlPanelEvent::Changed(self.editor.text().to_owned()));
         self.ask = AskState::Idle;
         self.ask_open = false;
         self.ask_input.set_text("");
@@ -303,7 +298,7 @@ impl SqlPanel {
     }
 
     pub fn sql_to_run(&self, all: bool) -> String {
-        let text = self.editor.text().to_owned();
+        let text = self.editor.text();
         if all {
             return text;
         }
@@ -323,109 +318,9 @@ impl SqlPanel {
         self.editor_changed();
     }
 
+    #[cfg(test)]
     fn editor_changed(&mut self) {
-        self.events.push(SqlPanelEvent::Changed(self.editor.text().to_owned()));
-    }
-
-    fn open_find(&mut self, replace: bool, focus: &mut Option<WidgetId>) {
-        let selected = self.editor.selected_text().to_owned();
-        let find = self.find.get_or_insert_with(|| Find {
-            query: Editor::single_line().with_placeholder("Find"),
-            replacement: Editor::single_line().with_placeholder("Replace"),
-            replace: false,
-            case_sensitive: false,
-        });
-        find.replace |= replace;
-        if !selected.is_empty() && !selected.contains('\n') {
-            find.query.set_text(selected);
-        }
-        find.query.select_all();
-        *focus = Some(find.query.id);
-    }
-
-    /// Byte ranges of the find query in the editor's text.
-    fn matches(&self) -> Vec<Range<usize>> {
-        let Some(find) = &self.find else {
-            return Vec::new();
-        };
-        let query = find.query.text();
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let text = self.editor.text();
-        if find.case_sensitive {
-            text.match_indices(query).map(|(start, found)| start..start + found.len()).collect()
-        } else {
-            let lower = text.to_lowercase();
-            let query = query.to_lowercase();
-            if lower.len() != text.len() {
-                // Lowercasing changed byte lengths; fall back to an exact search.
-                return text
-                    .match_indices(find.query.text())
-                    .map(|(start, found)| start..start + found.len())
-                    .collect();
-            }
-            lower.match_indices(&query).map(|(start, found)| start..start + found.len()).collect()
-        }
-    }
-
-    fn find_step(&mut self, backwards: bool) {
-        let matches = self.matches();
-        if matches.is_empty() {
-            return;
-        }
-        let selection = self.editor.selected_range();
-        let next = if backwards {
-            matches
-                .iter()
-                .rev()
-                .find(|range| range.end <= selection.start && *range != &selection)
-                .or_else(|| matches.last())
-        } else {
-            matches
-                .iter()
-                .find(|range| range.start >= selection.end && *range != &selection)
-                .or_else(|| matches.first())
-        };
-        if let Some(range) = next {
-            self.editor.set_selection(range.clone());
-        }
-    }
-
-    fn replace_one(&mut self) {
-        let Some(find) = &self.find else {
-            return;
-        };
-        let replacement = find.replacement.text().to_owned();
-        let selection = self.editor.selected_range();
-        if self.matches().contains(&selection) {
-            self.editor.replace(selection, &replacement);
-            self.editor_changed();
-        }
-        self.find_step(false);
-    }
-
-    fn replace_all(&mut self) {
-        let Some(find) = &self.find else {
-            return;
-        };
-        let replacement = find.replacement.text().to_owned();
-        let matches = self.matches();
-        if matches.is_empty() {
-            return;
-        }
-        let mut text = self.editor.text().to_owned();
-        for range in matches.iter().rev() {
-            text.replace_range(range.clone(), &replacement);
-        }
-        let all = 0..self.editor.text().len();
-        self.editor.replace(all, &text);
-        self.editor_changed();
-    }
-
-    pub fn close_find(&mut self, focus: &mut Option<WidgetId>) {
-        self.find = None;
-        self.focus(focus);
+        self.events.push(SqlPanelEvent::Changed(self.editor.text()));
     }
 
     /// Keys while focus is in the panel. Returns whether the key was used.
@@ -434,14 +329,6 @@ impl SqlPanel {
         let m = event.modifiers;
         if m.control && !m.shift && !m.alt && (key == "k" || key == "i") {
             self.open_ask(focus);
-            return true;
-        }
-        if m.control && !m.shift && !m.alt && key == "f" {
-            self.open_find(false, focus);
-            return true;
-        }
-        if m.control && !m.shift && !m.alt && key == "h" {
-            self.open_find(true, focus);
             return true;
         }
         if m.control && !m.shift && !m.alt && key == "j" {
@@ -480,61 +367,24 @@ impl SqlPanel {
             }
             return outcome.handled;
         }
-        if let Some(find) = &mut self.find
-            && (*focus == Some(find.query.id) || *focus == Some(find.replacement.id))
-        {
-            let in_query = *focus == Some(find.query.id);
-            match key {
-                "escape" => {
-                    self.close_find(focus);
-                    return true;
-                }
-                "tab" if find.replace => {
-                    *focus = Some(if in_query { find.replacement.id } else { find.query.id });
-                    return true;
-                }
-                "enter" if !m.control => {
-                    if in_query {
-                        self.find_step(m.shift);
-                    } else {
-                        self.replace_one();
-                    }
-                    return true;
-                }
-                "f3" => {
-                    self.find_step(m.shift);
-                    return true;
-                }
-                _ => {}
-            }
-            let input = if in_query { &mut find.query } else { &mut find.replacement };
-            return input.key(event).handled;
-        }
         if *focus != Some(self.editor.id) {
             return false;
         }
+        // Escape closes the editor's popups and extra carets first, then
+        // leaves for the grid.
+        if self.editor.key(event) {
+            return true;
+        }
         if key == "escape" {
-            if !self.editor.close_completion() {
-                self.events.push(SqlPanelEvent::GridFocus);
-            }
+            self.events.push(SqlPanelEvent::GridFocus);
             return true;
         }
-        if key == "f3" && self.find.is_some() {
-            self.find_step(m.shift);
-            return true;
-        }
-        let outcome = self.editor.key(event);
-        if outcome.changed {
-            self.editor_changed();
-        }
-        outcome.handled
+        false
     }
 
     pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
         if focus == Some(self.editor.id) {
-            if self.editor.type_text(typed).changed {
-                self.editor_changed();
-            }
+            self.editor.type_text(typed);
             return true;
         }
         if focus == Some(self.ask_input.id) {
@@ -542,20 +392,10 @@ impl SqlPanel {
             self.mentions.refresh(&self.ask_input);
             return true;
         }
-        if let Some(find) = &mut self.find {
-            if focus == Some(find.query.id) {
-                find.query.type_text(typed);
-                return true;
-            }
-            if focus == Some(find.replacement.id) {
-                find.replacement.type_text(typed);
-                return true;
-            }
-        }
         false
     }
 
-    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> bool {
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) -> bool {
         match hit {
             Hit::Button(button) => match button {
                 Button::SqlSave => self.events.push(SqlPanelEvent::Save),
@@ -584,40 +424,20 @@ impl SqlPanel {
                     self.dismiss_ask(focus);
                     self.dismiss_ask(focus);
                 }
-                Button::FindNext => self.find_step(false),
-                Button::FindPrevious => self.find_step(true),
-                Button::FindReplace => self.replace_one(),
-                Button::FindReplaceAll => self.replace_all(),
-                Button::FindClose => self.close_find(focus),
-                Button::FindCase => {
-                    if let Some(find) = &mut self.find {
-                        find.case_sensitive = !find.case_sensitive;
-                    }
-                }
                 _ => return false,
             },
             Hit::ColumnCompletion(id, index) if *id == self.ask_input.id => {
                 self.mentions.accept(Some(*index), &mut self.ask_input);
                 *focus = Some(*id);
             }
-            Hit::Editor(id, part) => {
-                let id = *id;
-                if id == self.editor.id {
-                    if self.editor.mouse_down(*part, pos, clicks, shift).changed {
-                        self.editor_changed();
-                    }
-                } else if id == self.ask_input.id {
-                    self.ask_input.mouse_down(*part, pos, clicks, shift);
-                    self.mentions.refresh(&self.ask_input);
-                } else if let Some(find) = &mut self.find
-                    && (id == find.query.id || id == find.replacement.id)
-                {
-                    let input = if id == find.query.id { &mut find.query } else { &mut find.replacement };
-                    input.mouse_down(*part, pos, clicks, shift);
-                } else {
-                    return false;
-                }
-                *focus = Some(id);
+            Hit::CodeEditor(id) if *id == self.editor.id => {
+                self.editor.mouse_down(pos, clicks, modifiers);
+                *focus = Some(*id);
+            }
+            Hit::Editor(id, part) if *id == self.ask_input.id => {
+                self.ask_input.mouse_down(*part, pos, clicks, modifiers.shift);
+                self.mentions.refresh(&self.ask_input);
+                *focus = Some(*id);
             }
             Hit::DialogBar => {
                 let bar = rect(self.log_area.right() - scroll::BAR_WIDTH, self.log_area.y, scroll::BAR_WIDTH, self.log_area.h);
@@ -629,17 +449,11 @@ impl SqlPanel {
     }
 
     pub fn mouse_drag(&mut self, pos: Point) {
-        for input in [&mut self.editor, &mut self.ask_input] {
-            if input.is_dragging() {
-                input.mouse_drag(pos);
-            }
+        if self.editor.is_dragging() {
+            self.editor.mouse_move(pos, true);
         }
-        if let Some(find) = &mut self.find {
-            for input in [&mut find.query, &mut find.replacement] {
-                if input.is_dragging() {
-                    input.mouse_drag(pos);
-                }
-            }
+        if self.ask_input.is_dragging() {
+            self.ask_input.mouse_drag(pos);
         }
         if self.log_scroll.dragging() {
             let bar = rect(self.log_area.right() - scroll::BAR_WIDTH, self.log_area.y, scroll::BAR_WIDTH, self.log_area.h);
@@ -651,15 +465,31 @@ impl SqlPanel {
         self.editor.mouse_up();
         self.ask_input.mouse_up();
         self.log_scroll.release();
-        if let Some(find) = &mut self.find {
-            find.query.mouse_up();
-            find.replacement.mouse_up();
-        }
     }
 
-    pub fn wheel(&mut self, hit: &Hit, delta: Point, line: f32) -> bool {
+    /// The pointer moved with no button down; the editor tracks hover.
+    pub fn mouse_move(&mut self, pos: Point, hit: Option<&Hit>) {
+        let over = hit == Some(&Hit::CodeEditor(self.editor.id));
+        self.editor.mouse_move(pos, over);
+    }
+
+    pub fn mouse_leave(&mut self) {
+        self.editor.mouse_leave();
+    }
+
+    /// A right click: the editor's context menu. Returns whether it was the editor's.
+    pub fn context_menu(&mut self, hit: &Hit, pos: Point, focus: &mut Option<WidgetId>) -> bool {
+        if *hit != Hit::CodeEditor(self.editor.id) {
+            return false;
+        }
+        *focus = Some(self.editor.id);
+        self.editor.context_menu(pos);
+        true
+    }
+
+    pub fn wheel(&mut self, hit: &Hit, delta: Point, modifiers: Modifiers, line: f32) -> bool {
         match hit {
-            Hit::Editor(id, _) if *id == self.editor.id => self.editor.wheel(delta),
+            Hit::CodeEditor(id) if *id == self.editor.id => self.editor.wheel(delta, modifiers),
             Hit::DialogScroll | Hit::DialogBar => {
                 self.log_scroll
                     .scroll_by(-delta.y * line * 2.0, self.log_area.h, self.log_height)
@@ -720,65 +550,10 @@ impl SqlPanel {
         if self.ask_open {
             self.paint_ask(canvas, &mut column, fonts, focus);
         }
-        if self.find.is_some() {
-            self.paint_find(canvas, &mut column, fonts, focus);
-        }
         let editor = column.rest();
         let id = self.editor.id;
-        self.editor
-            .paint(canvas, editor, &fonts.mono, focus == Some(id), |part| Hit::Editor(id, part));
-    }
-
-    fn paint_find(&mut self, canvas: &mut Canvas<Hit>, column: &mut Column, fonts: &Fonts, focus: Option<WidgetId>) {
-        let small = &fonts.small;
-        let height = Editor::line_box_height(small);
-        let matches = self.matches();
-        let Some(find) = &mut self.find else {
-            return;
-        };
-        let rows = if find.replace { 2.0 } else { 1.0 };
-        let area = column.next(height * rows + 4.0 * rows + 4.0);
-        canvas.fill(area, colors::STRIPE);
-        let mut items = Row::new(rect(area.x + 12.0, area.y + 4.0, area.w - 24.0, height), 6.0);
-        let close = items.right(button_width("×", small));
-        button(canvas, close, "×", small, ButtonStyle::Ghost, true, Hit::Button(Button::FindClose));
-        for (label, hit) in [("Next", Button::FindNext), ("Previous", Button::FindPrevious)] {
-            let r = items.right(button_width(label, small));
-            button(canvas, r, label, small, ButtonStyle::Outline, true, Hit::Button(hit));
-        }
-        let case = items.right(button_width("Aa", small));
-        button(
-            canvas,
-            case,
-            "Aa",
-            small,
-            if find.case_sensitive { ButtonStyle::Selected } else { ButtonStyle::Outline },
-            true,
-            Hit::Button(Button::FindCase),
-        );
-        let count = format!("{} matches", matches.len());
-        let count_rect = items.right(text::measure(&count, small).0 + 4.0);
-        canvas.text(count_rect, &count, small, colors::MUTED, Align::Left);
-        let query_rect = items.rest();
-        let query_id = find.query.id;
-        find.query
-            .paint(canvas, query_rect.with_w(query_rect.w.min(420.0)), small, focus == Some(query_id), |part| Hit::Editor(query_id, part));
-        if find.replace {
-            let mut items = Row::new(rect(area.x + 12.0, area.y + 8.0 + height, area.w - 24.0, height), 6.0);
-            let all = items.right(button_width("Replace all", small));
-            button(canvas, all, "Replace all", small, ButtonStyle::Outline, true, Hit::Button(Button::FindReplaceAll));
-            let one = items.right(button_width("Replace", small));
-            button(canvas, one, "Replace", small, ButtonStyle::Outline, true, Hit::Button(Button::FindReplace));
-            let replacement_rect = items.rest();
-            let replacement_id = find.replacement.id;
-            find.replacement.paint(
-                canvas,
-                replacement_rect.with_w(replacement_rect.w.min(420.0)),
-                small,
-                focus == Some(replacement_id),
-                |part| Hit::Editor(replacement_id, part),
-            );
-        }
+        let focused = focus == Some(id) && self.window_active;
+        self.editor.paint(canvas, editor, &fonts.mono, focused, Hit::CodeEditor(id));
     }
 
     /// Which provider a request goes to, and a reminder when it may send data.
@@ -953,9 +728,6 @@ impl SqlPanel {
 
     /// Completion menus, drawn above everything else.
     pub fn paint_overlay(&mut self, canvas: &mut Canvas<Hit>, fonts: &Fonts, focus: Option<WidgetId>) {
-        let id = self.editor.id;
-        self.editor
-            .paint_completion(canvas, focus == Some(id), |part| Hit::Editor(id, part));
         if focus == Some(self.ask_input.id) {
             self.mentions
                 .paint(canvas, self.ask_input.caret_rect(), &fonts.ui, self.ask_input.id);

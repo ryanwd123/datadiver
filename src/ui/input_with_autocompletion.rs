@@ -18,14 +18,9 @@ pub fn sql_columns(words: impl IntoIterator<Item = impl Into<String>>) -> Editor
     editor
 }
 
-/// The SQL panel's editor, completing tables, columns, and file paths.
-pub fn sql_catalog(catalog: Arc<RwLock<Vec<Relation>>>, path_roots: Arc<RwLock<PathRoots>>) -> Editor {
-    let mut editor = Editor::sql();
-    editor.set_completer(Some(std::rc::Rc::new(SqlCompletionProvider {
-        catalog,
-        path_roots,
-    })));
-    editor
+/// The SQL panel's completions: tables, columns, and file paths.
+pub fn sql_catalog(catalog: Arc<RwLock<Vec<Relation>>>, path_roots: Arc<RwLock<PathRoots>>) -> impl code_editor::CompletionProvider {
+    SqlCompletionProvider { catalog, path_roots }
 }
 
 /// File and folder completions for a path typed inside a SQL string literal.
@@ -62,25 +57,45 @@ struct SqlCompletionProvider {
     path_roots: Arc<RwLock<PathRoots>>,
 }
 
-impl Completer for SqlCompletionProvider {
-    fn complete(&self, text: &str, offset: usize) -> Vec<CompletionItem> {
-        if let Some(paths) = path_completions(text, offset, &self.path_roots) {
-            return paths;
+impl code_editor::CompletionProvider for SqlCompletionProvider {
+    fn complete(&self, cx: &code_editor::CompletionContext) -> Vec<code_editor::CompletionItem> {
+        use code_editor::{CompletionItem, CompletionKind};
+        // Paths replace the segment being typed and list a folder once it is chosen.
+        if let Some(paths) = path_completions(cx.text, cx.offset, &self.path_roots) {
+            return paths
+                .into_iter()
+                .map(|item| CompletionItem {
+                    retrigger: item.insert.ends_with(['/', '\\']),
+                    label: item.label,
+                    insert_text: Some(item.insert),
+                    detail: item.detail,
+                    kind: CompletionKind::Text,
+                    range: Some(item.range),
+                })
+                .collect();
         }
+        let word_start = cx.offset - cx.prefix.len();
         self.catalog
             .read()
             .map(|catalog| {
-                sql_editor::completions(text, offset, &catalog)
+                sql_editor::completions(cx.text, cx.offset, &catalog)
                     .into_iter()
                     .map(|completion| CompletionItem {
                         label: completion.label,
-                        detail: None,
-                        insert: completion.insert,
-                        range: completion.range,
+                        insert_text: Some(completion.insert),
+                        kind: CompletionKind::Field,
+                        // A plain word lets the editor filter and add keywords; a
+                        // quoted name replaces its own range.
+                        range: (completion.range.start != word_start).then_some(completion.range),
+                        ..Default::default()
                     })
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn trigger_characters(&self) -> Vec<char> {
+        vec!['.', '\'', '"', '/', '\\']
     }
 }
 

@@ -5,6 +5,8 @@ use crate::ui::widgets::{WidgetId, editor, list, tree};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     Editor(WidgetId, editor::Part),
+    /// The hosted code editor (the SQL panel's).
+    CodeEditor(WidgetId),
     List(WidgetId, list::Part),
     Tree(WidgetId, tree::Part),
     Grid(GridHit),
@@ -86,12 +88,6 @@ pub enum Button {
     AskLog,
     AskGenerate,
     AskClose,
-    FindNext,
-    FindPrevious,
-    FindReplace,
-    FindReplaceAll,
-    FindClose,
-    FindCase,
     // Slicers.
     SlicerSearch(String),
     SlicerClear(String),

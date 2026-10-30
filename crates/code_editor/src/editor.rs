@@ -1755,6 +1755,8 @@ impl State {
         }
         match self.keymap.lookup(chord) {
             Some(Binding::Action(Action::ContextMenu)) => KeyResult::ContextMenu,
+            // Escape with nothing to close or collapse is the host's.
+            Some(Binding::Action(Action::Cancel)) if !self.can_cancel() => KeyResult::Unhandled,
             Some(Binding::Action(a)) => {
                 self.run(a);
                 KeyResult::Handled
@@ -1766,6 +1768,11 @@ impl State {
             Some(Binding::Nothing) => KeyResult::Handled,
             None => KeyResult::Unhandled,
         }
+    }
+
+    /// Whether Escape has something to do: an overlay, extra carets, a selection.
+    fn can_cancel(&self) -> bool {
+        self.goto.is_some() || self.find.open || self.doc.sels.len() > 1 || !self.doc.sels.primary().is_empty()
     }
 
     pub fn run(&mut self, a: Action) {

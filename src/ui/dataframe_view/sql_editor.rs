@@ -111,21 +111,12 @@ impl DataFrameView {
         if target == "editor:sql-completion"
             && let Some(panel) = &mut self.sql_panel
         {
-            let text = "SELECT\n    a.\nFROM apples a";
-            let offset = text.find("a.").unwrap() + 2;
+            let text = "SELECT\n    a\nFROM apples a";
+            let offset = text.find(" a").unwrap() + 2;
             panel.editor.set_text(text);
             panel.editor.set_selection(offset..offset);
-            let catalog = panel.catalog.read().map(|catalog| catalog.clone()).unwrap_or_default();
-            let items = crate::domain::sql_editor::completions(text, offset, &catalog)
-                .into_iter()
-                .map(|item| crate::ui::widgets::editor::CompletionItem {
-                    label: item.label,
-                    detail: None,
-                    insert: item.insert,
-                    range: item.range,
-                })
-                .collect();
-            panel.editor.present_completion(items);
+            // Typing the `.` opens the column list, as it would for the user.
+            panel.editor.type_text(".");
             focus = Some(panel.editor.id);
         }
         self.set_focus(focus, cx);
@@ -268,7 +259,7 @@ impl DataFrameView {
         let Some(ViewKind::Sql(config)) = self.session.working.as_ref().map(|d| &d.view) else {
             return;
         };
-        let mut panel = SqlPanel::new(config.text.clone());
+        let mut panel = SqlPanel::new(config.text.clone(), cx.hwnd());
         let startup_script = matches!(self.session.identity, SessionIdentity::StartupSql);
         let auto_run = config.auto_run && !startup_script;
         panel.startup_script = startup_script;

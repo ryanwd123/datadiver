@@ -33,6 +33,8 @@ snapshots = []
 # Reads Excel files for the Polars engine.
 calamine = { version = "0.36", features = ["dates"] }
 chrono = "0.4"
+# The Monaco-style editor of the SQL panel, with SQL highlighting only.
+code_editor = { path = "crates/code_editor", default-features = false, features = ["lang-sql"] }
 duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "appender-arrow"] }
 # Polars already builds both; Polars exports use them for .gz and .zst text files.
 flate2 = "1.1"

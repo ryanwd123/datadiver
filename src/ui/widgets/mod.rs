@@ -2,6 +2,7 @@
 //! trees, buttons, and scroll bars.
 
 pub mod editor;
+pub mod hosted_editor;
 pub mod list;
 pub mod scroll;
 pub mod sql_highlight;

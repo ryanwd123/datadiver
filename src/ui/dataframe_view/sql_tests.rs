@@ -50,13 +50,7 @@ fn place(viewer: &Viewer, text: &str, selection: std::ops::Range<usize>) {
 }
 
 fn completion_labels(viewer: &Viewer) -> Option<Vec<String>> {
-    panel(viewer, |panel| {
-        panel
-            .editor
-            .completion
-            .as_ref()
-            .map(|menu| menu.items.iter().map(|item| item.label.clone()).collect())
-    })
+    panel(viewer, |panel| panel.editor.completion_labels())
 }
 
 fn click(viewer: &Viewer, button: Button) {
@@ -534,26 +528,15 @@ fn sql_search_sort_and_save_never_reexecute_statements() {
 
 #[test]
 fn sql_completion_escape_and_selection_are_editor_local() {
-    use crate::ui::widgets::editor::CompletionItem;
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
     viewer.update(|view, cx| view.open_sql_editor(cx));
     viewer.run_until_parked();
     place(&viewer, "SELECT 1; SELECT 2", 0..8);
     assert_eq!(panel(&viewer, |panel| panel.sql_to_run(false)), "SELECT 1");
-    viewer.update(|view, _| {
-        view.sql_panel
-            .as_mut()
-            .unwrap()
-            .editor
-            .present_completion(vec![CompletionItem {
-                label: "apples".into(),
-                detail: None,
-                insert: "apples".into(),
-                range: 0..0,
-            }]);
-    });
-    viewer.render();
+    place(&viewer, "SELECT 1; SEL", 13..13);
+    press(&viewer, "ctrl-space");
+    assert_eq!(completion_labels(&viewer).unwrap()[0], "SELECT");
     viewer.press("escape");
     assert_eq!(completion_labels(&viewer), None);
     assert!(editor_focused(&viewer));

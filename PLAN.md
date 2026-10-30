@@ -31,8 +31,16 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - remove some calculated values from info panel?
 ## Tier 2: SQL editor
 
-- [ ] **7. Monaco-style SQL editor.** Replace the SQL panel's editor (`ui::widgets::editor::Editor`)
+- [~] **7. Monaco-style SQL editor.** Replace the SQL panel's editor (`ui::widgets::editor::Editor`)
   with the win_monaco editor component, drawn in hosted mode inside the panel. Design below.
+  - Done: `crates/code_editor` hosted in the SQL panel (`ui::widgets::hosted_editor`). DataDiver
+    translates its own events into the editor's input calls rather than forwarding window
+    messages, so the keymap keeps priority and headless tests drive it. Today's completer feeds
+    it, with ranges for paths and quoted names; the editor's find widget replaced the panel's.
+  - Left: keymap-driven host commands (`add_command`) so rebinding Run in the keymap editor
+    reaches the editor; editor actions in the command palette; hover (`WM_MOUSEHOVER` is not
+    forwarded, so decoration hovers never show); measure the caret blink's full-window repaint
+    while the window is active.
 - [ ] **8. SQL language features from `diver_sql`.** Completion, highlighting, diagnostics, signature
   help, hover, folding, matching or beating Dabbler. The parser crate and its phases are in
   `crates/diver_sql/PLAN.md`; its app integration is phase 6 there, after item 7.
