@@ -1,0 +1,51 @@
+[package]
+name = "code_editor"
+version = "0.1.0"
+edition = "2024"
+description = "An embeddable native Windows code editor component, modeled on Monaco"
+
+[features]
+default = ["lang-python", "lang-sql"]
+lang-python = ["dep:tree-sitter-python"]
+lang-sql = ["dep:tree-sitter-sequel"]
+
+[dependencies]
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
+tree-sitter = "0.25"
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-sequel = { version = "0.3", optional = true }
+unicode-segmentation = "1.12"
+regex = "1"
+nucleo-matcher = "0.3"
+windows-numerics = "0.3.1"
+# Needed by windows-rs's #[implement] macro (the OLE drop target); already part of `windows`.
+windows-core = "0.62.2"
+
+[dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
