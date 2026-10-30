@@ -73,6 +73,7 @@ impl DataFrameView {
             let r = items.left(text::measure(label, font).0 + 12.0);
             canvas.text(r.offset(8.0, 0.0), label, font, colors::FOREGROUND, Align::Left);
         }
+        self.paint_title(canvas, items.rest());
         let mut top = header.bottom();
         // Errors.
         for error in [&self.error, &self.table_preferences_error, &self.limit_error].into_iter().flatten() {
@@ -173,22 +174,12 @@ impl DataFrameView {
         }
     }
 
-    /// The top row: what is open, whether it is saved, when its file
-    /// changed, and the settings that apply to it.
+    /// The top row: the settings that apply to what is open.
     fn paint_file_row(&mut self, canvas: &mut Canvas<Hit>, r: Rect) {
         let fonts = self.fonts.clone();
         let font = &fonts.ui;
         canvas.fill(rect(r.x, r.bottom() - 1.0, r.w, 1.0), colors::BORDER);
         let mut items = Row::new(r.inset_xy(12.0, 4.0), 12.0);
-        let title = self
-            .session
-            .working
-            .as_ref()
-            .map(|view| view.name.clone())
-            .or_else(|| self.session.source_path.as_deref().map(|path| source_file_name(std::path::Path::new(path))))
-            .unwrap_or_else(|| "DataDiver".into());
-        // Settings are laid out first, from the right, so the title gives way
-        // when the window is narrow.
         let check_width = |label: &str| text::measure(label, font).0 + 26.0;
         if let Some(panel) = &self.sql_panel
             && self.session.is_sql()
@@ -223,22 +214,42 @@ impl DataFrameView {
             let caption = items.right(text::measure("Engine", font).0 + 2.0);
             canvas.text(caption, "Engine", font, colors::MUTED, Align::Left);
         }
-        let bold = font.semibold();
-        let title_width = (text::measure(&title, &bold).0 + 4.0).min(items.rest().w);
-        canvas.text(items.left(title_width), &title, &bold, colors::FOREGROUND, Align::Left);
+    }
+
+    /// The end of the search row: what is open, whether it is saved, and
+    /// when its file changed. When the row is narrow the file time goes
+    /// first, then the saved state, and the title is cut off last.
+    fn paint_title(&self, canvas: &mut Canvas<Hit>, r: Rect) {
+        let font = &self.fonts.ui;
+        let title = self
+            .session
+            .working
+            .as_ref()
+            .map(|view| view.name.clone())
+            .or_else(|| self.session.source_path.as_deref().map(|path| source_file_name(std::path::Path::new(path))))
+            .unwrap_or_else(|| "DataDiver".into());
+        let mut labels = vec![(title, font.semibold(), colors::FOREGROUND)];
         if self.session.dirty {
-            let width = text::measure("● Unsaved", font).0 + 4.0;
-            if items.rest().w >= width {
-                canvas.text(items.left(width), "● Unsaved", font, colors::WARNING, Align::Left);
-            }
+            labels.push(("● Unsaved".into(), font.clone(), colors::WARNING));
         }
         if let Some(modified) = &self.source_modified {
-            let label = format!("Modified {modified}");
-            let width = text::measure(&label, font).0 + 4.0;
-            if items.rest().w >= width {
-                canvas.text(items.left(width), &label, font, colors::MUTED, Align::Left);
-            }
+            labels.push((format!("Modified {modified}"), font.clone(), colors::MUTED));
         }
+        const GAP: f32 = 12.0;
+        let widths = |labels: &[(String, crate::ui::platform::Font, Color)]| {
+            labels.iter().map(|(label, font, _)| text::measure(label, font).0 + 4.0 + GAP).sum::<f32>() - GAP
+        };
+        while labels.len() > 1 && widths(&labels) > r.w {
+            labels.pop();
+        }
+        let mut x = (r.right() - widths(&labels)).max(r.x);
+        canvas.push_clip(r);
+        for (label, font, color) in &labels {
+            let width = text::measure(label, font).0 + 4.0;
+            canvas.text(rect(x, r.y, width.min(r.right() - x), r.h), label, font, *color, Align::Left);
+            x += width + GAP;
+        }
+        canvas.pop_clip();
     }
 
     /// Whether the shown query stopped at the row limit. It is judged by the
