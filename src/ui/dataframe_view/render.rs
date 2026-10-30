@@ -199,6 +199,12 @@ impl DataFrameView {
         !self.is_table() || self.file_in_memory().is_some()
     }
 
+    /// Whether the file in memory was read in file order, so rows cut at the
+    /// limit are its first ones. Only DuckDB can read out of order.
+    pub(crate) fn read_in_file_order(&self) -> bool {
+        self.session.source.engine == crate::infrastructure::store::Engine::Polars || self.file_settings.preserve_order
+    }
+
     /// The file whose rows were read into memory, while one is open.
     pub(crate) fn file_in_memory(&self) -> Option<PathBuf> {
         self.session
@@ -248,7 +254,7 @@ impl DataFrameView {
         }
         if limit_reached {
             let message = match self.session.source.cut_at {
-                Some(limit) => status::file_cut_at(limit),
+                Some(limit) => status::file_cut_at(limit, self.read_in_file_order()),
                 None => status::limited_rows(self.query_limit),
             };
             let width = text::measure(&message, font).0 + 2.0;

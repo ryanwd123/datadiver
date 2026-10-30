@@ -708,7 +708,14 @@ impl DataFrameView {
             .session
             .source
             .cut_at
-            .map(|limit| format!("first {} rows", crate::domain::formatting::group_numeric_text(&limit.to_string())));
+            .map(|limit| {
+                let rows = crate::domain::formatting::group_numeric_text(&limit.to_string());
+                if self.read_in_file_order() {
+                    format!("first {rows} rows")
+                } else {
+                    format!("{rows} rows read")
+                }
+            });
         let label = match (narrowed, cut) {
             (false, None) => "Total".into(),
             (true, None) => "Total (all groups)".into(),

@@ -24,12 +24,15 @@ pub(super) fn limited_rows(limit: u64) -> String {
 }
 
 /// Shown with the red limit input when a file read into memory had more
-/// rows than the limit.
-pub(super) fn file_cut_at(limit: usize) -> String {
-    format!(
-        "Read the first {} rows of the file · Raise Limit, or scan it in place with Read mode",
-        group_numeric_text(&limit.to_string())
-    )
+/// rows than the limit. Read out of file order, they are not its first rows.
+pub(super) fn file_cut_at(limit: usize, in_file_order: bool) -> String {
+    let rows = group_numeric_text(&limit.to_string());
+    let read = if in_file_order {
+        format!("Read the first {rows} rows of the file")
+    } else {
+        format!("Read {rows} rows of the file, not in file order")
+    };
+    format!("{read} · Raise Limit, or scan it in place with Read mode")
 }
 
 fn number(value: f64) -> Option<String> {
@@ -121,7 +124,8 @@ mod tests {
         assert_eq!(dimensions(0, 0), "0R×0C");
         assert_eq!(filtered_rows(1_234, 50_000), "- 1,234 of 50,000 rows");
         assert_eq!(limited_rows(1_000_000), "Limited to 1,000,000 rows");
-        assert!(file_cut_at(100_000).starts_with("Read the first 100,000 rows of the file"));
+        assert!(file_cut_at(100_000, true).starts_with("Read the first 100,000 rows of the file"));
+        assert!(file_cut_at(100_000, false).starts_with("Read 100,000 rows of the file, not in file order"));
     }
 
     #[test]

@@ -653,10 +653,15 @@ impl DataFrameView {
         // The rest of the file was never read, so no rerun can include it.
         if let Some(limit) = self.session.source.cut_at {
             let rows = crate::domain::formatting::group_numeric_text(&limit.to_string());
+            let read = if self.read_in_file_order() {
+                format!("Only the first {rows} rows of this file were read")
+            } else {
+                format!("Only {rows} rows of this file were read, not in file order")
+            };
             self.confirm(
                 "Export only the rows that were read?".into(),
                 format!(
-                    "Only the first {rows} rows of this file were read, so the export leaves the rest of the file out. To export all of it, raise Limit above the file's row count, or scan it in place with Read mode, then export again."
+                    "{read}, so the export leaves the rest of the file out. To export all of it, raise Limit above the file's row count, or scan it in place with Read mode, then export again."
                 ),
                 format!("Export from {rows} rows"),
                 false,

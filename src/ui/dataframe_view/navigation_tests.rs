@@ -1221,6 +1221,32 @@ fn a_file_read_into_memory_stops_at_the_limit_in_either_engine() {
         viewer.update(|view, cx| view.load_database_view(crate::domain::documents::DatabaseView::file(path.to_string_lossy()), true, cx));
         viewer.run_until_parked();
         assert!(!viewer.read(|view| view.is_table() && view.limit_applies()));
+        // Rows read out of file order are not the file's first ones.
+        crate::application::table_preferences::TablePreferencesWriter::for_repository(&repository)
+            .edit(
+                path.clone(),
+                crate::domain::table_preferences::TablePreferencesPatch {
+                    file: Some(crate::domain::table_preferences::FileSettings {
+                        engine: Some(engine),
+                        preserve_order: false,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let viewer = self::viewer(repository.clone());
+        open(&viewer, FileEntry::Source(path.clone()));
+        viewer.update(|view, cx| {
+            view.limit_input.set_text("2");
+            view.commit_query_limit(cx);
+        });
+        viewer.run_until_parked();
+        viewer.read(|view| {
+            assert_eq!(view.session.source.cut_at, Some(2), "{engine:?}");
+            // Only DuckDB reads out of order.
+            assert_eq!(view.read_in_file_order(), engine == Engine::Polars, "{engine:?}");
+        });
     }
 }
 
