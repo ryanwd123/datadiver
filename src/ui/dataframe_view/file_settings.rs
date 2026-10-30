@@ -13,6 +13,7 @@ use crate::ui::widgets::list::Item;
 pub(crate) enum SettingsItem {
     DefaultEngine,
     FileEngine,
+    MemoryLimit,
     GridFont,
     EditorFont,
     EditorOptions,
@@ -168,15 +169,11 @@ impl DataFrameView {
     }
 
     fn settings_list(&self) -> Vec<(SettingsItem, String, String)> {
-        let default_engine = self
-            .repository
-            .load_settings()
-            .map(|settings| settings.default_engine)
-            .unwrap_or_default();
+        let settings = self.repository.load_settings().unwrap_or_default();
         let mut rows = vec![(
             SettingsItem::DefaultEngine,
             "Default query engine".to_owned(),
-            format!("{} · Enter switches", default_engine.label()),
+            format!("{} · Enter switches", settings.default_engine.label()),
         )];
         if let Some(path) = self.settings_file() {
             rows.push((
@@ -185,6 +182,11 @@ impl DataFrameView {
                 self.session.source.engine.label().to_owned(),
             ));
         }
+        rows.push((
+            SettingsItem::MemoryLimit,
+            "Memory limit for reading files".to_owned(),
+            memory_limit_detail(settings.memory_limit_percent),
+        ));
         let font = |family: &Option<String>| family.clone().unwrap_or_else(|| "Default".into());
         rows.extend([
             (SettingsItem::GridFont, "Grid font".to_owned(), format!("{} · {} pt", font(&self.font.family), self.font.size)),
@@ -225,13 +227,17 @@ impl DataFrameView {
         let Some((item, ..)) = self.settings_list().get(index).cloned() else {
             return;
         };
-        if item == SettingsItem::DefaultEngine {
+        if matches!(item, SettingsItem::DefaultEngine | SettingsItem::MemoryLimit) {
             // Switching stays in the list, so it shows the new value.
             let result = self.repository.load_settings().and_then(|mut settings| {
-                settings.default_engine = match settings.default_engine {
-                    Engine::Polars => Engine::DuckDb,
-                    Engine::DuckDb => Engine::Polars,
-                };
+                if item == SettingsItem::DefaultEngine {
+                    settings.default_engine = match settings.default_engine {
+                        Engine::Polars => Engine::DuckDb,
+                        Engine::DuckDb => Engine::Polars,
+                    };
+                } else {
+                    settings.memory_limit_percent = next_memory_limit(settings.memory_limit_percent);
+                }
                 self.repository.save_settings(&settings)
             });
             if let Err(error) = result {
@@ -247,7 +253,7 @@ impl DataFrameView {
         }
         self.close_dialog(cx);
         match item {
-            SettingsItem::DefaultEngine => {}
+            SettingsItem::DefaultEngine | SettingsItem::MemoryLimit => {}
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),
@@ -259,4 +265,28 @@ impl DataFrameView {
             SettingsItem::SettingsFolder => self.dispatch_command(CommandId::OpenSettingsDirectory, cx),
         }
     }
+}
+
+/// The memory limit setting's detail: the share, what it comes to, and what it does.
+fn memory_limit_detail(percent: u8) -> String {
+    use crate::infrastructure::memory::{format_bytes, system_memory};
+    let share = match system_memory() {
+        Some(memory) => format!(
+            "{percent}% of {} ({})",
+            format_bytes(memory.total),
+            format_bytes(memory.total.saturating_mul(u64::from(percent)) / 100)
+        ),
+        None => format!("{percent}%"),
+    };
+    format!("{share} · Bigger files are scanned in place · Enter switches")
+}
+
+/// The next memory limit the setting cycles to.
+fn next_memory_limit(percent: u8) -> u8 {
+    use crate::infrastructure::memory::LIMIT_PERCENTS;
+    LIMIT_PERCENTS
+        .iter()
+        .copied()
+        .find(|&limit| limit > percent)
+        .unwrap_or(LIMIT_PERCENTS[0])
 }

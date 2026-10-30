@@ -4,6 +4,7 @@ pub mod duckdb_store;
 pub mod file_schemas;
 pub mod json_store;
 pub mod launcher;
+pub mod memory;
 pub mod pasted_table;
 pub mod path_completion;
 pub mod performance;

@@ -58,6 +58,9 @@ pub struct Settings {
     pub ai: crate::domain::ai::AiSettings,
     /// The engine for files without their own choice.
     pub default_engine: crate::domain::documents::Engine,
+    /// The share of the machine's memory a file read into memory may take.
+    /// A bigger file is scanned in place instead.
+    pub memory_limit_percent: u8,
     pub editor: EditorSettings,
 }
 
@@ -149,6 +152,7 @@ impl Default for Settings {
             favorites: Default::default(),
             ai: Default::default(),
             default_engine: Default::default(),
+            memory_limit_percent: crate::infrastructure::memory::DEFAULT_LIMIT_PERCENT,
             editor: EditorSettings::default(),
         }
     }

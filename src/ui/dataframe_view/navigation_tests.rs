@@ -1159,6 +1159,54 @@ North,3
     assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
 }
 
+#[test]
+fn a_file_too_big_to_hold_is_scanned_in_place_in_either_engine() {
+    use crate::infrastructure::memory::set_test_estimate;
+    use crate::infrastructure::sources::{ReadOptions, Sources};
+    use crate::infrastructure::source_database::LoadMode;
+    use crate::infrastructure::store::Engine;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("huge.csv");
+    std::fs::write(&path, "region,n
+North,1
+South,2
+North,3
+").unwrap();
+    set_test_estimate(&path, u64::MAX / 2);
+    for engine in Engine::ALL {
+        repository
+            .save_settings(&crate::infrastructure::json_store::Settings {
+                default_engine: engine,
+                ..Default::default()
+            })
+            .unwrap();
+        let viewer = viewer(repository.clone());
+        open(&viewer, FileEntry::Source(path.clone()));
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.session.source.store.lock().unwrap().is_database_view());
+            assert_eq!(view.query_file().as_deref(), Some(path.to_string_lossy().as_ref()));
+            assert_eq!(view.session.result.row_count(), 3);
+            let status = view.copy_status.clone().unwrap_or_default();
+            assert!(status.starts_with("Scanning in place: huge.csv needs about"), "{status}");
+        });
+        // Scanning was not saved as the file's choice; the limit decides each time.
+        viewer.update(|view, _| view.table_writer.flush().unwrap());
+        assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
+    }
+    // Every other read into memory refuses the file rather than run out of memory.
+    let sources = Sources::for_profile(&repository.paths.config);
+    for engine in Engine::ALL {
+        let options = ReadOptions { engine, ..ReadOptions::default() };
+        let error = match sources.load(&path, options, LoadMode::Force) {
+            Ok(_) => panic!("{engine:?} read a file over the limit"),
+            Err(error) => error,
+        };
+        assert!(error.contains("scan it in place instead"), "{error}");
+    }
+}
+
 fn engine(viewer: &Viewer) -> crate::infrastructure::store::Engine {
     viewer.read(|view| view.session.source.store.lock().unwrap().engine())
 }

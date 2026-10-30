@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use polars::prelude::DataFrame;
 
+use super::memory::{self, MemoryRefusal};
 use super::polars::readers::read_frame;
 use super::polars::store::PolarsStore;
 use super::source_database::{
@@ -29,6 +30,8 @@ pub struct ReadOptions {
     pub engine: Engine,
     /// DuckDB only: keep rows in file order. Off reads large files faster.
     pub preserve_order: bool,
+    /// The share of the machine's memory the read may take.
+    pub memory_limit_percent: u8,
 }
 
 impl Default for ReadOptions {
@@ -36,6 +39,7 @@ impl Default for ReadOptions {
         Self {
             engine: Engine::default(),
             preserve_order: true,
+            memory_limit_percent: super::memory::DEFAULT_LIMIT_PERCENT,
         }
     }
 }
@@ -145,6 +149,11 @@ impl Sources {
         existing: Option<&SourceIdentity>,
     ) -> Result<SourceLoad, String> {
         source_reader(path)?;
+        if (mode == LoadMode::Force || !self.holds_current(path, options))
+            && let Err(refusal) = memory::check_read(path, options.memory_limit_percent)
+        {
+            return Err(format!("{refusal}; scan it in place instead (Read mode in View options)"));
+        }
         match options.engine {
             Engine::DuckDb => {
                 let existing = match existing {
@@ -167,6 +176,28 @@ impl Sources {
                 };
                 self.load_frame(path, mode, existing)
             }
+        }
+    }
+
+    /// Why `path` should not be read into memory now: it would not fit, and
+    /// no unchanged read of it is held already.
+    pub fn memory_refusal(&self, path: &Path, options: ReadOptions) -> Option<MemoryRefusal> {
+        if self.holds_current(path, options) {
+            return None;
+        }
+        memory::check_read(path, options.memory_limit_percent).err()
+    }
+
+    /// Whether an unchanged read of `path` in `options.engine` is held, so
+    /// opening it again takes no more memory.
+    fn holds_current(&self, path: &Path, options: ReadOptions) -> bool {
+        let source_path = absolute_source_path(path);
+        match options.engine {
+            Engine::DuckDb => self.database.holds_current(&source_path, options.preserve_order),
+            Engine::Polars => file_stamp(&source_path).is_ok_and(|stamp| {
+                self.cached(&path_key(&source_path), (stamp.modified_ns, stamp.size))
+                    .is_some()
+            }),
         }
     }
 
@@ -350,6 +381,7 @@ mod tests {
         let unordered = ReadOptions {
             engine: Engine::DuckDb,
             preserve_order: false,
+            ..ReadOptions::default()
         };
         let store = sources.load(&path, unordered, LoadMode::Check).unwrap();
         assert_eq!(store.row_count(), 5000);
