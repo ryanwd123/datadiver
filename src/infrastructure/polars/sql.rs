@@ -2,6 +2,7 @@
 //! context, so a table one creates is there for the next; files are read
 //! with `read_csv('…')`, `read_parquet('…')` and the like.
 
+use polars::prelude::Engine;
 use polars::sql::SQLContext;
 
 use super::expressions::polars_error;
@@ -41,7 +42,7 @@ pub fn run(context: &mut SQLContext, text: &str) -> PolarsRun {
         }
     }
     if let Some(frame) = last {
-        match frame.collect() {
+        match frame.collect_with_engine(Engine::Streaming).map(|result| result.unwrap_single()) {
             Ok(frame) => run.result = Some(PolarsStore::from_frame(frame)),
             Err(error) => run.error = Some(polars_error(error)),
         }

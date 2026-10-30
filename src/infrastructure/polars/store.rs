@@ -156,9 +156,13 @@ impl PolarsStore {
         }
     }
 
+    /// Runs `frame` on Polars' streaming engine, which spreads filters, group
+    /// bys, and distinct values across threads and is several times faster on
+    /// large sources than the in-memory engine `Engine::Auto` picks. Float sums
+    /// and means can differ in their last digits from run to run.
     pub fn collect(&self, frame: LazyFrame) -> Result<DataFrame, String> {
         frame
-            .collect_with_engine(Engine::Auto)
+            .collect_with_engine(Engine::Streaming)
             .map(|result| result.unwrap_single())
             .map_err(polars_error)
     }
@@ -465,14 +469,7 @@ impl PolarsStore {
         frame = self.sorted(frame, &order, &view.sort);
         let frame = frame.select([col(ROW)]);
         let plan = frame.describe_plan().unwrap_or_default();
-        // The in-memory engine that `Engine::Auto` picks evaluates a search's
-        // OR of every column an order of magnitude slower than streaming does.
-        let rows = trace.execute("Result search and sort", &plan, &[], || {
-            frame
-                .collect_with_engine(Engine::Streaming)
-                .map(|result| result.unwrap_single())
-                .map_err(polars_error)
-        })?;
+        let rows = trace.execute("Result search and sort", &plan, &[], || self.collect(frame))?;
         crate::infrastructure::performance::record("row_map_creation", start);
         let _span = crate::infrastructure::performance::Span::new("row_id_extraction");
         let ids = rows
