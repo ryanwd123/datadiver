@@ -199,13 +199,8 @@ FROM apples a";
             return;
         }
         if let Some(id) = self.session.working.as_ref().and_then(|d| d.sql_source.clone()) {
-            match self.repository.load_view(&id) {
-                Ok(source) => {
-                    self.navigate_to_file(FileEntry::View(source), false, false, false, cx);
-                    // Set after navigating starts, which drops a command from an earlier location.
-                    self.after_open = Some(CommandId::SqlEditor);
-                }
-                Err(error) => self.error = Some(format!("Cannot open the SQL source: {error}")),
+            if let Err(error) = self.open_sql_source_editor(&id, cx) {
+                self.error = Some(format!("Cannot open the SQL source: {error}"));
             }
             cx.notify();
             return;
@@ -213,6 +208,15 @@ FROM apples a";
         self.copy_status =
             Some("The SQL editor opens SQL sources and scripts; start one with New SQL source or New SQL script".into());
         cx.notify();
+    }
+
+    /// Navigates to the saved SQL source `id` with its editor shown.
+    pub(crate) fn open_sql_source_editor(&mut self, id: &str, cx: &mut Cx<Self>) -> std::io::Result<()> {
+        let source = self.repository.load_view(id)?;
+        self.navigate_to_file(FileEntry::View(source), false, false, false, cx);
+        // Set after navigating starts, which drops a command from an earlier location.
+        self.after_open = Some(CommandId::SqlEditor);
+        Ok(())
     }
 
     /// Starts an empty SQL source, or with `script` a SQL script, replacing

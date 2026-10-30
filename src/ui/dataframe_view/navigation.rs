@@ -217,6 +217,7 @@ impl DataFrameView {
         let table_writer = self.table_writer.clone();
         let direct_destination = matches!(entry, FileEntry::Source(_));
         let read_path = path.clone();
+        let failed_sql_source = sql_source.clone();
         cx.spawn(
             move || {
                 let _span = crate::infrastructure::performance::Span::new("source_check");
@@ -324,6 +325,13 @@ impl DataFrameView {
                     }
                     Err(error) => {
                         view.rollback_navigation(cx);
+                        // A SQL source whose script fails or returns no rows
+                        // opens in its editor, where it can be fixed.
+                        if let Some(id) = &failed_sql_source
+                            && !matches!(&view.session.identity, SessionIdentity::SavedSql(open) if open == id)
+                        {
+                            let _ = view.open_sql_source_editor(id, cx);
+                        }
                         view.error = Some(error);
                     }
                 }

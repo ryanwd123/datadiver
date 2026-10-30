@@ -1402,6 +1402,33 @@ fn open_sql_editor_opens_only_sql_sources_and_scripts() {
     assert_eq!(sql_text(&viewer), "SELECT 42 AS answer");
 }
 
+#[test]
+fn sql_sources_without_rows_open_in_their_editor() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    for (text, message) in [
+        ("CREATE TEMP TABLE t AS SELECT 1", "returns no rows"),
+        ("SELECT * FROM missing", "Statement 1:"),
+    ] {
+        let mut source = sql_view(
+            "Broken",
+            SqlConfig {
+                text: text.into(),
+                ..Default::default()
+            },
+        );
+        repository.save_view(&mut source).unwrap();
+        let viewer = viewer(repository.clone(), None);
+        open_entry(&viewer, &DocumentDefinition::draft_sql_source(&source));
+        viewer.read(|view| {
+            assert_eq!(view.session.identity, SessionIdentity::SavedSql(source.id.clone()));
+            assert!(view.sql_panel_open);
+            assert!(view.error.as_deref().unwrap_or_default().contains(message), "{:?}", view.error);
+        });
+        assert_eq!(sql_text(&viewer), text);
+    }
+}
+
 /// The title, message and whether it is destructive, of the open confirmation.
 fn confirmation(viewer: &Viewer) -> (String, String, bool) {
     viewer.read(|view| match &view.dialog {
