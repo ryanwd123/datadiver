@@ -2478,6 +2478,11 @@ fn query_limit_invalid_escape_failed_save_and_keyboard_focus() {
     viewer.focus(search);
     viewer.press("tab");
     assert_eq!(viewer.focused(), Some(limit));
+    // Typed keys reach the box the way the window delivers them.
+    viewer.press("ctrl-a 2 5");
+    assert_eq!(viewer.read(|view| view.limit_input.text().to_owned()), "25");
+    viewer.press("backspace");
+    assert_eq!(viewer.read(|view| view.limit_input.text().to_owned()), "2");
     viewer.press("ctrl-a");
     viewer.input("0");
     viewer.press("enter");

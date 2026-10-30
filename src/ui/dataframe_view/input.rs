@@ -285,8 +285,9 @@ impl DataFrameView {
         if outcome.submit {
             self.commit_query_limit(cx);
         }
-        // Keys typed in the limit never reach window shortcuts.
-        outcome.handled || !m.control
+        // Keys typed in the limit never reach window shortcuts, but a key that
+        // types text must go unhandled, or the window drops the text it types.
+        outcome.handled || (!m.control && event.typed().is_none())
     }
 
     /// Window shortcuts: Tab between the search and grid, favorites, and the
