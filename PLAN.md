@@ -31,43 +31,79 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - remove some calculated values from info panel?
 ## Tier 2: SQL editor
 
-- [ ] **7. Better SQL completion.** Today it completes only tables after FROM/JOIN/PIVOT and columns
-  after `alias.`.
-  - Columns *without* an alias, from the relations in the current FROM scope (including `FROM 'file'`
-    and `read_*()` sources, via a cached `DESCRIBE`). Infer CTE columns from their select lists.
-  - Functions from `duckdb_functions()` (scalar, aggregate, table), with the signature and
-    description as detail. Keywords from `duckdb_keywords()`.
-  - `ctrl-space` triggers completion by hand (`Editor::refresh_completion(true)`). (`tab` already
-    accepts as well as `enter`.)
-  - Done: the group-by, pivot, and aggregation editors list columns after `"` (ranked like the
-    search box), offer nothing inside `'strings'`, and accept with Tab. Condition and SQL cards
-    share the search box's `"` list (`ui::column_completion`).
-  - Later: hover docs for functions, and red squiggles from a prepare/EXPLAIN on pause. The editor
-    draws neither yet.
-- [ ] **8. VS Code editing keys in the SQL editor.** Built as app actions in `SqlPanel` (scoped to the
-  editor, so `ctrl-d`/`ctrl-l`/`ctrl-g` keep their grid meaning elsewhere) using the editor's public
-  API (`text`, `selected_range`, `set_selection`, `replace`):
-  - `ctrl-/` toggle line comment, `shift-alt-a` block comment
-  - `alt-up`/`alt-down` move line, `shift-alt-up`/`down` copy line, `ctrl-shift-k` delete line
-  - `ctrl-l` select line, `ctrl-g` go to line, `ctrl-shift-\` jump to bracket
-  - `ctrl-d` add next occurrence and `ctrl-shift-l` all occurrences. This needs multiple cursors,
-    which the editor does not have yet.
-  - `ctrl-enter` stays "run statement".
+- [ ] **7. Monaco-style SQL editor.** Replace the SQL panel's editor (`ui::widgets::editor::Editor`)
+  with the win_monaco editor component, drawn in hosted mode inside the panel. Design below.
+- [ ] **8. SQL language features from `diver_sql`.** Completion, highlighting, diagnostics, signature
+  help, hover, folding, matching or beating Dabbler. The parser crate and its phases are in
+  `crates/diver_sql/PLAN.md`; its app integration is phase 6 there, after item 7.
+  - Keep from today: the group-by, pivot, and aggregation editors list columns after `"` (ranked
+    like the search box), offer nothing inside `'strings'`, and accept with Tab; condition and SQL
+    cards share the search box's `"` list (`ui::column_completion`). These move to `diver_sql`'s
+    `Entry::Expression` with the file's dialect (DuckDB or Polars) once phase 5 lands.
+  - Errors: DuckDB's own parser (`duckdb_extract_statements` on a typing pause, as Dabbler does) is
+    the authority for squiggles; `diver_sql`'s diagnostics show instantly for lexer errors only
+    until its corpus pass rate is near 100%.
 
-  **What the editor already has** (`ui::widgets::editor::Editor`, with the find bar in
-  `ui::sql_panel`):
-  - **Display:** line numbers, soft wrap, SQL highlighting, scroll bars.
-  - **Editing:** auto-close `( [ { " '` outside strings, Enter keeps the indentation.
-  - **Movement:** arrows, `home` (indentation, then line start)/`end`, `ctrl-home`/`ctrl-end`,
-    `pageup`/`pagedown`, `ctrl-left`/`right` (word).
-  - **Selection:** `shift-`+movement, `ctrl-a`, double-click word, triple-click line, drag.
-  - **Delete:** `ctrl-backspace`/`ctrl-delete` (word).
-  - **Indent:** `tab`/`shift-tab` and `ctrl-]`/`ctrl-[` (four spaces).
-  - **Clipboard and undo:** `ctrl-c`/`x`/`v` (`ctrl-x` with no selection cuts the line),
-    `ctrl-z`, `ctrl-y`/`ctrl-shift-z`.
-  - **Find and replace:** `ctrl-f`, `ctrl-h`, `F3`/`shift-F3` (literal, with case toggle; no regex
-    or whole word).
-  - **Completion menu:** `up`/`down`/`enter`/`tab`/`escape`, filled by a `Completer`.
+### Design: the Monaco-style editor (item 7)
+
+**Where the code lives.** Copy `win_monaco/editor` into this repo as `crates/code_editor` (package
+renamed from `editor` so it isn't confused with `ui::widgets::editor`), recording win_monaco's commit
+(`4924080`) in the commit message. win_monaco has no remote, so a path dependency outside the repo
+would break the GitHub release build; this copy becomes the maintained one, and the win_monaco demo
+can later point at it by path. Build with `default-features = false, features = ["lang-sql"]`
+(no Python grammar); `windows` 0.62 already matches.
+
+**Hosting.** DataDiver paints one window through `Canvas` over an `ID2D1RenderTarget`, which is the
+case win_monaco's hosted mode was built for:
+- `Editor::create_hosted(hwnd, ..)` when the SQL panel opens; `set_bounds` from the panel's layout
+  each paint; `set_visible(false)` when the panel hides (keeps text, undo and scroll; frees timers).
+- Paint: `paint_into(canvas.target())` at the panel's place in the frame, so dialogs and the command
+  palette still draw over it. The editor clips itself (popups included) to its bounds.
+- Input: the platform layer gets an escape hatch, `View::raw_message(msg, wparam, lparam) ->
+  Option<LRESULT>`, called before DataDiver's own translation. The SQL panel forwards mouse
+  messages over the editor's bounds and keyboard/IME messages while it has focus, so the editor
+  sees exactly what it would in its own window. Focus moves between the two by DataDiver's focus
+  model (`focus` / `has_focus`), with Escape and the app's panel keys leaving the editor.
+- Timers live on the editor's own message-only window, so they don't collide with DataDiver's.
+- To check: the editor creates its own D2D factory; drawing with brushes and DWrite layouts into a
+  target from another factory is fine, but any geometry it draws must come from the target's
+  factory (`rt.GetFactory()`). Verify with the debug layer on first paint.
+- Snapshots: `--capture` must paint the hosted editor into the headless target too.
+
+**Keys and commands.** Monaco's defaults cover old item 8 entirely (multi-cursor, Ctrl+D,
+line moves, comments, bracket jump, go to line, expand selection, folding, zoom). DataDiver's
+keymap stays in charge where they clash:
+- `ctrl-enter` runs the statement (Monaco: insert line below), `ctrl-shift-enter` follows the
+  keymap too; registered with `add_command(chord, id)` from DataDiver's keymap, so rebinding a key
+  in the keymap editor rebinds it here.
+- The command palette lists the editor's actions (`run(Action)`), with their keys.
+- The editor's find/replace widget (regex, whole word, case) replaces the SQL panel's find bar.
+
+**Look.** Theme colors from DataDiver's theme (`set_theme` / `set_theme_color`), the font and size
+from the font picker, zoom saved with the other editor settings.
+
+**Wiring to the panel.** `Event::ContentChanged` → `SqlPanelEvent::Changed`; statement under the
+cursor from `selections()`; the AI proposal uses `apply_edits` (one undo step) and `set_selections`.
+Completion first goes through a `CompletionProvider` wrapping today's `domain::sql_editor`
+completions and path completion, so nothing is lost before `diver_sql` arrives.
+
+**Editor API additions** (needed for item 8, done in `crates/code_editor`):
+- Completion items with their own replace range (quoted names, paths with slashes) and
+  documentation, and a way to reopen the list when a background `DESCRIBE` finishes.
+- An external highlighter hook (token classes for a changed range) so `diver_sql` can replace
+  tree-sitter-sequel (≈2.4 MB of the binary) once its highlighting lands; folding ranges and
+  selection ranges from the host too, with today's indentation/scan fallbacks.
+- Hover providers (function and statement docs, not just decoration messages) and a signature
+  help popup.
+
+**Tests.** `ui::dataframe_view::sql_tests` drives the old editor's API; port them to the hosted
+editor's headless API (`editor.rs` is testable without a window). The old widget stays for
+single-line inputs and the smaller editors; moving the multi-line expression editors and the cell
+detail view is a later step.
+
+**Phases.** (1) vendor the crate and get it building in the workspace; (2) host it in the SQL
+panel with keys, theme, persistence and the old completions, porting the SQL tests; (3) the API
+additions; (4) `diver_sql` integration (its phase 6).
 
 ## Tier 4: bigger features
 
