@@ -1159,6 +1159,60 @@ North,3
     assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
 }
 
+#[test]
+fn a_file_read_into_memory_stops_at_the_limit_in_either_engine() {
+    use crate::infrastructure::store::Engine;
+    for engine in Engine::ALL {
+        // A profile each, since a window takes the limit its profile last set.
+        let home = tempfile::tempdir().unwrap();
+        let repository = repository(home.path());
+        let path = home.path().join("years.csv");
+        std::fs::write(&path, "year,n
+2000,1
+2004,2
+2008,3
+").unwrap();
+        repository
+            .save_settings(&crate::infrastructure::json_store::Settings {
+                default_engine: engine,
+                query_limit: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        let viewer = viewer(repository.clone());
+        open(&viewer, FileEntry::Source(path.clone()));
+        viewer.render();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.is_table());
+            assert_eq!(view.session.source.row_count(), 2, "{engine:?}");
+            assert_eq!(view.session.source.cut_at, Some(2));
+            // The limit shows in table mode, red, since it cut the file.
+            assert!(view.limit_applies());
+            assert!(view.limit_reached());
+        });
+        // Raising the limit reads the file again, whole this time.
+        let limit = viewer.read(|view| view.limit_input.id);
+        viewer.focus(limit);
+        viewer.press("ctrl-a 5 enter");
+        viewer.run_until_parked();
+        viewer.render();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.query_limit, 5);
+            assert_eq!(view.session.source.row_count(), 3, "{engine:?}");
+            assert_eq!(view.session.source.cut_at, None);
+            assert!(view.limit_applies());
+            assert!(!view.limit_reached());
+        });
+        // A file scanned in place is not read into memory, so in table mode
+        // the limit does not apply to it.
+        viewer.update(|view, cx| view.load_database_view(crate::domain::documents::DatabaseView::file(path.to_string_lossy()), true, cx));
+        viewer.run_until_parked();
+        assert!(!viewer.read(|view| view.is_table() && view.limit_applies()));
+    }
+}
+
 fn engine(viewer: &Viewer) -> crate::infrastructure::store::Engine {
     viewer.read(|view| view.session.source.store.lock().unwrap().engine())
 }

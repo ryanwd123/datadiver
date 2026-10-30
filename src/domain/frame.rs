@@ -27,6 +27,8 @@ pub struct FrameSnapshot {
     /// Read once, so the UI never waits on the store lock that a long query on
     /// a worker holds.
     row_count: usize,
+    /// The row limit a file read into memory stopped at, leaving rows unread.
+    pub cut_at: Option<usize>,
 }
 
 impl FrameSnapshot {
@@ -37,6 +39,7 @@ impl FrameSnapshot {
         let engine = store.engine();
         let database_view_revision = store.database_view_revision();
         let row_count = store.row_count();
+        let cut_at = store.cut_at();
         Self {
             schema: store.schema().to_vec().into(),
             store: Arc::new(Mutex::new(store)),
@@ -48,6 +51,7 @@ impl FrameSnapshot {
             source_identity,
             engine,
             row_count,
+            cut_at,
         }
     }
 

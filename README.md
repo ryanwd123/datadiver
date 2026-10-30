@@ -200,6 +200,8 @@ Slicers, condition cards, the SQL filter, and `=` / `-` filters all narrow sourc
 
 When a query result reaches the row limit, the limit input turns red and the status bar says **Limited to N rows**. Search and sort then run inside the query, so they still see every result row, not just the first N.
 
+The same **Limit**, one setting for every window, also caps how many rows of a file are read into memory, so a file too big for the machine never fills it. The input shows beside the search whenever a file is read into memory. When the file has more rows than the limit, only the first N are read, the limit input turns red, and the status bar says **Read the first N rows of the file**; groups, pivots and totals then cover only those rows. Raise the limit to read more, or switch the file's **Read mode** to **Scan** to group and aggregate every row in place without reading it into memory.
+
 ## Filters and drill-down
 
 Press **=** in the grid to keep only rows whose value in the active column equals the active cell, or **-** to exclude them. Filters match the value as the grid shows it before number formatting, including empty (NULL) cells. In a query, **=** and **-** work on group-by cells and filter the source rows before grouping. Active filters appear as chips under the header; click a chip to remove it, or use **Clear filters**. Filters are saved with a view.

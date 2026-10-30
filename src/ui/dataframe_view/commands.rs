@@ -628,10 +628,18 @@ impl DataFrameView {
         });
         self.profiles_seen = profiles::revision();
         cx.notify_all();
-        if !self.is_table() && !self.session.is_sql() {
+        self.apply_query_limit(cx);
+        cx.notify();
+    }
+
+    /// Applies a changed limit to what is open: reads a file in memory again,
+    /// keeping the view as it is, or runs the query again.
+    pub(crate) fn apply_query_limit(&mut self, cx: &mut Cx<Self>) {
+        if let Some(path) = self.file_in_memory() {
+            self.load_source(path, false, crate::infrastructure::source_database::LoadMode::Check, cx);
+        } else if !self.is_table() && !self.session.is_sql() {
             self.schedule_search(self.session.search_text.clone(), cx);
         }
-        cx.notify();
     }
 
     /// Asks for a file and writes the whole displayed result to it, in the

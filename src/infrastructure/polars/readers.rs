@@ -48,23 +48,39 @@ pub(crate) fn is_gzip_csv(path: &Path) -> bool {
 
 /// Reads every row of `path` into memory.
 pub fn read_frame(path: &Path) -> Result<DataFrame, String> {
-    let read = || -> Result<DataFrame, String> {
-        match file_kind(path)? {
-            FileKind::Delimited(separator) => read_delimited(path, separator, Some(INFER_ROWS))
-                .or_else(|_| read_delimited(path, separator, None)),
-            FileKind::Parquet => {
-                let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-                ParquetReader::new(file).finish().map_err(polars_error)
-            }
-            FileKind::Xlsx => read_xlsx(path),
-        }
-    };
-    read().map_err(|error| format!("could not read {}: {error}", path.display()))
+    read_frame_limited(path, None).map(|(frame, _)| frame)
 }
 
-fn read_delimited(path: &Path, separator: u8, infer: Option<usize>) -> Result<DataFrame, String> {
+/// Reads the rows of `path` into memory, at most `limit` of them, and says
+/// whether the file had more.
+pub fn read_frame_limited(path: &Path, limit: Option<usize>) -> Result<(DataFrame, bool), String> {
+    // One row past the limit shows whether the file goes on.
+    let rows = limit.map(|limit| limit.saturating_add(1));
+    let read = || -> Result<DataFrame, String> {
+        match file_kind(path)? {
+            FileKind::Delimited(separator) => read_delimited(path, separator, Some(INFER_ROWS), rows)
+                .or_else(|_| read_delimited(path, separator, None, rows)),
+            FileKind::Parquet => {
+                let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+                ParquetReader::new(file)
+                    .with_slice(rows.map(|rows| (0, rows)))
+                    .finish()
+                    .map_err(polars_error)
+            }
+            FileKind::Xlsx => read_xlsx(path, rows),
+        }
+    };
+    let frame = read().map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    match limit {
+        Some(limit) if frame.height() > limit => Ok((frame.head(Some(limit)), true)),
+        _ => Ok((frame, false)),
+    }
+}
+
+fn read_delimited(path: &Path, separator: u8, infer: Option<usize>, rows: Option<usize>) -> Result<DataFrame, String> {
     CsvReadOptions::default()
         .with_has_header(true)
+        .with_n_rows(rows)
         .with_infer_schema_length(infer)
         .map_parse_options(|options| {
             options
@@ -79,7 +95,7 @@ fn read_delimited(path: &Path, separator: u8, infer: Option<usize>) -> Result<Da
 /// The first worksheet, with its first row as the header. A column whose
 /// cells are all numbers, booleans, or dates keeps that type; any other
 /// column is text.
-fn read_xlsx(path: &Path) -> Result<DataFrame, String> {
+fn read_xlsx(path: &Path, limit: Option<usize>) -> Result<DataFrame, String> {
     use calamine::{Data, Reader, open_workbook_auto};
     let mut workbook = open_workbook_auto(path).map_err(|error| error.to_string())?;
     let sheet = workbook
@@ -92,7 +108,7 @@ fn read_xlsx(path: &Path) -> Result<DataFrame, String> {
         .map_err(|error| error.to_string())?;
     let mut rows = range.rows();
     let header = rows.next().map(<[Data]>::to_vec).unwrap_or_default();
-    let body = rows.collect::<Vec<_>>();
+    let body = rows.take(limit.unwrap_or(usize::MAX)).collect::<Vec<_>>();
     let mut names: Vec<String> = Vec::new();
     for (index, cell) in header.iter().enumerate() {
         let base = match cell {

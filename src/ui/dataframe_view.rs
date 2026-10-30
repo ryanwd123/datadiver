@@ -1359,9 +1359,7 @@ impl DataFrameView {
             self.limit_input.set_text(limit.to_string());
             self.limit_error = None;
             self.query_cache = None;
-            if !self.is_table() && !self.session.is_sql() {
-                self.schedule_search(self.session.search_text.clone(), cx);
-            }
+            self.apply_query_limit(cx);
         }
         self.sync_grid_formats();
         cx.notify();

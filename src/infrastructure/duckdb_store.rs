@@ -186,6 +186,7 @@ impl DuckDbStore {
                 database: backing.database.clone(),
                 source_version: None,
                 _table: None,
+                cut_at: None,
             });
             return Ok(result);
         }
@@ -402,6 +403,7 @@ impl DuckDbStore {
                     database,
                     source_version: None,
                     _table: None,
+                    cut_at: None,
                 },
             )?;
             store.relation = Some(RelationRows::Table);
@@ -462,6 +464,7 @@ impl DuckDbStore {
                 database,
                 source_version: None,
                 _table: None,
+                cut_at: None,
             }),
             relation: Some(RelationRows::Lazy),
             columns,
@@ -510,6 +513,10 @@ impl DuckDbStore {
     pub fn database_view_revision(&self) -> Option<u64> {
         self.relation
             .map(|_| self.persistent.as_ref().unwrap().database.revision())
+    }
+
+    pub fn cut_at(&self) -> Option<usize> {
+        self.persistent.as_ref().and_then(|backing| backing.cut_at)
     }
 
     pub fn persistent_identity(&self) -> Option<super::source_database::PersistentSourceIdentity> {

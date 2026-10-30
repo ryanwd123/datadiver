@@ -235,7 +235,7 @@ impl DataFrameView {
                 return true;
             }
             "tab" if !m.control && !m.alt => {
-                if m.shift || self.is_table() {
+                if m.shift || !self.limit_applies() {
                     self.focus_grid(cx);
                 } else {
                     let id = self.limit_input.id;
@@ -302,7 +302,7 @@ impl DataFrameView {
                 return false;
             }
             let next = if focus == Some(grid) {
-                if m.shift && !self.is_table() {
+                if m.shift && self.limit_applies() {
                     self.limit_input.id
                 } else {
                     search

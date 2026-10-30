@@ -52,7 +52,7 @@ impl DataFrameView {
         let focus = self.focus;
         self.search_input
             .paint(canvas, search, font, focus == Some(search_id), |part| Hit::Editor(search_id, part));
-        if !self.is_table() {
+        if self.limit_applies() {
             let label = items.left(text::measure("Limit", font).0 + 2.0);
             canvas.text(label, "Limit", font, if limit_reached { LIMIT_WARNING } else { colors::FOREGROUND }, Align::Left);
             let limit = items.left(128.0);
@@ -193,9 +193,26 @@ impl DataFrameView {
         canvas.pop_clip();
     }
 
-    /// Whether the shown query stopped at the row limit. It is judged by the
-    /// query's own rows, before search narrowed them, so the warning stays
-    /// while searching a truncated result.
+    /// Whether the row limit applies to what is open: a query's result, or a
+    /// file read into memory.
+    pub(crate) fn limit_applies(&self) -> bool {
+        !self.is_table() || self.file_in_memory().is_some()
+    }
+
+    /// The file whose rows were read into memory, while one is open.
+    pub(crate) fn file_in_memory(&self) -> Option<PathBuf> {
+        self.session
+            .source
+            .source_identity
+            .as_ref()
+            .and(self.session.source_path.as_ref())
+            .map(PathBuf::from)
+    }
+
+    /// Whether the shown rows stopped at the row limit: the file read into
+    /// memory has more rows, or the query does. A query is judged by its own
+    /// rows, before search narrowed them, so the warning stays while
+    /// searching a truncated result.
     pub(crate) fn limit_reached(&self) -> bool {
         let query_rows = self
             .query_cache
@@ -204,8 +221,8 @@ impl DataFrameView {
         !self.busy
             && !self.loading
             && self.error.is_none()
-            && !self.is_table()
-            && query_limit_reached(query_rows, self.query_limit)
+            && (self.session.source.cut_at.is_some()
+                || !self.is_table() && query_limit_reached(query_rows, self.query_limit))
     }
 
     fn paint_status(&mut self, canvas: &mut Canvas<Hit>, r: Rect, row_count: usize, limit_reached: bool) {
@@ -231,7 +248,10 @@ impl DataFrameView {
             canvas.text(items.left(width), &label, font, colors::FOREGROUND, Align::Left);
         }
         if limit_reached {
-            let message = status::limited_rows(self.query_limit);
+            let message = match self.session.source.cut_at {
+                Some(limit) => status::file_cut_at(limit),
+                None => status::limited_rows(self.query_limit),
+            };
             let width = text::measure(&message, font).0 + 2.0;
             canvas.text(items.left(width), &message, font, LIMIT_WARNING, Align::Left);
         }

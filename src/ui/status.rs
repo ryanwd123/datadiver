@@ -23,6 +23,15 @@ pub(super) fn limited_rows(limit: u64) -> String {
     format!("Limited to {} rows", group_numeric_text(&limit.to_string()))
 }
 
+/// Shown with the red limit input when a file read into memory had more
+/// rows than the limit.
+pub(super) fn file_cut_at(limit: usize) -> String {
+    format!(
+        "Read the first {} rows of the file · Raise Limit, or scan it in place with Read mode",
+        group_numeric_text(&limit.to_string())
+    )
+}
+
 fn number(value: f64) -> Option<String> {
     if !value.is_finite() {
         return None;
@@ -112,6 +121,7 @@ mod tests {
         assert_eq!(dimensions(0, 0), "0R×0C");
         assert_eq!(filtered_rows(1_234, 50_000), "- 1,234 of 50,000 rows");
         assert_eq!(limited_rows(1_000_000), "Limited to 1,000,000 rows");
+        assert!(file_cut_at(100_000).starts_with("Read the first 100,000 rows of the file"));
     }
 
     #[test]

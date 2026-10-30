@@ -1423,7 +1423,7 @@ mod tests {
             .database
             .load_reusing(
                 &file,
-                super::super::source_database::LoadMode::Check, true,
+                super::super::source_database::LoadMode::Check, true, None,
                 Some(&identity),
             )
             .unwrap()

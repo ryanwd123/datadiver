@@ -250,6 +250,12 @@ impl Store {
     }
 
     /// Which read of a file this store holds, when it holds one.
+    /// The row limit a file read into memory stopped at, when the file has
+    /// more rows than that.
+    pub fn cut_at(&self) -> Option<usize> {
+        dispatch!(self, store => store.cut_at())
+    }
+
     pub fn source_identity(&self) -> Option<super::sources::SourceIdentity> {
         use super::sources::SourceIdentity;
         match self {

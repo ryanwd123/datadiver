@@ -34,6 +34,8 @@ pub struct PolarsStore {
     columns: Vec<ColumnSchema>,
     row_count: usize,
     identity: Option<FrameIdentity>,
+    /// The row limit a file read stopped at, leaving rows of the file unread.
+    cut_at: Option<usize>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -100,6 +102,7 @@ impl PolarsStore {
             frame,
             columns,
             identity: None,
+            cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -108,6 +111,15 @@ impl PolarsStore {
     pub(crate) fn with_identity(mut self, identity: FrameIdentity) -> Self {
         self.identity = Some(identity);
         self
+    }
+
+    pub(crate) fn with_cut_at(mut self, cut_at: Option<usize>) -> Self {
+        self.cut_at = cut_at;
+        self
+    }
+
+    pub fn cut_at(&self) -> Option<usize> {
+        self.cut_at
     }
 
     /// Polars stores always hold every row, unlike DuckDB views read only

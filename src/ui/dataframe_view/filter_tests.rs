@@ -404,7 +404,9 @@ fn truncated_query_results_warn_and_search_past_the_limit() {
     std::fs::write(&path, "year,n\n2000,1\n2004,2\n2008,3\n").unwrap();
     let viewer = viewer(repository);
     open(&viewer, FileEntry::Source(path.clone()));
-    let mut query = DocumentDefinition::draft_table("Years".into(), path.to_string_lossy().into());
+    // Scanned in place, so the limit cuts the query's rows rather than the file's.
+    let mut query =
+        DocumentDefinition::draft_database_view(crate::domain::documents::DatabaseView::file(path.to_string_lossy()));
     query.view = ViewKind::Query(QueryConfig {
         group_by: vec![Dimension::Column("year".into())],
         ..Default::default()
@@ -613,7 +615,9 @@ fn export_reruns_a_truncated_query_without_the_limit() {
     std::fs::write(&path, "year,n\n2000,1\n2004,2\n2008,3\n2012,4\n").unwrap();
     let viewer = viewer(repository);
     open(&viewer, FileEntry::Source(path.clone()));
-    let mut query = DocumentDefinition::draft_table("Years".into(), path.to_string_lossy().into());
+    // Scanned in place, so the limit cuts the query's rows rather than the file's.
+    let mut query =
+        DocumentDefinition::draft_database_view(crate::domain::documents::DatabaseView::file(path.to_string_lossy()));
     query.view = ViewKind::Query(QueryConfig {
         group_by: vec![Dimension::Column("year".into())],
         ..Default::default()

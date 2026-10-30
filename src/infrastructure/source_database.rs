@@ -54,6 +54,9 @@ struct LoadedFile {
     stamp: FileStamp,
     renamed_rowid: Option<String>,
     preserve_order: bool,
+    /// The most rows read, and whether the file had more.
+    row_limit: Option<usize>,
+    cut: bool,
     /// Alive while a store reads the table.
     table: Weak<LoadedTable>,
 }
@@ -96,6 +99,8 @@ pub(crate) struct PersistentBacking {
     pub source_version: Option<(i64, i64)>,
     /// The file's table, kept while this store reads it.
     pub _table: Option<Arc<LoadedTable>>,
+    /// The row limit the file's read stopped at, leaving rows unread.
+    pub cut_at: Option<usize>,
 }
 
 impl SourceDatabase {
@@ -375,22 +380,23 @@ impl SourceDatabase {
         mode: LoadMode,
         preserve_order: bool,
     ) -> Result<DuckDbStore, String> {
-        match self.load_internal(path, mode, preserve_order, None, || {})? {
+        match self.load_internal(path, mode, preserve_order, None, None, || {})? {
             SourceLoad::Loaded(store) => Ok(*store),
             SourceLoad::Reused => unreachable!("no existing source was supplied"),
         }
     }
 
-    /// Like [`Self::load`], but reports [`SourceLoad::Reused`] when `existing`
-    /// already reads the current table.
+    /// Like [`Self::load`], reading at most `row_limit` rows, but reports
+    /// [`SourceLoad::Reused`] when `existing` already reads the current table.
     pub fn load_reusing(
         self: &Arc<Self>,
         path: &Path,
         mode: LoadMode,
         preserve_order: bool,
+        row_limit: Option<usize>,
         existing: Option<&PersistentSourceIdentity>,
     ) -> Result<SourceLoad, String> {
-        self.load_internal(path, mode, preserve_order, existing, || {})
+        self.load_internal(path, mode, preserve_order, row_limit, existing, || {})
     }
 
     fn load_internal(
@@ -398,6 +404,7 @@ impl SourceDatabase {
         path: &Path,
         mode: LoadMode,
         preserve_order: bool,
+        row_limit: Option<usize>,
         existing: Option<&PersistentSourceIdentity>,
         mut after_import: impl FnMut(),
     ) -> Result<SourceLoad, String> {
@@ -422,6 +429,7 @@ impl SourceDatabase {
             && let Some(entry) = &previous
             && entry.stamp == stamp
             && entry.preserve_order == preserve_order
+            && entry.row_limit == row_limit
             && let Some(table) = entry.table.upgrade()
         {
             let table_sql = files_table_sql(&entry.table_name);
@@ -460,9 +468,11 @@ impl SourceDatabase {
                     .execute_batch("SET preserve_insertion_order = false")
                     .map_err(|error| error.to_string())?;
             }
+            // One row past the limit shows whether the file goes on.
+            let limit_sql = row_limit.map_or_else(String::new, |limit| format!(" LIMIT {}", limit.saturating_add(1)));
             let created = transaction
                 .execute(
-                    &format!("CREATE OR REPLACE TABLE {table_sql} AS SELECT * FROM {reader}"),
+                    &format!("CREATE OR REPLACE TABLE {table_sql} AS SELECT * FROM {reader}{limit_sql}"),
                     params![source_path.to_string_lossy().as_ref()],
                 )
                 .map_err(|error| {
@@ -478,6 +488,24 @@ impl SourceDatabase {
             }
             created?;
             let renamed_rowid = normalize_rowid(&transaction, &table_sql)?;
+            let cut = match row_limit {
+                Some(limit) => {
+                    let rows = transaction
+                        .query_row(&format!("SELECT count(*) FROM {table_sql}"), [], |row| row.get::<_, i64>(0))
+                        .map_err(|error| error.to_string())?;
+                    let cut = rows as u64 > limit as u64;
+                    if cut {
+                        // Row ids grow in insertion order, so the largest is the extra row.
+                        transaction
+                            .execute_batch(&format!(
+                                "DELETE FROM {table_sql} WHERE rowid = (SELECT max(rowid) FROM {table_sql})"
+                            ))
+                            .map_err(|error| error.to_string())?;
+                    }
+                    cut
+                }
+                None => false,
+            };
             after_import();
             let after = match file_stamp(&source_path) {
                 Ok(stamp) => stamp,
@@ -513,6 +541,8 @@ impl SourceDatabase {
                 stamp,
                 renamed_rowid,
                 preserve_order,
+                row_limit,
+                cut,
                 table: Arc::downgrade(&table),
             };
             state.files.insert(key, entry.clone());
@@ -529,7 +559,7 @@ impl SourceDatabase {
         mode: LoadMode,
         after_import: impl FnMut(),
     ) -> Result<DuckDbStore, String> {
-        match self.load_internal(path, mode, true, None, after_import)? {
+        match self.load_internal(path, mode, true, None, None, after_import)? {
             SourceLoad::Loaded(store) => Ok(*store),
             SourceLoad::Reused => unreachable!("no existing source was supplied"),
         }
@@ -560,6 +590,7 @@ impl SourceDatabase {
                 database: self.clone(),
                 source_version: Some((entry.file_id, entry.revision)),
                 _table: Some(table),
+                cut_at: entry.row_limit.filter(|_| entry.cut),
             },
         )
     }
@@ -1556,19 +1587,19 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let identity = first.persistent_identity().unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&identity))
                 .unwrap(),
             SourceLoad::Reused
         ));
         let other = SourceDatabase::for_profile(&home.path().join("other"));
         assert!(matches!(
             other
-                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
         let forced = match database
-            .load_reusing(&path, LoadMode::Force, true, Some(&identity))
+            .load_reusing(&path, LoadMode::Force, true, None, Some(&identity))
             .unwrap()
         {
             SourceLoad::Loaded(store) => store,
@@ -1577,7 +1608,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         // A refresh in another window must also prevent reuse of this old snapshot.
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
@@ -1585,14 +1616,14 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         fs::write(&path, "n\n300\n").unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, true, Some(&current))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&current))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));
         fs::remove_file(&path).unwrap();
         assert!(
             database
-                .load_reusing(&path, LoadMode::Check, true, Some(&current))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&current))
                 .is_err()
         );
         // The table stays readable while the file is gone.
@@ -1600,7 +1631,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         fs::write(&path, "n\n400\n").unwrap();
         assert!(matches!(
             database
-                .load_reusing(&path, LoadMode::Check, true, Some(&identity))
+                .load_reusing(&path, LoadMode::Check, true, None, Some(&identity))
                 .unwrap(),
             SourceLoad::Loaded(_)
         ));

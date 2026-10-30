@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use polars::prelude::DataFrame;
 
-use super::polars::readers::read_frame;
+use super::polars::readers::read_frame_limited;
 use super::polars::store::PolarsStore;
 use super::source_database::{
     LoadMode, PersistentSourceIdentity, SourceDatabase, absolute_source_path, file_stamp,
@@ -29,6 +29,8 @@ pub struct ReadOptions {
     pub engine: Engine,
     /// DuckDB only: keep rows in file order. Off reads large files faster.
     pub preserve_order: bool,
+    /// The most rows read into memory: the Limit setting.
+    pub row_limit: usize,
 }
 
 impl Default for ReadOptions {
@@ -36,6 +38,7 @@ impl Default for ReadOptions {
         Self {
             engine: Engine::default(),
             preserve_order: true,
+            row_limit: super::json_store::DEFAULT_QUERY_LIMIT as usize,
         }
     }
 }
@@ -76,6 +79,9 @@ impl SourceProbe {
 
 struct CachedFrame {
     stamp: (i128, u64),
+    row_limit: usize,
+    /// The file had more rows than the limit.
+    cut: bool,
     version: u64,
     /// Dropped once no window shows the file.
     frame: Weak<DataFrame>,
@@ -152,7 +158,7 @@ impl Sources {
                     _ => None,
                 };
                 Ok(
-                    match self.database.load_reusing(path, mode, options.preserve_order, existing)? {
+                    match self.database.load_reusing(path, mode, options.preserve_order, Some(options.row_limit), existing)? {
                         super::source_database::SourceLoad::Reused => SourceLoad::Reused,
                         super::source_database::SourceLoad::Loaded(store) => {
                             SourceLoad::Loaded(Box::new(Store::from(*store)))
@@ -165,7 +171,7 @@ impl Sources {
                     Some(SourceIdentity::Polars(identity)) => Some(identity),
                     _ => None,
                 };
-                self.load_frame(path, mode, existing)
+                self.load_frame(path, mode, options.row_limit, existing)
             }
         }
     }
@@ -174,6 +180,7 @@ impl Sources {
         &self,
         path: &Path,
         mode: LoadMode,
+        row_limit: usize,
         existing: Option<&FrameIdentity>,
     ) -> Result<SourceLoad, String> {
         let source_path = absolute_source_path(path);
@@ -184,18 +191,21 @@ impl Sources {
             format!("cannot access source {}: {error}", path.display())
         })?;
         if mode == LoadMode::Check
-            && let Some((version, frame)) = self.cached(&key, stamp)
+            && let Some((version, frame, cut)) = self.cached(&key, stamp, row_limit)
         {
             let identity = FrameIdentity { key, version };
             if existing == Some(&identity) {
                 return Ok(SourceLoad::Reused);
             }
             return Ok(SourceLoad::Loaded(Box::new(
-                PolarsStore::from_shared_frame(frame).with_identity(identity).into(),
+                PolarsStore::from_shared_frame(frame)
+                    .with_identity(identity)
+                    .with_cut_at(cut.then_some(row_limit))
+                    .into(),
             )));
         }
         for attempt in 0..2 {
-            let frame = read_frame(&source_path)?;
+            let (frame, cut) = read_frame_limited(&source_path, Some(row_limit))?;
             let after = stamp_of(&source_path)
                 .map_err(|error| format!("cannot verify source after reading: {error}"))?;
             if after != stamp {
@@ -217,6 +227,8 @@ impl Sources {
                     key.clone(),
                     CachedFrame {
                         stamp,
+                        row_limit,
+                        cut,
                         version,
                         frame: Arc::downgrade(&frame),
                     },
@@ -225,18 +237,20 @@ impl Sources {
             return Ok(SourceLoad::Loaded(Box::new(
                 PolarsStore::from_shared_frame(frame)
                     .with_identity(FrameIdentity { key, version })
+                    .with_cut_at(cut.then_some(row_limit))
                     .into(),
             )));
         }
         unreachable!()
     }
 
-    /// The frame of the read that matches `stamp`, while some window holds it.
-    fn cached(&self, key: &str, stamp: (i128, u64)) -> Option<(u64, Arc<DataFrame>)> {
+    /// The frame of the read that matches `stamp` and `row_limit`, while some
+    /// window holds it, and whether the file had more rows.
+    fn cached(&self, key: &str, stamp: (i128, u64), row_limit: usize) -> Option<(u64, Arc<DataFrame>, bool)> {
         let frames = self.frames.lock().ok()?;
         let entry = frames.get(key)?;
-        (entry.stamp == stamp)
-            .then(|| entry.frame.upgrade().map(|frame| (entry.version, frame)))
+        (entry.stamp == stamp && entry.row_limit == row_limit)
+            .then(|| entry.frame.upgrade().map(|frame| (entry.version, frame, entry.cut)))
             .flatten()
     }
 
@@ -350,6 +364,7 @@ mod tests {
         let unordered = ReadOptions {
             engine: Engine::DuckDb,
             preserve_order: false,
+            ..ReadOptions::default()
         };
         let store = sources.load(&path, unordered, LoadMode::Check).unwrap();
         assert_eq!(store.row_count(), 5000);
@@ -381,5 +396,44 @@ mod tests {
         let third = sources.load(&path, options(Engine::Polars), LoadMode::Check).unwrap();
         assert_eq!(third.row_count(), 2);
         assert_eq!(first.row_count(), 1);
+    }
+
+    #[test]
+    fn reads_stop_at_the_row_limit_and_say_when_the_file_had_more() {
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(&home.path().join("profile"));
+        let csv = home.path().join("rows.csv");
+        std::fs::write(&csv, "n
+1
+2
+3
+4
+").unwrap();
+        let parquet = home.path().join("rows.parquet");
+        duckdb::Connection::open_in_memory()
+            .unwrap()
+            .execute(
+                "COPY (SELECT range + 1 AS n FROM range(4)) TO ? (FORMAT parquet)",
+                [parquet.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        for path in [&csv, &parquet] {
+            for engine in Engine::ALL {
+                let read = |row_limit| {
+                    let options = ReadOptions { engine, row_limit, ..ReadOptions::default() };
+                    sources.load(path, options, LoadMode::Check).unwrap()
+                };
+                let cut = read(3);
+                assert_eq!((cut.row_count(), cut.cut_at()), (3, Some(3)), "{engine:?} {}", path.display());
+                let first = cut.fetch_row_ids(&[0, 2]).unwrap();
+                assert_eq!(first[0].values, [Some("1".into())]);
+                assert_eq!(first[1].values, [Some("3".into())]);
+                // A different limit reads the file again rather than reuse the cut read.
+                let whole = read(4);
+                assert_eq!((whole.row_count(), whole.cut_at()), (4, None), "{engine:?} {}", path.display());
+                let again = read(3);
+                assert_eq!((again.row_count(), again.cut_at()), (3, Some(3)));
+            }
+        }
     }
 }
