@@ -497,6 +497,13 @@ pub struct DataFrameView {
     sql_restore_sort: bool,
     sql_catalog_revision: u64,
     sql_catalog_refreshing: bool,
+    /// Columns of the files SQL reads, kept across editors until a file changes.
+    sql_file_schemas: std::sync::Arc<std::sync::Mutex<crate::infrastructure::file_schemas::FileSchemas>>,
+    /// Describes the script's files once typing pauses.
+    sql_file_schema_task: Option<Task>,
+    sql_describing: bool,
+    /// The script changed while its files were being described.
+    sql_describe_again: bool,
     /// The SQL result holds every row of its query, so it can be filtered.
     pub(crate) sql_result_complete: bool,
     pub(crate) sql_editor_height: f32,
@@ -754,6 +761,10 @@ impl DataFrameView {
             sql_restore_sort: false,
             sql_catalog_revision: 0,
             sql_catalog_refreshing: false,
+            sql_file_schemas: Default::default(),
+            sql_file_schema_task: None,
+            sql_describing: false,
+            sql_describe_again: false,
             sql_result_complete: false,
             sql_editor_height: settings.sql_editor_height.unwrap_or(280.),
             database_tree: DatabaseTree::new(),

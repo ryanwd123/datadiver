@@ -2,6 +2,7 @@
 //! file paths being typed, and the catalog `diver_sql` completes, highlights
 //! and checks against.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use diver_sql::{
@@ -158,9 +159,19 @@ pub struct SqlCatalog {
     pub functions: Vec<FunctionInfo>,
     pub settings: Vec<SettingInfo>,
     pub extensions: Vec<String>,
+    /// Columns of the files and table functions scripts read, by
+    /// [`FileSource::key`], as DESCRIBE told them.
+    pub files: HashMap<String, Vec<ColumnInfo>>,
 }
 
 impl SqlCatalog {
+    /// Takes `catalog`'s database objects, keeping the file columns, which
+    /// are learned apart from the database.
+    pub fn replace(&mut self, catalog: SqlCatalog) {
+        let files = std::mem::take(&mut self.files);
+        *self = SqlCatalog { files, ..catalog };
+    }
+
     /// The database a name without one is in.
     fn database<'a>(&'a self, database: Option<&'a str>) -> &'a str {
         database.unwrap_or(&self.current_database)
@@ -254,7 +265,7 @@ impl Catalog for SqlCatalog {
 
     fn columns(&self, relation: &RelationSource) -> Option<Vec<ColumnInfo>> {
         let RelationSource::Table { path } = relation else {
-            return None;
+            return self.files.get(&file_key(relation)?).cloned();
         };
         let path = path.iter().map(|n| n.text.as_str()).collect::<Vec<_>>();
         let relation = self.resolve(&path)?;
@@ -282,6 +293,60 @@ impl Catalog for SqlCatalog {
     fn extensions(&self) -> Vec<String> {
         self.extensions.clone()
     }
+}
+
+/// A file or file-reading table function a script reads from, which the
+/// app describes to learn its columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileSource {
+    /// The quoted path or the call as written; it names the source in
+    /// [`SqlCatalog::files`].
+    pub key: String,
+    /// The statement that lists its columns.
+    pub describe: String,
+    /// The local file (or glob) it reads, when one is named, to tell when it changes.
+    pub path: Option<String>,
+}
+
+/// Whether DuckDB would fetch `path` over the network, which is too slow
+/// (and may cost money) to do in the background.
+fn is_remote(path: &str) -> bool {
+    path.contains("://")
+}
+
+/// The key `source`'s columns are kept under: the path for a file, the
+/// call for a table function that reads files.
+fn file_key(source: &RelationSource) -> Option<String> {
+    match source {
+        RelationSource::File { path } if !path.is_empty() && !is_remote(path) => Some(format!("'{path}'")),
+        RelationSource::TableFunction { name, args, call }
+            if name.last().is_some_and(|n| diver_sql::takes_path(&n.text))
+                && !args.iter().any(|arg| is_remote(arg)) =>
+        {
+            Some(call.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The local files and file-reading table functions `text` reads from.
+pub fn file_sources(text: &str) -> Vec<FileSource> {
+    diver_sql::file_relations(&diver_sql::parse(text))
+        .iter()
+        .filter_map(|source| {
+            let key = file_key(source)?;
+            let (describe, path) = match source {
+                RelationSource::File { path } => {
+                    (format!("DESCRIBE SELECT * FROM '{}'", path.replace('\'', "''")), Some(path.clone()))
+                }
+                RelationSource::TableFunction { call, args, .. } => {
+                    (format!("DESCRIBE SELECT * FROM {call}"), args.first().cloned())
+                }
+                _ => return None,
+            };
+            Some(FileSource { key, describe, path })
+        })
+        .collect()
 }
 
 /// Completion items at `offset`: `diver_sql`'s, plus the relations a bare

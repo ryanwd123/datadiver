@@ -138,3 +138,29 @@ fn values_and_files() {
     "#]],
     );
 }
+
+#[test]
+fn file_relations_lists_each_file_and_call_once() {
+    let parse = diver_sql::parse(
+        "FROM '~/data/a.parquet' a SELECT a.x;\n\
+         SELECT * FROM read_csv('b.csv', sep = ';') AS b JOIN orders o ON true, 'c.json';\n\
+         SELECT * FROM (FROM 'a.parquet') s, '~/data/a.parquet'",
+    );
+    let found: Vec<String> = diver_sql::file_relations(&parse)
+        .iter()
+        .map(|r| match r {
+            diver_sql::RelationSource::File { path } => format!("file {path}"),
+            diver_sql::RelationSource::TableFunction { call, args, .. } => format!("call {call} {args:?}"),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    expect![[r#"
+        [
+            "file ~/data/a.parquet",
+            "call read_csv('b.csv', sep = ';') [\"b.csv\"]",
+            "file c.json",
+            "file a.parquet",
+        ]
+    "#]]
+    .assert_debug_eq(&found);
+}

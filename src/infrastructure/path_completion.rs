@@ -54,6 +54,25 @@ fn expand_home(path: &str, home: Option<&Path>) -> Option<PathBuf> {
     Some(home?.join(rest.trim_start_matches(['/', '\\'])))
 }
 
+/// The file or folder `path` names, found as DuckDB finds it: `~` in the
+/// home folder, a relative path in each search root and then the working
+/// directory. `None` when nothing is there.
+pub fn resolve(path: &str, roots: &PathRoots) -> Option<PathBuf> {
+    if let Some(home) = expand_home(path, roots.home.as_deref()) {
+        return home.exists().then_some(home);
+    }
+    let path = Path::new(path);
+    if path.has_root() || path.is_absolute() {
+        return path.exists().then(|| path.to_path_buf());
+    }
+    roots
+        .search
+        .iter()
+        .chain(&roots.working)
+        .map(|root| root.join(path))
+        .find(|candidate| candidate.exists())
+}
+
 /// Folders and files whose name starts with the last segment of `typed`.
 ///
 /// A relative path is looked up in every search root and the working

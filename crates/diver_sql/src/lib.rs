@@ -40,7 +40,7 @@ pub use highlight::{HighlightClass, highlight, highlight_with};
 pub use hover::{Hover, hover};
 pub use items::{CompletionItem, ItemKind, items, needs_quotes, quote_if_needed, relation_columns};
 pub use lexer::{Token, tokenize};
-pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation};
+pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation, file_relations};
 pub use signature::{SignatureHelp, signature_help, signature_help_with};
 pub use syntax_kind::{
     DuckSql, Kw, KwCategory, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken,

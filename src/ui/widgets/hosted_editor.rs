@@ -133,6 +133,16 @@ impl HostedEditor {
         self.editor.run(Action::TriggerSuggest);
     }
 
+    /// Asks for completions again once the provider knows more: refreshes
+    /// an open list, or, while `focused`, opens one at a `.` that found nothing.
+    pub fn refresh_suggest(&mut self, focused: bool) {
+        let open = self.editor.suggestions().is_some();
+        let after_dot = focused && self.text().get(..self.cursor()).is_some_and(|before| before.ends_with('.'));
+        if open || after_dot {
+            self.trigger_suggest();
+        }
+    }
+
     /// The labels of the open completion list.
     pub fn completion_labels(&self) -> Option<Vec<String>> {
         self.editor.suggestions()

@@ -43,6 +43,8 @@ pub enum RelationSource {
     TableFunction {
         name: Vec<Name>,
         args: Vec<String>,
+        /// The call as written, with named arguments too: `read_csv('x', sep = ';')`.
+        call: String,
     },
     Cte {
         name: Name,
@@ -119,6 +121,35 @@ impl VisibleRelation {
                 .last()
                 .is_some_and(|p| p.matches(&qualifier[qualifier.len() - 1].text))
     }
+}
+
+/// A file or table function FROM item as a relation source.
+fn file_source(item: &FromItem) -> Option<RelationSource> {
+    match item.kind() {
+        SyntaxKind::FILE_REF => Some(RelationSource::File {
+            path: item.file().unwrap_or_default(),
+        }),
+        SyntaxKind::TABLE_FUNCTION => Some(RelationSource::TableFunction {
+            name: item.path(),
+            args: item.string_args(),
+            call: item.text_without_alias(),
+        }),
+        _ => None,
+    }
+}
+
+/// The files and table functions a script reads from, each once, in order:
+/// the relations whose columns only the catalog can tell.
+pub fn file_relations(parse: &crate::Parse) -> Vec<RelationSource> {
+    let mut out = Vec::new();
+    for item in parse.syntax().descendants().filter_map(FromItem::cast) {
+        if let Some(source) = file_source(&item)
+            && !out.contains(&source)
+        {
+            out.push(source);
+        }
+    }
+    out
 }
 
 pub(crate) fn file_stem(path: &str) -> String {
@@ -494,21 +525,10 @@ impl Walker {
                     Columns::FromCatalog,
                 )]
             }
-            SyntaxKind::FILE_REF => {
-                vec![relation(
-                    RelationSource::File {
-                        path: item.file().unwrap_or_default(),
-                    },
-                    Columns::FromCatalog,
-                )]
-            }
-            SyntaxKind::TABLE_FUNCTION => {
-                let source = RelationSource::TableFunction {
-                    name: item.path(),
-                    args: item.string_args(),
-                };
-                vec![relation(source, Columns::FromCatalog)]
-            }
+            SyntaxKind::FILE_REF | SyntaxKind::TABLE_FUNCTION => file_source(item)
+                .map(|source| relation(source, Columns::FromCatalog))
+                .into_iter()
+                .collect(),
             SyntaxKind::SUBQUERY_REF => {
                 let Some(query) = item.query() else {
                     return Vec::new();

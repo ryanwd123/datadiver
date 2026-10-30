@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::ai::{AiEvent, SqlRequest, generate_sql, mentioned_relations};
-use crate::infrastructure::{ai_client, sql_execution::SqlExecution};
+use crate::domain::sql_editor;
+use crate::infrastructure::{ai_client, file_schemas, sql_execution::SqlExecution};
 use crate::ui::sql_panel::{AskProvider, SqlAsk, SqlPanelEvent};
 use std::sync::{
     Arc, Mutex,
@@ -350,8 +351,9 @@ FROM apples a";
                         view.sql_interrupt = Some(interrupt);
                         view.sql_stopped = Some(stopped);
                         view.sql_catalog_revision = view.database.revision();
-                        *catalog_handle.write().unwrap() = catalog;
+                        catalog_handle.write().unwrap().replace(catalog);
                         *roots_handle.write().unwrap() = path_roots;
+                        view.refresh_file_schemas(cx);
                         if let Some(panel) = &mut view.sql_panel {
                             panel.default_catalog = default_catalog;
                             panel.busy = false;
@@ -399,6 +401,7 @@ FROM apples a";
             SqlPanelEvent::Changed(text) => {
                 self.session.set_sql_text(text);
                 self.schedule_sql_auto_save(cx);
+                self.schedule_file_schemas(cx);
                 cx.notify();
             }
             SqlPanelEvent::AutoRun(enabled) => {
@@ -689,10 +692,56 @@ FROM apples a";
                     return;
                 }
                 if let Ok(catalog) = result {
-                    *catalog_handle.write().unwrap() = catalog;
+                    catalog_handle.write().unwrap().replace(catalog);
                     view.sql_catalog_revision = catalog_revision;
                 }
                 cx.notify();
+            },
+        )
+        .detach();
+    }
+
+    fn schedule_file_schemas(&mut self, cx: &mut Cx<Self>) {
+        self.sql_file_schema_task = Some(cx.timer(Duration::from_millis(300), |view, cx| {
+            view.refresh_file_schemas(cx);
+        }));
+    }
+
+    /// Describes, on a worker, the files the script reads that are new or
+    /// changed since they were last described, so `alias.` completes their columns.
+    pub(crate) fn refresh_file_schemas(&mut self, cx: &mut Cx<Self>) {
+        self.sql_file_schema_task = None;
+        if self.sql_describing {
+            self.sql_describe_again = true;
+            return;
+        }
+        let Some(panel) = &self.sql_panel else {
+            return;
+        };
+        let sources = sql_editor::file_sources(&panel.editor.text());
+        if sources.is_empty() {
+            return;
+        }
+        let roots = panel.path_roots.read().map(|roots| roots.clone()).unwrap_or_default();
+        let schemas = self.sql_file_schemas.clone();
+        let database = self.database.clone();
+        self.sql_describing = true;
+        cx.spawn(
+            move || file_schemas::refresh(&schemas, &sources, &roots, || file_schemas::connection(&database, &roots)),
+            move |view: &mut Self, cx, result| {
+                view.sql_describing = false;
+                if let Ok((columns, described)) = result
+                    && let Some(panel) = &mut view.sql_panel
+                {
+                    panel.catalog.write().unwrap().files = columns;
+                    if described {
+                        panel.editor.refresh_suggest(view.focus == Some(panel.editor.id));
+                    }
+                    cx.notify();
+                }
+                if std::mem::take(&mut view.sql_describe_again) {
+                    view.refresh_file_schemas(cx);
+                }
             },
         )
         .detach();
@@ -773,8 +822,10 @@ FROM apples a";
                 match outcome {
                     Ok(mut run) => {
                         view.sql_catalog_revision = view.database.revision();
-                        *catalog_handle.write().unwrap() = run.catalog;
+                        catalog_handle.write().unwrap().replace(run.catalog);
                         *roots_handle.write().unwrap() = run.path_roots;
+                        // The run may have written a file the script reads.
+                        view.refresh_file_schemas(cx);
                         if run.result.is_some() {
                             view.sql_result_complete = run.complete;
                             if !run.complete {

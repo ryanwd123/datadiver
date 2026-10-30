@@ -327,6 +327,17 @@ impl FromItem {
             .map(|t| string_value(t.text()))
     }
 
+    /// The item as written without its alias, such as a table function's
+    /// call with all its arguments.
+    pub fn text_without_alias(&self) -> String {
+        let text = self.0.to_string();
+        let start = self.0.text_range().start();
+        let end = self
+            .alias()
+            .map_or(text.len(), |a| usize::from(a.syntax().text_range().start() - start));
+        text[..end].trim().to_string()
+    }
+
     /// The string arguments of a table function, unquoted.
     pub fn string_args(&self) -> Vec<String> {
         let Some(args) = child_of_kind(&self.0, SyntaxKind::ARG_LIST) else {

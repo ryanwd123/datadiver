@@ -168,6 +168,7 @@ impl SqlExecution {
             functions: self.functions()?,
             settings,
             extensions: strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?,
+            files: Default::default(),
         })
     }
 

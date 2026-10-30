@@ -686,6 +686,37 @@ fn sql_alias_completion_triggers_on_dot_and_inserts_only_column() {
 }
 
 #[test]
+fn sql_alias_of_a_file_completes_its_columns_once_described() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join("athletes.parquet").display().to_string().replace('\\', "/");
+    duckdb::Connection::open_in_memory()
+        .unwrap()
+        .execute_batch(&format!("COPY (SELECT 1 AS id, 'Ann' AS name) TO '{file}'"))
+        .unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.run_until_parked();
+    let text = format!("FROM '{file}' a\nSELECT a");
+    place(&viewer, &text, text.len()..text.len());
+    // Typing `.` finds no columns yet; the file is described once typing
+    // pauses, and the list opens with them.
+    viewer.input(".");
+    viewer.run_until_parked();
+    assert_eq!(completion_labels(&viewer), None);
+    viewer.advance_clock(Duration::from_millis(300));
+    viewer.render();
+    assert_eq!(completion_labels(&viewer).unwrap(), ["id", "name"]);
+    press(&viewer, "enter");
+    assert_eq!(sql_text(&viewer), format!("FROM '{file}' a\nSELECT a.id"));
+    // Known now, so the next `.` lists them at once.
+    viewer.input(", a.");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(completion_labels(&viewer).unwrap(), ["id", "name"]);
+}
+
+#[test]
 fn sql_path_completion_lists_search_roots_and_tab_accepts_into_folders() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
