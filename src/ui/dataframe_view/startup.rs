@@ -355,6 +355,21 @@ impl DataFrameView {
                 }
                 self.toggle_database_tree(cx);
             }
+            "confirm:archive-sql" => {
+                let mut source = DocumentDefinition::draft_table("Monthly orders".into(), String::new());
+                source.view = ViewKind::Sql(crate::domain::documents::SqlConfig {
+                    text: "SELECT 1 AS n".into(),
+                    ..Default::default()
+                });
+                if self.repository.save_view(&mut source).is_ok() {
+                    for name in ["Orders by month", "Orders pivot"] {
+                        let mut view = DocumentDefinition::draft_sql_source(&source);
+                        view.name = name.into();
+                        let _ = self.repository.save_view(&mut view);
+                    }
+                    self.request_archive(&source, cx);
+                }
+            }
             "search-columns" => {
                 let id = self.search_input.id;
                 self.set_focus(Some(id), cx);

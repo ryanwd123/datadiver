@@ -113,6 +113,7 @@ fn main() {
                             | "palette:files"
                             | "palette:folders"
                             | "palette:recovered"
+                            | "confirm:archive-sql"
                             | "palette:favorites"
                             | "palette:columns"
                             | "palette:column-chooser"

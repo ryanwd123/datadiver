@@ -1380,3 +1380,181 @@ fn open_sql_editor_opens_only_sql_sources_and_scripts() {
     assert!(editor_focused(&viewer));
     assert_eq!(sql_text(&viewer), "SELECT 42 AS answer");
 }
+
+/// The title, message and whether it is destructive, of the open confirmation.
+fn confirmation(viewer: &Viewer) -> (String, String, bool) {
+    viewer.read(|view| match &view.dialog {
+        Some(Dialog::Confirm(confirm)) => {
+            let (title, message, danger) = confirm.text();
+            (title.to_owned(), message.to_owned(), danger)
+        }
+        _ => panic!("no confirmation is open"),
+    })
+}
+
+fn confirm(viewer: &Viewer) {
+    viewer.click(|hit| *hit == Hit::Button(Button::DialogOk));
+    viewer.run_until_parked();
+}
+
+fn open_entry(viewer: &Viewer, definition: &DocumentDefinition) {
+    viewer.update(|view, cx| view.navigate_to_file(FileEntry::View(definition.clone()), false, false, false, cx));
+    viewer.run_until_parked();
+}
+
+fn saved_names(repository: &ViewRepository) -> Vec<String> {
+    repository.load_views().0.into_iter().map(|view| view.name).collect()
+}
+
+#[test]
+fn archiving_a_sql_source_warns_about_views_on_it_and_recovering_restores_them() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut source = sql_view(
+        "Orders SQL",
+        SqlConfig {
+            text: "SELECT 1 AS n".into(),
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut source).unwrap();
+    let mut on_source = DocumentDefinition::draft_sql_source(&source);
+    on_source.name = "Orders table".into();
+    repository.save_view(&mut on_source).unwrap();
+    let viewer = viewer(repository.clone(), None);
+
+    // With no SQL open the command says what it needs.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ArchiveSql, cx));
+    assert!(!viewer.has_dialog());
+    assert!(viewer.read(|view| view.copy_status.clone().unwrap().contains("Open a saved SQL source")));
+
+    // Archiving the open source names the view that reads it.
+    open_entry(&viewer, &source);
+    assert!(viewer.read(|view| view.session.is_sql()));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ArchiveSql, cx));
+    let (title, message, danger) = confirmation(&viewer);
+    assert_eq!(title, "Archive Orders SQL?");
+    assert!(message.starts_with("The saved view Orders table reads its rows."), "{message}");
+    assert!(!danger);
+    confirm(&viewer);
+    assert_eq!(saved_names(&repository), ["Orders table"]);
+    viewer.read(|view| {
+        assert!(!view.session.is_sql());
+        assert!(view.sql_panel.is_none());
+    });
+    // Its editor is gone, so no autosave brings it back.
+    viewer.advance_clock(Duration::from_secs(5));
+    assert_eq!(saved_names(&repository), ["Orders table"]);
+
+    // The view on it says where its source went.
+    open_entry(&viewer, &on_source);
+    let error = viewer.read(|view| view.error.clone().unwrap_or_default());
+    assert!(error.contains("Orders SQL, which is archived"), "{error}");
+
+    // Recovering brings the source back, and the view reads it again.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::RecoverViews, cx));
+    viewer.read(|view| match &view.dialog {
+        Some(Dialog::Palette(dialog)) => {
+            assert!(matches!(dialog.kind, PaletteKind::Recovery(_)));
+            let label = &dialog.palette.list.items()[0].label;
+            assert!(label.starts_with("Orders SQL · SQL source · "), "{label}");
+        }
+        _ => panic!("the recovery palette is not open"),
+    });
+    press(&viewer, "enter");
+    assert_eq!(saved_names(&repository), ["Orders SQL", "Orders table"]);
+    open_entry(&viewer, &on_source);
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.result.row_count(), 1);
+    });
+
+    // Files lists the source as its rows; Ctrl+Delete archives the source.
+    viewer.update(|view, cx| view.open_file_palette(cx));
+    viewer.render();
+    viewer.input("Orders SQL");
+    viewer.run_until_parked();
+    let rows = viewer.read(|view| match &view.dialog {
+        Some(Dialog::Palette(dialog)) => {
+            let list = &dialog.palette.list;
+            list.visible_items().iter().map(|&index| list.items()[index].label.clone()).collect::<Vec<_>>()
+        }
+        _ => panic!("Files is not open"),
+    });
+    assert_eq!(rows, ["Orders table", "Orders SQL"]);
+    press(&viewer, "down");
+    press(&viewer, "ctrl-delete");
+    assert_eq!(confirmation(&viewer).0, "Archive Orders SQL?");
+    confirm(&viewer);
+    assert_eq!(saved_names(&repository), ["Orders table"]);
+}
+
+#[test]
+fn deleting_sql_permanently_asks_first_from_the_command_tree_and_archive() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut source = sql_view(
+        "Orders SQL",
+        SqlConfig {
+            text: "SELECT 1 AS n".into(),
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut source).unwrap();
+    let mut on_source = DocumentDefinition::draft_sql_source(&source);
+    on_source.name = "Orders table".into();
+    repository.save_view(&mut on_source).unwrap();
+    let mut script = sql_view(
+        "Cleanup",
+        SqlConfig {
+            script: true,
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut script).unwrap();
+    let viewer = viewer(repository.clone(), None);
+
+    // While its rows are shown, the command deletes the source behind them.
+    open_entry(&viewer, &DocumentDefinition::draft_sql_source(&source));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::DeleteSql, cx));
+    let (title, message, danger) = confirmation(&viewer);
+    assert_eq!(title, "Delete Orders SQL permanently?");
+    assert!(message.starts_with("The saved view Orders table reads its rows, and stops working."), "{message}");
+    assert!(danger);
+    viewer.close_dialog();
+    assert_eq!(saved_names(&repository).len(), 3);
+    viewer.update(|view, cx| view.dispatch_command(CommandId::DeleteSql, cx));
+    confirm(&viewer);
+    assert_eq!(saved_names(&repository), ["Cleanup", "Orders table"]);
+    assert!(repository.load_archives().0.is_empty());
+    open_entry(&viewer, &on_source);
+    let error = viewer.read(|view| view.error.clone().unwrap_or_default());
+    assert_eq!(error, "This view reads a SQL source that was deleted");
+
+    // In the tree Delete archives a script and Shift+Delete deletes it.
+    press(&viewer, "ctrl-b");
+    let select = |id: &str| {
+        viewer.update(|view, _| {
+            view.database_tree.select(id);
+            let mut focus = view.focus;
+            view.database_tree.focus(&mut focus);
+            view.focus = focus;
+        })
+    };
+    select(&format!("script:{}", script.id));
+    press(&viewer, "shift-delete");
+    assert_eq!(confirmation(&viewer).0, "Delete Cleanup permanently?");
+    viewer.close_dialog();
+    select(&format!("script:{}", script.id));
+    press(&viewer, "delete");
+    assert!(!viewer.has_dialog());
+    assert_eq!(saved_names(&repository), ["Orders table"]);
+
+    // Shift+Delete in the recovery palette deletes an archive for good.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::RecoverViews, cx));
+    press(&viewer, "shift-delete");
+    assert_eq!(confirmation(&viewer), ("Delete Cleanup permanently?".into(), "This removes it from the archive and cannot be undone.".into(), true));
+    confirm(&viewer);
+    assert!(repository.load_archives().0.is_empty());
+    viewer.read(|view| assert!(matches!(&view.dialog, Some(Dialog::Palette(dialog)) if matches!(dialog.kind, PaletteKind::Recovery(_)))));
+}

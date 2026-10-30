@@ -34,6 +34,11 @@ pub enum ConfirmAction {
     NewSql { script: bool },
     DropRelation(crate::domain::documents::DatabaseView),
     RemoveWatchedFolder(PathBuf),
+    ArchiveView(Box<DocumentDefinition>),
+    /// Deletes a saved view for good.
+    DeleteView(Box<DocumentDefinition>),
+    /// Deletes an archived view for good.
+    DeleteArchive(PathBuf),
 }
 
 pub struct ConfirmDialog {
@@ -42,6 +47,13 @@ pub struct ConfirmDialog {
     action_label: String,
     danger: bool,
     action: ConfirmAction,
+}
+
+#[cfg(test)]
+impl ConfirmDialog {
+    pub(crate) fn text(&self) -> (&str, &str, bool) {
+        (&self.title, &self.message, self.danger)
+    }
 }
 
 /// The lists a palette dialog can show, with what choosing an item does.
@@ -226,6 +238,15 @@ impl DataFrameView {
                 self.run_tree_delete(move || database.drop_relation(&relation), cx);
             }
             ConfirmAction::RemoveWatchedFolder(root) => self.remove_watched_folder(root, cx),
+            ConfirmAction::ArchiveView(definition) => self.remove_view(&definition, false, cx),
+            ConfirmAction::DeleteView(definition) => self.remove_view(&definition, true, cx),
+            ConfirmAction::DeleteArchive(path) => {
+                match self.repository.delete_archive(&path) {
+                    Ok(()) => self.copy_status = Some("Deleted the archived view".into()),
+                    Err(error) => self.error = Some(format!("Delete failed: {error}")),
+                }
+                self.open_recovery_palette(cx);
+            }
         }
     }
 
@@ -793,11 +814,54 @@ impl DataFrameView {
         sections.iter().flatten().nth(index).cloned()
     }
 
+    /// Archives the selected saved view, or the SQL source whose rows the
+    /// selected entry shows.
     fn archive_selected_view(&mut self, cx: &mut Cx<Self>) {
-        if let Some(FileEntry::View(definition)) = self.selected_file_entry().filter(FileEntry::is_saved_view) {
-            self.close_dialog(cx);
-            self.archive_view(&definition, cx);
-        }
+        let Some(FileEntry::View(definition)) = self.selected_file_entry().filter(FileEntry::is_archivable) else {
+            return;
+        };
+        let definition = match &definition.sql_source {
+            Some(id) if definition.id.is_empty() => match self.repository.load_view(id) {
+                Ok(source) => source,
+                Err(error) => {
+                    self.error = Some(format!("Cannot find the SQL source: {error}"));
+                    cx.notify();
+                    return;
+                }
+            },
+            _ => definition,
+        };
+        self.close_dialog(cx);
+        self.request_archive(&definition, cx);
+    }
+
+    /// Asks before deleting the selected archived view for good.
+    fn delete_selected_archive(&mut self, cx: &mut Cx<Self>) {
+        let Some(Dialog::Palette(dialog)) = &self.dialog else {
+            return;
+        };
+        let PaletteKind::Recovery(paths) = &dialog.kind else {
+            return;
+        };
+        let Some(path) = dialog.palette.selected_item().and_then(|index| paths.get(index)).cloned() else {
+            return;
+        };
+        let name = self
+            .repository
+            .load_archives()
+            .0
+            .into_iter()
+            .find(|(archive_path, _)| *archive_path == path)
+            .map_or_else(|| "this view".to_owned(), |(_, archive)| archive.original_name);
+        self.close_dialog(cx);
+        self.confirm(
+            format!("Delete {name} permanently?"),
+            "This removes it from the archive and cannot be undone.".into(),
+            "Delete".into(),
+            true,
+            ConfirmAction::DeleteArchive(path),
+            cx,
+        );
     }
 
     pub(crate) fn open_recovery_palette(&mut self, cx: &mut Cx<Self>) {
@@ -817,9 +881,10 @@ impl DataFrameView {
             })
             .collect();
         let paths = archives.into_iter().map(|(path, _)| path).collect();
-        self.palette("Recover deleted views", "Find a deleted view", items, PaletteKind::Recovery(paths), cx);
+        self.palette("Recover archived views", "Find an archived view or SQL source", items, PaletteKind::Recovery(paths), cx);
         if let Some(Dialog::Palette(dialog)) = &mut self.dialog {
-            dialog.palette.list.empty_text = "No deleted views".into();
+            dialog.palette.list.empty_text = "No archived views".into();
+            dialog.footer = Some("Enter recovers · Shift+Delete deletes permanently".into());
         }
     }
 
@@ -1176,6 +1241,10 @@ impl DataFrameView {
             Some(Dialog::Palette(dialog)) => {
                 if event.key == "delete" && event.modifiers.control && matches!(dialog.kind, PaletteKind::Files(_)) {
                     self.archive_selected_view(cx);
+                    return true;
+                }
+                if event.key == "delete" && event.modifiers.shift && matches!(dialog.kind, PaletteKind::Recovery(_)) {
+                    self.delete_selected_archive(cx);
                     return true;
                 }
                 let outcome = dialog.palette.key(event);
@@ -1619,7 +1688,7 @@ impl DataFrameView {
                         .palette
                         .selected_item()
                         .and_then(|index| sections.iter().flatten().nth(index))
-                        .is_some_and(FileEntry::is_saved_view);
+                        .is_some_and(FileEntry::is_archivable);
                     let mut buttons = Row::new(footer_rect, 8.0);
                     for (label, hit, enabled) in [
                         ("Folders", Button::FilesFolders, true),

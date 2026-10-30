@@ -69,6 +69,15 @@ impl DataFrameView {
             CommandId::SqlEditor => self.open_sql_editor(cx),
             CommandId::NewSqlSource => self.new_sql(false, cx),
             CommandId::NewSqlScript => self.new_sql(true, cx),
+            CommandId::ArchiveSql | CommandId::DeleteSql => match self.current_sql_document() {
+                Ok(definition) if id == CommandId::DeleteSql => self.request_delete(&definition, cx),
+                Ok(definition) => self.request_archive(&definition, cx),
+                Err(message) => {
+                    self.copy_status = Some(message);
+                    cx.notify();
+                }
+            },
+            CommandId::RecoverViews => self.open_recovery_palette(cx),
             CommandId::Settings => self.open_settings(cx),
             CommandId::ViewOptions => self.open_view_options(cx),
             CommandId::QueryEngine => self.open_engine_palette(cx),

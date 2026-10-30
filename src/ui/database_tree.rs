@@ -45,7 +45,8 @@ pub enum DatabaseTreeEvent {
         new_window: bool,
         pivot_draft: bool,
     },
-    Delete(DeleteTarget),
+    /// Delete archives a saved view; Shift+Delete deletes it permanently.
+    Delete { target: DeleteTarget, permanently: bool },
     FocusGrid,
     Refresh,
     Close,
@@ -698,9 +699,12 @@ impl DatabaseTree {
                 self.events.push(DatabaseTreeEvent::FocusGrid);
                 true
             }
-            "delete" if !modifiers.modified() => {
+            "delete" if !modifiers.control && !modifiers.alt && !modifiers.platform => {
                 if let Some(target) = selected.and_then(|entry| self.deletable.get(&entry.id)).cloned() {
-                    self.events.push(DatabaseTreeEvent::Delete(target));
+                    self.events.push(DatabaseTreeEvent::Delete {
+                        target,
+                        permanently: modifiers.shift,
+                    });
                 }
                 true
             }

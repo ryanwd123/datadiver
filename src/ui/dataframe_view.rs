@@ -112,6 +112,12 @@ impl FileEntry {
         matches!(self, Self::View(view) if !view.id.is_empty())
     }
 
+    /// A saved view, or the rows of a saved SQL source, which archive the
+    /// source.
+    pub(crate) fn is_archivable(&self) -> bool {
+        self.is_saved_view() || matches!(self, Self::View(view) if view.sql_source.is_some())
+    }
+
     pub(crate) fn label(&self) -> String {
         match self {
             Self::View(view) => view.name.clone(),
@@ -237,6 +243,9 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::SqlEditor,
     CommandId::NewSqlSource,
     CommandId::NewSqlScript,
+    CommandId::ArchiveSql,
+    CommandId::DeleteSql,
+    CommandId::RecoverViews,
     CommandId::Settings,
     CommandId::ViewOptions,
     CommandId::QueryEngine,

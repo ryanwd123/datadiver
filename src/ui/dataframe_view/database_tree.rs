@@ -26,7 +26,7 @@ impl DataFrameView {
                     new_window,
                     pivot_draft,
                 } => self.open_tree_target(target, new_window, pivot_draft, cx),
-                DatabaseTreeEvent::Delete(target) => self.delete_tree_target(target, cx),
+                DatabaseTreeEvent::Delete { target, permanently } => self.delete_tree_target(target, permanently, cx),
                 DatabaseTreeEvent::FocusGrid => self.focus_grid(cx),
                 DatabaseTreeEvent::Refresh => self.refresh_database_tree(cx),
                 DatabaseTreeEvent::Close => self.set_database_tree_open(false, cx),
@@ -141,14 +141,12 @@ impl DataFrameView {
     }
 
     /// Delete in the tree: removes what the selected item stands for, asking
-    /// first when that cannot be undone or reaches beyond the item.
-    fn delete_tree_target(&mut self, target: DeleteTarget, cx: &mut Cx<Self>) {
+    /// first when that cannot be undone or reaches beyond the item. Saved
+    /// views and SQL sources are archived, or with Shift deleted for good.
+    fn delete_tree_target(&mut self, target: DeleteTarget, permanently: bool, cx: &mut Cx<Self>) {
         match target {
-            DeleteTarget::View(definition) => {
-                self.archive_view(&definition, cx);
-                self.copy_status = Some(format!("Archived {}", definition.name));
-                self.refresh_database_tree(cx);
-            }
+            DeleteTarget::View(definition) if permanently => self.request_delete(&definition, cx),
+            DeleteTarget::View(definition) => self.request_archive(&definition, cx),
             DeleteTarget::Relation(relation) => {
                 if let Some(catalog) = &relation.catalog {
                     self.copy_status = Some(format!(

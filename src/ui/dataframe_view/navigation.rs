@@ -657,15 +657,97 @@ impl DataFrameView {
         cx.notify();
     }
 
+    /// Archives a saved view, first asking when saved views read the rows
+    /// of this SQL source, since they stop working until it is recovered.
+    pub(crate) fn request_archive(&mut self, definition: &DocumentDefinition, cx: &mut Cx<Self>) {
+        let dependents = self.views_on_sql_source(definition);
+        if dependents.is_empty() {
+            self.archive_view(definition, cx);
+            return;
+        }
+        let them = if dependents.len() == 1 { "it" } else { "them" };
+        self.confirm(
+            format!("Archive {}?", definition.name),
+            format!(
+                "{}. Opening {them} shows an error until you recover {} with Recover archived views.",
+                dependents_phrase(&dependents),
+                definition.name
+            ),
+            "Archive".into(),
+            false,
+            super::dialogs::ConfirmAction::ArchiveView(Box::new(definition.clone())),
+            cx,
+        );
+    }
+
+    /// Asks before deleting a saved view for good, naming the saved views
+    /// that read its rows when it is a SQL source.
+    pub(crate) fn request_delete(&mut self, definition: &DocumentDefinition, cx: &mut Cx<Self>) {
+        let dependents = self.views_on_sql_source(definition);
+        let mut message = "This cannot be undone. Archive instead to keep it recoverable.".to_owned();
+        if !dependents.is_empty() {
+            let stop = if dependents.len() == 1 { "stops" } else { "stop" };
+            message = format!("{}, and {stop} working. {message}", dependents_phrase(&dependents));
+        }
+        self.confirm(
+            format!("Delete {} permanently?", definition.name),
+            message,
+            "Delete".into(),
+            true,
+            super::dialogs::ConfirmAction::DeleteView(Box::new(definition.clone())),
+            cx,
+        );
+    }
+
+    fn views_on_sql_source(&self, definition: &DocumentDefinition) -> Vec<DocumentDefinition> {
+        if matches!(definition.view, ViewKind::Sql(_)) && !definition.is_sql_script() {
+            self.repository.views_on_sql_source(&definition.id)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The saved SQL source or script that is open, or whose rows are shown.
+    pub(crate) fn current_sql_document(&self) -> Result<DocumentDefinition, String> {
+        let working = self.session.working.as_ref();
+        if let Some(working) = working.filter(|working| matches!(working.view, ViewKind::Sql(_)) && !working.id.is_empty()) {
+            return Ok(working.clone());
+        }
+        match working.and_then(|working| working.sql_source.as_ref()) {
+            Some(id) => self.repository.load_view(id).map_err(|error| format!("Cannot find the SQL source: {error}")),
+            None => Err("Open a saved SQL source or script first; the tree and Files list them".into()),
+        }
+    }
+
     pub(crate) fn archive_view(&mut self, definition: &DocumentDefinition, cx: &mut Cx<Self>) {
-        match self.repository.archive(&definition.id) {
-            Ok(_) => {
+        self.remove_view(definition, false, cx);
+    }
+
+    /// Archives a saved view, or deletes it for good, and leaves it when it
+    /// is open.
+    pub(crate) fn remove_view(&mut self, definition: &DocumentDefinition, permanently: bool, cx: &mut Cx<Self>) {
+        let removed = if permanently {
+            self.repository.delete(&definition.id)
+        } else {
+            self.repository.archive(&definition.id).map(drop)
+        };
+        match removed {
+            Ok(()) => {
+                self.copy_status = Some(if permanently {
+                    format!("Deleted {}", definition.name)
+                } else {
+                    format!("Archived {}; Recover archived views brings it back", definition.name)
+                });
                 if self
                     .session
                     .working
                     .as_ref()
                     .is_some_and(|working| working.id == definition.id)
                 {
+                    if self.session.is_sql() {
+                        // Its editor would save it again.
+                        self.reset_sql_editor();
+                    }
                     let source = self.session.source.clone();
                     let path = self.session.source_path.clone();
                     let destination = if let Some(database_view) = &definition.database_view {
@@ -707,7 +789,11 @@ impl DataFrameView {
                             || view.id.is_empty() && view.sql_source.as_ref() == Some(&definition.id))
                     });
                 }
+                if self.database_tree_open {
+                    self.refresh_database_tree(cx);
+                }
             }
+            Err(error) if permanently => self.error = Some(format!("Delete failed: {error}")),
             Err(error) => self.error = Some(format!("Archive failed: {error}")),
         }
         self.drain_grid_events(cx);
@@ -812,15 +898,33 @@ impl DataFrameView {
     }
 }
 
+/// Names the saved views that read a SQL source, the first few by name:
+/// "The saved view Sales reads its rows".
+fn dependents_phrase(dependents: &[DocumentDefinition]) -> String {
+    let mut names = dependents.iter().take(3).map(|view| view.name.as_str()).collect::<Vec<_>>().join(", ");
+    if dependents.len() > 3 {
+        names.push_str(&format!(" and {} more", dependents.len() - 3));
+    }
+    match dependents.len() {
+        1 => format!("The saved view {names} reads its rows"),
+        count => format!("{count} saved views ({names}) read its rows"),
+    }
+}
+
 /// The rows of the saved SQL source `id`, run on a connection of their own.
 pub(crate) fn sql_source_rows(
     repository: &crate::infrastructure::json_store::ViewRepository,
     database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>,
     id: &str,
 ) -> Result<crate::infrastructure::store::Store, String> {
-    let source = repository
-        .load_view(id)
-        .map_err(|error| format!("Cannot open the SQL source: {error}"))?;
+    let source = repository.load_view(id).map_err(|error| match repository.archived(id) {
+        _ if error.kind() != std::io::ErrorKind::NotFound => format!("Cannot open the SQL source: {error}"),
+        Some(archive) => format!(
+            "This view reads the SQL source {}, which is archived; Recover archived views brings it back",
+            archive.original_name
+        ),
+        None => "This view reads a SQL source that was deleted".to_owned(),
+    })?;
     let ViewKind::Sql(config) = &source.view else {
         return Err(format!("{} is not a SQL source", source.name));
     };
