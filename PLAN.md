@@ -31,26 +31,29 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - remove some calculated values from info panel?
 ## Tier 2: SQL editor
 
-- [~] **7. Monaco-style SQL editor.** Replace the SQL panel's editor (`ui::widgets::editor::Editor`)
-  with the win_monaco editor component, drawn in hosted mode inside the panel. Design below.
-  - Done: `crates/code_editor` hosted in the SQL panel (`ui::widgets::hosted_editor`). DataDiver
-    translates its own events into the editor's input calls rather than forwarding window
-    messages, so the keymap keeps priority and headless tests drive it. Today's completer feeds
-    it, with ranges for paths and quoted names; the editor's find widget replaced the panel's.
-  - Left: keymap-driven host commands (`add_command`) so rebinding Run in the keymap editor
-    reaches the editor; editor actions in the command palette; hover (`WM_MOUSEHOVER` is not
-    forwarded, so decoration hovers never show); measure the caret blink's full-window repaint
-    while the window is active.
-- [ ] **8. SQL language features from `diver_sql`.** Completion, highlighting, diagnostics, signature
-  help, hover, folding, matching or beating Dabbler. The parser crate and its phases are in
-  `crates/diver_sql/PLAN.md`; its app integration is phase 6 there, after item 7.
-  - Keep from today: the group-by, pivot, and aggregation editors list columns after `"` (ranked
-    like the search box), offer nothing inside `'strings'`, and accept with Tab; condition and SQL
-    cards share the search box's `"` list (`ui::column_completion`). These move to `diver_sql`'s
-    `Entry::Expression` with the file's dialect (DuckDB or Polars) once phase 5 lands.
-  - Errors: DuckDB's own parser (`duckdb_extract_statements` on a typing pause, as Dabbler does) is
-    the authority for squiggles; `diver_sql`'s diagnostics show instantly for lexer errors only
-    until its corpus pass rate is near 100%.
+- [x] **7. Monaco-style SQL editor.** `crates/code_editor` hosted in the SQL panel
+  (`ui::widgets::hosted_editor`). DataDiver translates its own events into the editor's input
+  calls rather than forwarding window messages, so the keymap keeps priority and headless tests
+  drive it. The editor's find widget replaced the panel's. The SQL Editor key context holds Run,
+  Run script, Ask AI and the editor's actions (rebindable; an unbound default stays off), and the
+  palette lists them while the editor is open. Hovers come from the editor's own rest timer.
+  Caret blink while active: about two full-window repaints a second, 16 ms of CPU over 8 s in a
+  debug build.
+- [~] **8. SQL language features from `diver_sql`.** Done for the SQL panel through the editor's
+  `LanguageService` (`ui::sql_language`) and `domain::sql_editor::SqlCatalog` (relations with
+  column types, databases, schemas, functions with signatures from `duckdb_functions()`,
+  settings, extensions): context completion, tree-based highlighting, problems after a typing
+  pause (`diver_sql`'s parser passes 99.99% of DuckDB's own test statements, so it is the
+  authority rather than `duckdb_extract_statements`), hovers, signature help, folding and smart
+  select. Statement splitting, path detection and the smaller editors' colors use `diver_sql`
+  too; the hand-written tokenizer and completer are gone.
+  - Left: the group-by, pivot, and aggregation editors and the condition and SQL cards still use
+    the old widget's `"` column list (`ui::column_completion`); move them to `Entry::Expression`
+    with the file's dialect (DuckDB or Polars) and `Catalog::implicit_columns`.
+  - Left: columns of files and table functions (`FROM 'x.parquet'`, `read_csv(...)`) need a
+    background `DESCRIBE` and a way to reopen the list when it finishes.
+  - Left: drop tree-sitter-sequel (about 2.4 MB) once brackets and auto-close contexts come
+    from the service too.
 
 ### Design: the Monaco-style editor (item 7)
 

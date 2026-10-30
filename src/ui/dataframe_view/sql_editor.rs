@@ -154,6 +154,20 @@ impl DataFrameView {
             panel.editor.type_text(".");
             focus = Some(panel.editor.id);
         }
+        if target == "editor:sql-hints"
+            && let Some(panel) = &mut self.sql_panel
+        {
+            // A statement missing its condition, and a call being typed.
+            let text = "SELECT * FROM apples WHERE;
+SELECT round(a.quantity
+FROM apples a";
+            let offset = text.find("quantity").unwrap() + "quantity".len();
+            panel.editor.set_text(text);
+            panel.editor.set_selection(offset..offset);
+            panel.editor.type_text(",");
+            panel.editor.diagnostics();
+            focus = Some(panel.editor.id);
+        }
         self.set_focus(focus, cx);
         self.handle_sql_panel_events(cx);
         cx.notify();

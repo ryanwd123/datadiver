@@ -235,15 +235,24 @@ Views store the source path and the exploration configuration. They reference th
 
 ## SQL editor
 
-Press **Ctrl+J** or choose **Open SQL editor** to open a resizable panel below the grid. **Ctrl+Enter** runs selected SQL, or the statement at the cursor; **Run All** executes the script in order. **Stop** interrupts execution. The grid shows the last result set and keeps search, sorting, navigation, and copy/export available without running SQL again.
+Press **Ctrl+J** or choose **Open SQL editor** to open a resizable panel below the grid. **Ctrl+Enter** runs selected SQL, or the statement at the cursor; **Ctrl+Shift+Enter** or **Run All** executes the script in order. **Stop** interrupts execution. The grid shows the last result set and keeps search, sorting, navigation, and copy/export available without running SQL again.
 
 SQL runs on DuckDB against the active profile database, and can read files with `read_csv('path')`, `read_parquet('path')`, or, while a window shows a file with the DuckDB engine, `files.<name>`. Database changes are allowed. Temporary objects and explicit transactions survive between runs in the same SQL document. Run All stops on the first error and follows DuckDB's normal transaction behavior. The row limit caps captured results, including `RETURNING`, without limiting writes; a changed limit applies on the next run.
 
 When the script's last statement is a plain query run outside a transaction, the whole result is kept, so slicers, `=` / `-` filters, search, and sort see every row. Other results keep only the rows up to the limit, and slicers and filters explain why they are off.
 
-The editor works like VS Code's: multiple cursors (**Alt+Click**, **Ctrl+Alt+Up/Down**, **Ctrl+D**, **Ctrl+Shift+L**), column selection (**Shift+Alt+drag**), **Alt+Up/Down** to move lines, **Ctrl+/** to comment, **Ctrl+Shift+K** to delete a line, **Ctrl+G** to go to a line, **Ctrl+F** / **Ctrl+H** for find and replace with case, whole word, and regex, folding, bracket matching, and **Ctrl+wheel** to zoom. Right-click for the context menu. **Ctrl+Enter** still runs SQL, and **Ctrl+K** asks AI.
+The editor works like VS Code's: multiple cursors (**Alt+Click**, **Ctrl+Alt+Up/Down**, **Ctrl+D**, **Ctrl+Shift+L**), column selection (**Shift+Alt+drag**), **Alt+Up/Down** to move lines, **Ctrl+/** to comment, **Ctrl+Shift+K** to delete a line, **Ctrl+G** to go to a line, **Ctrl+F** / **Ctrl+H** for find and replace with case, whole word, and regex, folding, bracket matching, and **Ctrl+wheel** to zoom. Right-click for the context menu. **Ctrl+Enter** still runs SQL, and **Ctrl+K** asks AI. These keys are in the keymap editor's **SQL Editor** context, so they can be rebound, and the command palette lists the editor's actions while it is open.
 
-Completion suggests database tables and DuckDB views after `FROM`, `JOIN`, or simplified `PIVOT`, along with SQL keywords and words from the script. Typing `a.` suggests columns only when the statement contains an explicit alias such as `FROM files.apples a`, including when it appears below the cursor. Typing a path inside a `'...'` string lists matching folders and files; relative paths search DuckDB's `file_search_path`. Completion does not infer CTE/subquery columns or include saved application views. **Ctrl+Space** opens the list by hand. Use **Enter** or **Tab** to accept a suggestion; **Escape** dismisses suggestions, clears extra cursors or the selection, and then returns focus to the grid.
+The editor understands DuckDB's SQL as you type:
+
+- **Completion** offers what fits the cursor: statement keywords, then tables, views, schemas and databases after `FROM` or `JOIN` (other databases' tables under their qualified names), columns of the tables in scope (including CTEs, subqueries, `t(a, b)` aliases and tables the script creates), functions, types after `CAST(x AS`, settings after `SET`, and extensions after `LOAD`. Typing `a.` lists the columns of alias `a`, wherever the alias is written in the statement, and `"` lists names to quote. Typing a path inside a `'...'` string lists matching folders and files; relative paths search DuckDB's `file_search_path`. **Ctrl+Space** opens the list by hand. Use **Enter** or **Tab** to accept a suggestion.
+- **Highlighting** colors tables, columns, functions and keywords by their place in the statement, so a keyword used as a column name colors as a column.
+- **Problems** are underlined once typing pauses: syntax errors, unterminated strings and comments, and tables neither the database nor the script knows. Rest the mouse on one to read it.
+- **Hover** over a statement keyword for its syntax, or over a table, column or alias to see what it refers to.
+- **Signature help** shows the function being called and highlights the argument being typed, after `(` or `,`, or with **Ctrl+Shift+Space**.
+- **Folding** and **Shift+Alt+Right** (expand selection) follow the statement's structure.
+
+**Escape** closes suggestions and signature help, clears extra cursors or the selection, and then returns focus to the grid.
 
 Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you tick **Auto-run** in the toolbar. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 

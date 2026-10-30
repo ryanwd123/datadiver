@@ -507,6 +507,28 @@ fn sql_editor_keys_follow_the_keymap_and_its_actions_are_commands() {
 }
 
 #[test]
+fn sql_editor_underlines_problems_and_shows_the_call_being_typed() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.run_until_parked();
+    place(&viewer, "SELECT * FROM t WHERE;\nSELECT 1", 0..0);
+    let problems = panel(&viewer, |panel| panel.editor.diagnostics());
+    assert!(!problems.is_empty() && problems.iter().all(|(start, _, _)| *start < 22), "{problems:?}");
+    // The connection's functions come with the catalog once it opens.
+    let text = "SELECT round(1.5";
+    place(&viewer, text, text.len()..text.len());
+    viewer.input(",");
+    viewer.run_until_parked();
+    let (label, active) = panel(&viewer, |panel| panel.editor.signature()).expect("signature help");
+    assert!(label.starts_with("round("), "{label}");
+    assert!(active.is_some(), "{label}");
+    press(&viewer, "escape");
+    assert!(panel(&viewer, |panel| panel.editor.signature()).is_none());
+    assert!(editor_focused(&viewer));
+}
+
+#[test]
 fn sql_search_sort_and_save_never_reexecute_statements() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

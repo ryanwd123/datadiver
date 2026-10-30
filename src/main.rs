@@ -92,6 +92,7 @@ fn main() {
                             | "editor:startup-sql"
                             | "editor:sql-results"
                             | "editor:sql-completion"
+                            | "editor:sql-hints"
                             | "editor:sql-error"
                             | "editor:sql-ask"
                             | "editor:sql-ask-log"

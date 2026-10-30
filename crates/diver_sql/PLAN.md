@@ -404,7 +404,7 @@ updated, and a commit.
    ranges.** Plus the `duckdb-diff` test and the bench.
 5. **Polars dialect** and `Entry::Expression`, checked against the Polars
    version the app uses (0.55) with a corpus of the app's own Polars SQL.
-6. **App integration** (only when you ask): replace `domain::sql_editor`'s
+6. **App integration** (done; see the root `PLAN.md` item 8): replace `domain::sql_editor`'s
    tokenizer, statement splitting and completion with this crate, implement
    `Catalog` over the app's schema cache and `duckdb_functions()` /
    `duckdb_settings()` / `duckdb_types()` / `duckdb_extensions()`, and plug it

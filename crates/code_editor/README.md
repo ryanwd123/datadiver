@@ -47,8 +47,15 @@ ed.on_event(|ed, e| match e {
   `deltaDecorations` and stickiness): line and inline backgrounds, text
   colors, error/warning/info squiggles, gutter markers, hover messages.
 - **Completion:** a `CompletionProvider` returns items for the text and caret;
-  the popup merges them with the language's keywords and nearby words and
-  filters them with `nucleo-matcher`.
+  the popup merges them with the language's keywords and nearby words (unless
+  the provider's `extra_words` says no) and filters them with `nucleo-matcher`,
+  breaking ties by `sort_text`. Items with their own `range` replace it and are
+  asked for again as the user types.
+- **Language service:** a host's `LanguageService` (`set_language_service`)
+  can supply colors for the whole text, problems (asked once typing pauses and
+  shown as squiggles with hover messages), hover text, signature help (after
+  `(` and `,`, or Ctrl+Shift+Space), fold ranges and smart-select ranges; the
+  tree-sitter grammar covers what it leaves out.
 - **Hosted mode** for apps that draw everything into one window:
   `Editor::create_hosted(host, ..)`, forward input with
   `handle_message(msg, wparam, lparam)`, and call `paint_into(&rt)` between your

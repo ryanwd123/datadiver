@@ -167,3 +167,19 @@ aliases) are ported in `tests/completion.rs` and pass, except where labels
 differ by design: extensions are offered as `httpfs` rather than `'httpfs'`,
 and `USING SAMPLE` comes as a phrase. Dabbler's `columns('regex')` cases are
 left out (see above).
+
+## App integration
+
+- The app's `Catalog` is `domain::sql_editor::SqlCatalog`, loaded on the SQL
+  connection's thread after it opens and after every run. Names without a
+  database search the current database and `temp`; `main` is the default
+  schema. Columns of files and table functions are not described yet
+  (`Catalog::columns` returns `None` for them).
+- `domain::sql_editor::completions` adds, where a table name may go, the
+  relations a bare name doesn't reach under their qualified names
+  (`shop.orders`), as the old completer did.
+- Function signatures come from `duckdb_functions()`: built-ins' `col0`-style
+  argument names are dropped for their types, operators are left out, and at
+  most twelve signatures are kept per function.
+- `ui::sql_language` turns hover markdown into plain text for the editor's
+  tooltip, and picks the first signature with room for the active argument.
