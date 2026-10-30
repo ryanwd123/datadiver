@@ -62,12 +62,8 @@ pub enum Button {
     EditViewActions,
     CacheDropBrowse,
     CacheDropCancel,
-    // The file row.
-    QueryEngine,
-    PreserveOrder,
-    // The slicer panel's options.
-    SlicerCrossFilter,
-    SlicerAvailableFirst,
+    // The gear at the end of the search row.
+    ViewOptions,
     // Dialog chrome.
     DialogClose,
     DialogOk,
@@ -75,8 +71,6 @@ pub enum Button {
     DialogExtra(usize),
     // SQL panel.
     SqlSave,
-    SqlAutoSave,
-    SqlAutoRun,
     SqlRun,
     SqlRunAll,
     SqlAsk,

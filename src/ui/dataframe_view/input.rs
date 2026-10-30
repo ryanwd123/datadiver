@@ -513,10 +513,7 @@ impl DataFrameView {
                 self.set_cache_drop_open(false, cx);
             }
             Button::CacheDropCancel => self.set_cache_drop_open(false, cx),
-            Button::QueryEngine => self.open_engine_palette(cx),
-            Button::PreserveOrder => self.toggle_preserve_order(cx),
-            Button::SlicerCrossFilter => self.toggle_cross_filter(cx),
-            Button::SlicerAvailableFirst => self.toggle_available_first(cx),
+            Button::ViewOptions => self.open_view_options(cx),
             Button::CellDetailClose => {
                 self.toggle_cell_detail(cx);
             }

@@ -68,6 +68,7 @@ mod sql_tests;
 mod startup;
 #[cfg(test)]
 mod test_support;
+mod view_options;
 mod watched_files;
 
 pub use dialogs::Dialog;
@@ -231,6 +232,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::SqlEditor,
     CommandId::NewSqlQuery,
     CommandId::Settings,
+    CommandId::ViewOptions,
     CommandId::QueryEngine,
     CommandId::TogglePreserveOrder,
     CommandId::ToggleCrossFilter,

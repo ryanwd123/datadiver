@@ -396,7 +396,7 @@ FROM apples a";
         }
     }
 
-    fn handle_sql_panel_event(&mut self, event: SqlPanelEvent, cx: &mut Cx<Self>) {
+    pub(crate) fn handle_sql_panel_event(&mut self, event: SqlPanelEvent, cx: &mut Cx<Self>) {
         match event {
             SqlPanelEvent::Changed(text) => {
                 self.session.set_sql_text(text);

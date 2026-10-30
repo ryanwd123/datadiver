@@ -1836,12 +1836,13 @@ fn header_keeps_only_contextual_clear_sort() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);
     viewer.render();
-    // The header holds only search, the limit and buttons that undo something.
+    // The header holds only search, the limit, the View options gear and
+    // buttons that undo something.
     let buttons = viewer
         .app
         .hits(viewer.id)
         .into_iter()
-        .filter(|region| matches!(region.hit, Hit::Button(_)))
+        .filter(|region| matches!(region.hit, Hit::Button(_)) && region.hit != Hit::Button(Button::ViewOptions))
         .map(|region| region.hit)
         .collect::<Vec<_>>();
     assert!(buttons.is_empty(), "unexpected buttons {buttons:?}");

@@ -6,7 +6,7 @@ use crate::ui::hit::{Button, Splitter};
 use crate::ui::platform::{Align, Canvas, Color, Cursor, Rect, rect, text};
 use crate::ui::space_menu::{SpaceMenu, paint_action_menu};
 use crate::ui::status;
-use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, checkbox, colors};
+use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors};
 
 const LIMIT_WARNING: Color = Color::rgb(0xff0000);
 
@@ -36,12 +36,16 @@ impl DataFrameView {
         let bounds = canvas.bounds();
         let row_count = self.session.result.row_count();
         let limit_reached = self.limit_reached();
-        let file_row = rect(bounds.x, bounds.y, bounds.w, button_height(font) + 8.0);
-        self.paint_file_row(canvas, file_row);
         // Header.
         let input_height = Editor::line_box_height(font);
-        let header = rect(bounds.x, file_row.bottom(), bounds.w, input_height + 8.0);
+        let header = rect(bounds.x, bounds.y, bounds.w, input_height + 8.0);
         let mut items = Row::new(header.inset_xy(12.0, 4.0), 8.0);
+        let button_top = header.y + (header.h - button_height(font)) / 2.0;
+        let gear = items.right(button_height(font));
+        let gear = rect(gear.x, button_top, gear.w, button_height(font));
+        button(canvas, gear, "", font, ButtonStyle::Ghost, true, Hit::Button(Button::ViewOptions));
+        paint_gear(canvas, gear, colors::FOREGROUND);
+        canvas.hit_with(gear, Hit::Button(Button::ViewOptions), Cursor::Arrow, Some("View options"));
         let search_width = 320.0_f32.min((items.rest().w * 0.4).max(128.0));
         let search = items.left(search_width);
         let search_id = self.search_input.id;
@@ -59,7 +63,6 @@ impl DataFrameView {
                 canvas.stroke_rounded(limit, 5.0, LIMIT_WARNING, 3.0);
             }
         }
-        let button_top = header.y + (header.h - button_height(font)) / 2.0;
         if !self.session.sort.is_empty() {
             let r = items.left(button_width("Clear sort", font));
             button(canvas, rect(r.x, button_top, r.w, button_height(font)), "Clear sort", font, ButtonStyle::Outline, true, Hit::Button(Button::ClearSort));
@@ -151,69 +154,6 @@ impl DataFrameView {
         self.paint_dialog(canvas, cx);
         // Painting the grid can measure column widths; record them now.
         self.drain_grid_events(cx);
-    }
-
-    /// Cross filtering and value order, above the slicer cards.
-    fn paint_slicer_options(&self, canvas: &mut Canvas<Hit>, r: Rect) {
-        let font = &self.fonts.small;
-        canvas.fill(rect(r.right() - 1.0, r.y, 1.0, r.h), colors::BORDER);
-        let options = self.file_settings.slicers;
-        let mut items = Row::new(r.inset_xy(12.0, 4.0), 12.0);
-        for (label, checked, hit, tip) in [
-            (
-                "Cross filter",
-                options.cross_filter,
-                Button::SlicerCrossFilter,
-                "Gray out values the other cards and filters rule out; off is faster on big sources",
-            ),
-            ("Available first", options.available_first, Button::SlicerAvailableFirst, "List available values before grayed-out ones"),
-        ] {
-            let slot = items.left(text::measure(label, font).0 + 26.0);
-            checkbox(canvas, slot, label, checked, font, Hit::Button(hit.clone()));
-            canvas.hit_with(slot, Hit::Button(hit), Cursor::Arrow, Some(tip));
-        }
-    }
-
-    /// The top row: the settings that apply to what is open.
-    fn paint_file_row(&mut self, canvas: &mut Canvas<Hit>, r: Rect) {
-        let fonts = self.fonts.clone();
-        let font = &fonts.ui;
-        canvas.fill(rect(r.x, r.bottom() - 1.0, r.w, 1.0), colors::BORDER);
-        let mut items = Row::new(r.inset_xy(12.0, 4.0), 12.0);
-        let check_width = |label: &str| text::measure(label, font).0 + 26.0;
-        if let Some(panel) = &self.sql_panel
-            && self.session.is_sql()
-        {
-            // The startup script already runs whenever the database opens.
-            if !panel.startup_script {
-                let auto_run = items.right(check_width("Auto-run"));
-                checkbox(canvas, auto_run, "Auto-run", panel.auto_run, font, Hit::Button(Button::SqlAutoRun));
-                canvas.hit_with(auto_run, Hit::Button(Button::SqlAutoRun), Cursor::Arrow, Some("Run the whole script each time this view opens"));
-            }
-            let auto_save = items.right(check_width("Auto-save"));
-            checkbox(canvas, auto_save, "Auto-save", panel.auto_save, font, Hit::Button(Button::SqlAutoSave));
-            canvas.hit_with(auto_save, Hit::Button(Button::SqlAutoSave), Cursor::Arrow, Some("Save SQL text after 2 seconds without typing"));
-        } else if self.settings_file().is_some() {
-            let engine = self.session.source.engine;
-            if engine == crate::infrastructure::store::Engine::DuckDb {
-                let preserve = items.right(check_width("Preserve order"));
-                checkbox(canvas, preserve, "Preserve order", self.file_settings.preserve_order, font, Hit::Button(Button::PreserveOrder));
-                canvas.hit_with(
-                    preserve,
-                    Hit::Button(Button::PreserveOrder),
-                    Cursor::Arrow,
-                    Some("Keep rows in file order when DuckDB reads the file; off reads large files faster"),
-                );
-            }
-            let label = format!("{} \u{25be}", engine.label());
-            let width = button_width(&label, font);
-            let slot = items.right(width);
-            let engine_button = rect(slot.x, r.y + (r.h - button_height(font)) / 2.0, width, button_height(font));
-            button(canvas, engine_button, &label, font, ButtonStyle::Outline, true, Hit::Button(Button::QueryEngine));
-            canvas.hit_with(engine_button, Hit::Button(Button::QueryEngine), Cursor::Arrow, Some("The query engine that reads this file"));
-            let caption = items.right(text::measure("Engine", font).0 + 2.0);
-            canvas.text(caption, "Engine", font, colors::MUTED, Align::Left);
-        }
     }
 
     /// The end of the search row: what is open, whether it is saved, and
@@ -382,10 +322,8 @@ impl DataFrameView {
         if has_slicers {
             let width = self.slicer_sidebar.width(canvas.width);
             let (sidebar, rest) = grid_area.split_left(width.min(grid_area.w * 0.6));
-            let (options, cards) = sidebar.split_top(button_height(&fonts.small) + 8.0);
-            self.paint_slicer_options(canvas, options);
             self.slicer_sidebar
-                .paint(canvas, cards, &fonts, focus, canvas.width, canvas.height);
+                .paint(canvas, sidebar, &fonts, focus, canvas.width, canvas.height);
             grid_area = rest;
         }
         if self.cell_detail.is_some() {
@@ -408,5 +346,21 @@ impl DataFrameView {
         if self.dialog.is_none() {
             self.grid.paint_tooltip(canvas, &fonts.ui);
         }
+    }
+}
+
+/// A gear drawn from a ring and eight teeth, centered in `r`; the emoji
+/// fonts draw one in color, which reads poorly next to the other controls.
+fn paint_gear(canvas: &mut Canvas<Hit>, r: Rect, color: Color) {
+    let size = r.w.min(r.h) * 0.55;
+    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let ring = size * 0.3;
+    let stroke = (size * 0.16).max(1.5);
+    canvas.stroke_rounded(rect(cx - ring, cy - ring, ring * 2.0, ring * 2.0), ring, color, stroke);
+    for tooth in 0..8 {
+        let angle = tooth as f32 * std::f32::consts::FRAC_PI_4;
+        let (sin, cos) = angle.sin_cos();
+        let at = |radius: f32| crate::ui::platform::point(cx + cos * radius, cy + sin * radius);
+        canvas.line(at(ring + stroke * 0.4), at(size / 2.0), color, stroke * 1.4);
     }
 }

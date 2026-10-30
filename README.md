@@ -161,16 +161,16 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 - **Deleting from the tree:** **Delete** removes what the selected item stands for. A saved view is archived, a recent file is forgotten, a watched file or folder stops being watched, and an attached database is detached. A table or view in the profile database is dropped after you confirm. Folders are watched whole, so deleting a file inside a watched folder offers to stop watching the folder; to leave files out, move them out of the folder.
 - **Favorites:** **Ctrl+Shift+1–9** assigns the current file or view to a slot, and **Ctrl+1–9** opens it.
 
-The top row of the window shows the open file or view, **● Unsaved** when it has changes, and when its file was modified, with the settings that apply to it: the query engine for a file, and **Auto-save** and **Auto-run** for an SQL view.
+The end of the search row shows the open file or view, **● Unsaved** when it has changes, and when its file was modified. The gear after it opens **View options** (also in the command palette), the settings that apply to what is open: the query engine and **Preserve order** for a file, **Auto-save** and **Auto-run** for an SQL view, and the slicer options. **Enter** switches an option in place.
 
 ## Query engines
 
 Every file is read by one engine, and everything you do with it, from search and slicers to group-by, pivots, totals, and export, runs in that engine.
 
 - **Polars** (the default) reads files into memory very quickly, and every window showing an unchanged file shares one copy. SQL cards and custom expressions use Polars SQL, which covers common functions plus the `year()`, `month()`, and `date_trunc()` shorthands.
-- **DuckDB** reads the file into an in-memory table, which is slower for large files, but SQL cards and custom expressions can use all of DuckDB's SQL. While a window shows the file, the SQL editor can query it as `files.<name>`, for example `files.sales_csv`. Nothing is written to the profile database. **Preserve order**, in the top row, keeps rows in file order; turning it off reads large files faster.
+- **DuckDB** reads the file into an in-memory table, which is slower for large files, but SQL cards and custom expressions can use all of DuckDB's SQL. While a window shows the file, the SQL editor can query it as `files.<name>`, for example `files.sales_csv`. Nothing is written to the profile database. **Preserve order**, in **View options**, keeps rows in file order; turning it off reads large files faster.
 
-Click the engine button in the top row, or use **Choose query engine for this file**, to switch a file. The choice is kept with the file, and saved views of the file follow it. **Settings** (**Ctrl+,**) sets the default engine for files without their own choice. The SQL editor, database tables, and attached databases always use DuckDB.
+Switch a file with **Query engine** in **View options** (the gear at the end of the search row), or use **Choose query engine for this file**. The choice is kept with the file, and saved views of the file follow it. **Settings** (**Ctrl+,**) sets the default engine for files without their own choice. The SQL editor, database tables, and attached databases always use DuckDB.
 
 ## Search
 
@@ -190,7 +190,7 @@ Search words are highlighted in visible cells; column-scoped words are highlight
 - **Value cards** list a column's values when it has at most 1,000 of them. Click, Ctrl+click, or drag to select. The search icon in the card header opens a filter box: type to narrow the list, press **Enter** to select every matching value, and **Esc** to close it. Values are greyed out when no row matches the other slicers and the `=` / `-` filters, but search does not grey them out.
 - **Condition cards** (listed as *column · condition*) work for any column. Type a condition and press **Enter**. Terms are separated by spaces and must all match: `>=10 <100`, `=North`, `!=0`, `:smith` or a bare word (contains), `-word` (does not contain), and inclusive ranges `10..20`, `2024-01-01..`, `..500`. Numbers compare as numbers and dates as dates. Text ranges ignore case and include every value starting with the upper bound, so `china..italy` includes "Italy". Partial dates cover their whole period, so `2024-10` is all of October and `..2024` runs through December 31, 2024. Comparison values can be relative dates: `today`, `yesterday`, `-30d`, `+2w`, `-6m`, `-1y` (so `-30d..today` is the last 30 days). The card shows the column's smallest and largest value.
 
-Two options above the cards are kept with the file. **Cross filter** greys out values as described above; turning it off shows every value as available and skips those queries, which is faster on big sources. **Available first** lists available values before greyed-out ones.
+Two slicer options in **View options** are kept with the file. **Cross filter** greys out values as described above; turning it off shows every value as available and skips those queries, which is faster on big sources. **Available first** lists available values before greyed-out ones.
 
 If a condition or SQL filter has an error, the error shows on its card and the card stops filtering until you fix it. **Ctrl+L** moves through the slicer inputs, and **Ctrl+D** returns to the grid.
 

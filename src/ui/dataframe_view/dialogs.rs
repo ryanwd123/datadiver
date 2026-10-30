@@ -60,6 +60,7 @@ pub enum PaletteKind {
     Settings,
     EditorSettings,
     EditorChoice(super::editor_settings::EditorOption, Vec<Option<u8>>),
+    ViewOptions,
 }
 
 pub struct PaletteDialog {
@@ -1065,6 +1066,7 @@ impl DataFrameView {
             }
             PaletteKind::Settings => self.confirm_setting(index, cx),
             PaletteKind::EditorSettings => self.confirm_editor_setting(index, cx),
+            PaletteKind::ViewOptions => self.confirm_view_option(index, cx),
             PaletteKind::EditorChoice(option, values) => {
                 if let Some(value) = values.get(index).copied() {
                     let option = *option;

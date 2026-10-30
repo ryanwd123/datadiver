@@ -5,6 +5,7 @@ pub enum CommandId {
     SqlEditor,
     NewSqlQuery,
     Settings,
+    ViewOptions,
     QueryEngine,
     TogglePreserveOrder,
     ToggleCrossFilter,
@@ -131,6 +132,12 @@ pub const COMMANDS: &[Command] = &[
         key: "settings",
         label: "Settings",
         default_binding: Some("ctrl-,"),
+    },
+    Command {
+        id: CommandId::ViewOptions,
+        key: "view_options",
+        label: "View options",
+        default_binding: None,
     },
     Command {
         id: CommandId::QueryEngine,

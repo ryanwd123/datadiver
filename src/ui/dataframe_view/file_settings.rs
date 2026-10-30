@@ -83,7 +83,7 @@ impl DataFrameView {
     }
 
     pub(crate) fn toggle_preserve_order(&mut self, cx: &mut Cx<Self>) {
-        if self.session.source.engine != Engine::DuckDb {
+        if self.file_settings.engine.unwrap_or(self.session.source.engine) != Engine::DuckDb {
             self.copy_status = Some("Preserve order applies when DuckDB reads the file".into());
             cx.notify();
             return;

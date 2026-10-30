@@ -1089,13 +1089,10 @@ fn the_engine_button_switches_a_file_between_engines_and_keeps_the_view() {
     });
     viewer.run_until_parked();
     assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
-    // The top row's engine button lists both engines; pick DuckDB.
-    viewer.render();
-    viewer.click(|hit| *hit == Hit::Button(Button::QueryEngine));
-    viewer.run_until_parked();
+    // The gear's View options switch the engine in place.
+    viewer.view_option(super::view_options::ViewOption::Engine);
     assert!(viewer.has_dialog());
-    press_each(&viewer, &["down", "enter"]);
-    viewer.run_until_parked();
+    viewer.close_dialog();
     viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.dialog.is_none());
@@ -1110,9 +1107,8 @@ fn the_engine_button_switches_a_file_between_engines_and_keeps_the_view() {
     open(&viewer, FileEntry::Source(path.clone()));
     assert_eq!(engine(&viewer), Engine::DuckDb);
     // Preserve order shows for DuckDB and reads the file again.
-    viewer.render();
-    viewer.click(|hit| *hit == Hit::Button(Button::PreserveOrder));
-    viewer.run_until_parked();
+    viewer.view_option(super::view_options::ViewOption::PreserveOrder);
+    viewer.close_dialog();
     viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(!view.file_settings.preserve_order);

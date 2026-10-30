@@ -1,4 +1,6 @@
 use super::FileEntry;
+use super::dialogs::{Dialog, PaletteKind};
+use super::view_options::ViewOption;
 use super::test_support::{Viewer, repository};
 use crate::application::commands::CommandId;
 use crate::application::session::SessionIdentity;
@@ -56,6 +58,15 @@ fn completion_labels(viewer: &Viewer) -> Option<Vec<String>> {
 fn click(viewer: &Viewer, button: Button) {
     viewer.click(|hit| *hit == Hit::Button(button.clone()));
     viewer.run_until_parked();
+}
+
+/// Switches a View option from the gear, then closes the list unless the
+/// switch opened another dialog.
+fn switch(viewer: &Viewer, option: ViewOption) {
+    viewer.view_option(option);
+    if viewer.read(|view| matches!(&view.dialog, Some(Dialog::Palette(dialog)) if matches!(dialog.kind, PaletteKind::ViewOptions))) {
+        viewer.close_dialog();
+    }
 }
 
 fn press(viewer: &Viewer, keys: &str) {
@@ -129,7 +140,7 @@ fn startup_sql_command_saves_plain_file_autosaves_and_runs_only_on_request() {
     viewer.run_until_parked();
     assert_eq!(std::fs::read_to_string(repository.startup_sql_path()).unwrap(), sql);
     assert!(repository.load_views().0.is_empty());
-    click(&viewer, Button::SqlAutoSave);
+    switch(&viewer, ViewOption::AutoSave);
     assert!(repository.load_settings().unwrap().startup_sql_auto_save);
     let edited = "CREATE TABLE manual_run(id INT); SELECT 7 AS answer;";
     edit_sql(&viewer, edited);
@@ -235,7 +246,7 @@ fn sql_auto_save_debounces_persists_checkbox_and_never_executes() {
     );
     repository.save_view(&mut saved).unwrap();
     let viewer = viewer(repository.clone(), Some(saved));
-    click(&viewer, Button::SqlAutoSave);
+    switch(&viewer, ViewOption::AutoSave);
     assert!(saved_sql(&repository).auto_save);
     edit_sql(&viewer, "CREATE TABLE should_not_run(id INT)");
     viewer.advance_clock(Duration::from_millis(1500));
@@ -254,7 +265,7 @@ fn sql_auto_save_debounces_persists_checkbox_and_never_executes() {
     assert_eq!(table_count(&viewer, "'should_not_run'"), 0);
     let reopened = self::viewer(repository.clone(), Some(saved));
     assert!(panel(&reopened, |panel| panel.auto_save));
-    click(&viewer, Button::SqlAutoSave);
+    switch(&viewer, ViewOption::AutoSave);
     edit_sql(&viewer, "SELECT 3");
     viewer.advance_clock(Duration::from_secs(3));
     let config = saved_sql(&repository);
@@ -295,7 +306,7 @@ fn enabling_sql_auto_save_on_a_draft_names_and_saves_it_once() {
     viewer.update(|view, cx| view.open_sql_editor(cx));
     viewer.run_until_parked();
     edit_sql(&viewer, "SELECT 7");
-    click(&viewer, Button::SqlAutoSave);
+    switch(&viewer, ViewOption::AutoSave);
     viewer.render();
     assert!(viewer.has_dialog());
     click(&viewer, Button::DialogOk);
@@ -1009,7 +1020,7 @@ fn auto_run_sql_views_run_when_opened() {
         viewer.read(|view| view.session.result.columns.first().map(|column| column.0.clone())),
         Some("lucky".into())
     );
-    click(&viewer, Button::SqlAutoRun);
+    switch(&viewer, ViewOption::AutoRun);
     // The checkbox is stored with the saved view at once.
     let stored = repository
         .load_views()

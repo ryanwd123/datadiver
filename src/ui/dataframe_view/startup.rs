@@ -364,6 +364,7 @@ impl DataFrameView {
             "palette:fonts" => self.open_font_picker(FontTarget::Grid, cx),
             "palette:editor-fonts" => self.open_font_picker(FontTarget::Editor, cx),
             "palette:editor-options" => self.open_editor_settings(None, cx),
+            "palette:view-options" => self.open_view_options(cx),
             "palette:slicers" => self.open_slicer_picker(cx),
             "palette:files" => self.open_file_palette(cx),
             "palette:folders" => self.open_folder_palette(cx),

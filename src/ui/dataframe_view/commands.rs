@@ -42,6 +42,7 @@ impl DataFrameView {
             CommandId::SqlEditor => self.open_sql_editor(cx),
             CommandId::NewSqlQuery => self.new_sql_query(cx),
             CommandId::Settings => self.open_settings(cx),
+            CommandId::ViewOptions => self.open_view_options(cx),
             CommandId::QueryEngine => self.open_engine_palette(cx),
             CommandId::TogglePreserveOrder => self.toggle_preserve_order(cx),
             CommandId::ToggleCrossFilter => self.toggle_cross_filter(cx),

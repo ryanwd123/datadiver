@@ -227,6 +227,23 @@ impl Viewer {
         self.update(|view, cx| view.close_dialog(cx));
     }
 
+    /// Clicks the gear and switches `option` in the View options list,
+    /// leaving the list open.
+    pub fn view_option(&self, option: super::view_options::ViewOption) {
+        if !self.read(|view| matches!(&view.dialog, Some(super::dialogs::Dialog::Palette(dialog)) if matches!(dialog.kind, super::dialogs::PaletteKind::ViewOptions))) {
+            self.click(|hit| *hit == Hit::Button(crate::ui::hit::Button::ViewOptions));
+        }
+        self.update(|view, cx| {
+            let index = view
+                .view_options()
+                .iter()
+                .position(|(row, ..)| *row == option)
+                .expect("the option applies here");
+            view.confirm_view_option(index, cx);
+        });
+        self.run_until_parked();
+    }
+
     /// The rectangle of the last frame's top-most region matching `matches`.
     pub fn find(&self, matches: impl Fn(&Hit) -> bool) -> Option<Rect> {
         self.app.find(self.id, matches)

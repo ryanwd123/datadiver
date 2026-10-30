@@ -401,8 +401,6 @@ impl SqlPanel {
         match hit {
             Hit::Button(button) => match button {
                 Button::SqlSave => self.events.push(SqlPanelEvent::Save),
-                Button::SqlAutoSave => self.events.push(SqlPanelEvent::AutoSave(!self.auto_save)),
-                Button::SqlAutoRun => self.events.push(SqlPanelEvent::AutoRun(!self.auto_run)),
                 Button::SqlRun => self.events.push(SqlPanelEvent::Run(false)),
                 Button::SqlRunAll => self.events.push(SqlPanelEvent::Run(true)),
                 Button::SqlAsk => self.open_ask(focus),
