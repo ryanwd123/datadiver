@@ -58,6 +58,63 @@ pub struct Settings {
     pub ai: crate::domain::ai::AiSettings,
     /// The engine for files without their own choice.
     pub default_engine: crate::domain::documents::Engine,
+    pub editor: EditorSettings,
+}
+
+/// How the SQL editor and its completion list look and behave.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorSettings {
+    /// The completion list's font; `None` uses the interface font.
+    pub completion_font_family: Option<String>,
+    /// Its size; `None` follows the editor's font size.
+    pub completion_font_size: Option<u8>,
+    /// Rows the completion list shows before it scrolls.
+    pub completion_rows: u8,
+    pub suggest_while_typing: bool,
+    pub signature_help: bool,
+    pub problems: bool,
+    pub hover: bool,
+    pub word_wrap: bool,
+    pub line_numbers: bool,
+    pub render_whitespace: bool,
+    pub indent_guides: bool,
+    pub highlight_current_line: bool,
+    pub highlight_occurrences: bool,
+    pub match_brackets: bool,
+    pub auto_closing: bool,
+    pub cursor_blinking: bool,
+    pub tab_size: u8,
+    pub insert_spaces: bool,
+    pub detect_indentation: bool,
+    pub wheel_zoom: bool,
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            completion_font_family: None,
+            completion_font_size: None,
+            completion_rows: 12,
+            suggest_while_typing: true,
+            signature_help: true,
+            problems: true,
+            hover: true,
+            word_wrap: false,
+            line_numbers: true,
+            render_whitespace: false,
+            indent_guides: true,
+            highlight_current_line: true,
+            highlight_occurrences: true,
+            match_brackets: true,
+            auto_closing: true,
+            cursor_blinking: true,
+            tab_size: 4,
+            insert_spaces: true,
+            detect_indentation: true,
+            wheel_zoom: true,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -79,6 +136,7 @@ impl Default for Settings {
             favorites: Default::default(),
             ai: Default::default(),
             default_engine: Default::default(),
+            editor: EditorSettings::default(),
         }
     }
 }

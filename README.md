@@ -254,6 +254,8 @@ The editor understands DuckDB's SQL as you type:
 
 **Escape** closes suggestions and signature help, clears extra cursors or the selection, and then returns focus to the grid.
 
+**Settings** (**Ctrl+,**) › **Editor options** changes how the editor looks and behaves: the completion list's font, size and number of rows; whether completions and signature help open while typing; problem underlines and hover docs; word wrap, line numbers, whitespace, indent guides and highlights; closing brackets and quotes; the blinking cursor; tab size, spaces or tabs, and indentation detection; and Ctrl+wheel zoom. The options are saved with your settings and apply to every window.
+
 Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you tick **Auto-run** in the toolbar. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 
 **New SQL query** in the command palette starts an empty SQL draft, even when the editor is already open.

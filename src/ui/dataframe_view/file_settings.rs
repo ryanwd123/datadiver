@@ -15,6 +15,7 @@ pub(crate) enum SettingsItem {
     FileEngine,
     GridFont,
     EditorFont,
+    EditorOptions,
     Theme,
     Keymap,
     AiProviders,
@@ -143,6 +144,11 @@ impl DataFrameView {
         rows.extend([
             (SettingsItem::GridFont, "Grid font".to_owned(), format!("{} · {} pt", font(&self.font.family), self.font.size)),
             (SettingsItem::EditorFont, "Editor font".to_owned(), font(&self.font.editor_family)),
+            (
+                SettingsItem::EditorOptions,
+                "Editor options".to_owned(),
+                "Completion list, signature help, problems, wrapping, tabs".to_owned(),
+            ),
             (SettingsItem::Theme, "Theme colors".to_owned(), String::new()),
             (SettingsItem::Keymap, "Keyboard shortcuts".to_owned(), "Keymap Editor".to_owned()),
             (SettingsItem::AiProviders, "AI providers".to_owned(), "Ask AI for SQL".to_owned()),
@@ -200,6 +206,7 @@ impl DataFrameView {
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),
+            SettingsItem::EditorOptions => self.open_editor_settings(None, cx),
             SettingsItem::Theme => self.open_theme_editor(cx),
             SettingsItem::Keymap => self.open_keymap_editor(cx),
             SettingsItem::AiProviders => self.open_ai_settings(cx),

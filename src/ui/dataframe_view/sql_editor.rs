@@ -309,6 +309,7 @@ FROM apples a";
             return;
         };
         let mut panel = SqlPanel::new(config.text.clone(), cx.hwnd());
+        panel.editor.set_settings(&self.editor_settings);
         let startup_script = matches!(self.session.identity, SessionIdentity::StartupSql);
         let auto_run = config.auto_run && !startup_script;
         panel.startup_script = startup_script;

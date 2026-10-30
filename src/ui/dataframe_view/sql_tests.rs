@@ -529,6 +529,41 @@ fn sql_editor_underlines_problems_and_shows_the_call_being_typed() {
 }
 
 #[test]
+fn editor_options_change_the_sql_editor_and_persist() {
+    use super::dialogs::{Dialog, PaletteKind};
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.run_until_parked();
+    let row = |viewer: &Viewer, label: &str| {
+        viewer.read(|view| match &view.dialog {
+            Some(Dialog::Palette(dialog)) => dialog.palette.list.items().iter().position(|item| item.label == label),
+            _ => None,
+        })
+    };
+    viewer.update(|view, cx| view.open_editor_settings(None, cx));
+    // A switch flips in place and the list stays open.
+    let wrap = row(&viewer, "Word wrap").unwrap();
+    viewer.update(|view, cx| view.confirm_editor_setting(wrap, cx));
+    assert!(viewer.read(|view| matches!(&view.dialog, Some(Dialog::Palette(d)) if matches!(d.kind, PaletteKind::EditorSettings))));
+    // A size opens its choices and comes back to the options.
+    let size = row(&viewer, "Completion list font size").unwrap();
+    viewer.update(|view, cx| view.confirm_editor_setting(size, cx));
+    let eighteen = row(&viewer, "18 pt").unwrap();
+    viewer.update(|view, cx| view.confirm_palette(eighteen, crate::ui::platform::Modifiers::NONE, cx));
+    assert!(row(&viewer, "Completion list rows").is_some());
+    let options = panel(&viewer, |panel| panel.editor.options());
+    assert!(options.word_wrap);
+    assert_eq!(options.suggest_font_size, 18.0);
+    let saved = repository(home.path()).load_settings().unwrap().editor;
+    assert!(saved.word_wrap);
+    assert_eq!(saved.completion_font_size, Some(18));
+    // Another window of the profile, and the next start, use them too.
+    let reopened = self::viewer(repository(home.path()), None);
+    assert_eq!(reopened.read(|view| view.editor_settings.completion_font_size), Some(18));
+}
+
+#[test]
 fn sql_search_sort_and_save_never_reexecute_statements() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

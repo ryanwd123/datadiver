@@ -107,6 +107,7 @@ fn main() {
                             | "palette:commands"
                             | "palette:fonts"
                             | "palette:editor-fonts"
+                            | "palette:editor-options"
                             | "palette:slicers"
                             | "palette:files"
                             | "palette:folders"

@@ -20,6 +20,7 @@ pub(crate) struct Profiles {
     pub fonts: HashMap<PathBuf, FontPreferences>,
     pub query_limits: HashMap<PathBuf, u64>,
     pub column_formats: HashMap<PathBuf, ColumnFormats>,
+    pub editor_settings: HashMap<PathBuf, crate::infrastructure::json_store::EditorSettings>,
 }
 
 thread_local! {

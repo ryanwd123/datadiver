@@ -47,6 +47,7 @@ mod action_tests;
 mod commands;
 mod database_tree;
 mod dialogs;
+mod editor_settings;
 mod file_settings;
 #[cfg(test)]
 mod filter_tests;
@@ -564,6 +565,8 @@ pub struct DataFrameView {
     pub(crate) keymap: KeymapFile,
     pub(crate) theme: ThemeSettings,
     pub(crate) font: FontPreferences,
+    /// How the SQL editor looks and behaves, shared by the profile's windows.
+    pub(crate) editor_settings: crate::infrastructure::json_store::EditorSettings,
     pub(crate) fonts: Fonts,
     pub(crate) keymap_profile: PathBuf,
     pub(crate) keymap_editor: Option<KeymapEditor>,
@@ -674,6 +677,13 @@ impl DataFrameView {
                 .fonts
                 .entry(keymap_profile.clone())
                 .or_insert_with(|| FontPreferences::from(&settings))
+                .clone()
+        });
+        let editor_settings = profiles::with(|profiles| {
+            profiles
+                .editor_settings
+                .entry(keymap_profile.clone())
+                .or_insert_with(|| settings.editor.clone())
                 .clone()
         });
         let loaded_keymap = repository.load_keymap(&settings).unwrap_or_default();
@@ -817,6 +827,7 @@ impl DataFrameView {
             source_probe: None,
             source_refresh_error: None,
             profiles_seen: profiles::revision(),
+            editor_settings,
             capture: None,
             split_drag: None,
             benchmark: false,
@@ -1256,14 +1267,20 @@ impl DataFrameView {
         }
         self.profiles_seen = revision;
         let profile = self.keymap_profile.clone();
-        let (keymap, theme, font, limit) = profiles::with(|profiles| {
+        let (keymap, theme, font, limit, editor) = profiles::with(|profiles| {
             (
                 profiles.keymaps.get(&profile).cloned(),
                 profiles.themes.get(&profile).cloned(),
                 profiles.fonts.get(&profile).cloned(),
                 profiles.query_limits.get(&profile).copied(),
+                profiles.editor_settings.get(&profile).cloned(),
             )
         });
+        if let Some(editor) = editor
+            && editor != self.editor_settings
+        {
+            self.set_editor_settings(editor);
+        }
         if let Some(keymap) = keymap
             && keymap != self.keymap
         {

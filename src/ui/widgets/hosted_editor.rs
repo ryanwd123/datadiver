@@ -12,6 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
 
 use super::WidgetId;
+use crate::infrastructure::json_store::EditorSettings;
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
 use crate::ui::platform::{Canvas, Cursor, Font, Point, Rect, rect};
 
@@ -23,6 +24,7 @@ pub struct HostedEditor {
     /// Where the editor was last painted, in window DIPs.
     bounds: Rect,
     font: Option<Font>,
+    settings: EditorSettings,
     hovered: bool,
     dragging: bool,
 }
@@ -58,6 +60,7 @@ impl HostedEditor {
             changed,
             bounds: Rect::default(),
             font: None,
+            settings: EditorSettings::default(),
             hovered: false,
             dragging: false,
         }
@@ -205,11 +208,8 @@ impl HostedEditor {
 
     pub fn paint<H: Clone>(&mut self, canvas: &mut Canvas<H>, r: Rect, font: &Font, focused: bool, hit: H) {
         if self.font.as_ref() != Some(font) {
-            let mut options = self.editor.options();
-            options.font_family = Some(font.family.to_string());
-            options.font_size = font.size;
-            self.editor.set_options(options);
             self.font = Some(font.clone());
+            self.apply_options();
         }
         let k = canvas.scale();
         self.editor.set_bounds(
@@ -226,6 +226,50 @@ impl HostedEditor {
         for (x, y, w, h) in self.editor.arrow_areas() {
             canvas.hit_cursor(rect(r.x + x, r.y + y, w, h), hit.clone(), Cursor::Arrow);
         }
+    }
+
+    /// The user's editor options, applied now and kept across font changes.
+    pub fn set_settings(&mut self, settings: &EditorSettings) {
+        if self.settings != *settings {
+            self.settings = settings.clone();
+            self.apply_options();
+        }
+    }
+
+    fn apply_options(&mut self) {
+        let s = &self.settings;
+        let mut options = self.editor.options();
+        if let Some(font) = &self.font {
+            options.font_family = Some(font.family.to_string());
+            options.font_size = font.size;
+        }
+        options.suggest_font_family = s.completion_font_family.clone();
+        options.suggest_font_size = s.completion_font_size.map_or(options.font_size, f32::from);
+        options.suggest_rows = usize::from(s.completion_rows);
+        options.quick_suggestions = s.suggest_while_typing;
+        options.parameter_hints = s.signature_help;
+        options.diagnostics = s.problems;
+        options.hover = s.hover;
+        options.word_wrap = s.word_wrap;
+        options.line_numbers = s.line_numbers;
+        options.render_whitespace = s.render_whitespace;
+        options.indent_guides = s.indent_guides;
+        options.highlight_current_line = s.highlight_current_line;
+        options.occurrences_highlight = s.highlight_occurrences;
+        options.match_brackets = s.match_brackets;
+        options.auto_closing = s.auto_closing;
+        options.cursor_blinking = s.cursor_blinking;
+        options.tab_size = usize::from(s.tab_size.clamp(1, 16));
+        options.insert_spaces = s.insert_spaces;
+        options.detect_indentation = s.detect_indentation;
+        options.mouse_wheel_zoom = s.wheel_zoom;
+        self.editor.set_options(options);
+    }
+
+    /// The editor's options as they stand, for tests.
+    #[cfg(test)]
+    pub fn options(&self) -> code_editor::Options {
+        self.editor.options()
     }
 
     fn local(&self, pos: Point) -> (f32, f32) {

@@ -58,6 +58,8 @@ pub enum PaletteKind {
     Fonts(FontTarget, Vec<Option<String>>),
     Engines,
     Settings,
+    EditorSettings,
+    EditorChoice(super::editor_settings::EditorOption, Vec<Option<u8>>),
 }
 
 pub struct PaletteDialog {
@@ -501,6 +503,7 @@ impl DataFrameView {
         families.dedup();
         let title = match target {
             FontTarget::Grid => "Fonts",
+            FontTarget::Completion => "Completion list font",
             FontTarget::Editor => {
                 // Code reads best in a monospaced font, so those come first.
                 families.sort_by_key(|family| !crate::ui::font_picker::looks_monospaced(family));
@@ -984,7 +987,7 @@ impl DataFrameView {
     }
 
     /// An item chosen in a palette dialog.
-    fn confirm_palette(&mut self, index: usize, modifiers: Modifiers, cx: &mut Cx<Self>) {
+    pub(crate) fn confirm_palette(&mut self, index: usize, modifiers: Modifiers, cx: &mut Cx<Self>) {
         let Some(Dialog::Palette(dialog)) = &self.dialog else {
             return;
         };
@@ -1061,6 +1064,13 @@ impl DataFrameView {
                 }
             }
             PaletteKind::Settings => self.confirm_setting(index, cx),
+            PaletteKind::EditorSettings => self.confirm_editor_setting(index, cx),
+            PaletteKind::EditorChoice(option, values) => {
+                if let Some(value) = values.get(index).copied() {
+                    let option = *option;
+                    self.choose_editor_setting(option, value, cx);
+                }
+            }
             PaletteKind::Fonts(target, fonts) => {
                 if let Some(family) = fonts.get(index).cloned() {
                     let target = *target;
@@ -1069,6 +1079,7 @@ impl DataFrameView {
                     match target {
                         FontTarget::Grid => font.family = family,
                         FontTarget::Editor => font.editor_family = family,
+                        FontTarget::Completion => return self.choose_completion_font(family, cx),
                     }
                     self.save_font(font, cx);
                 }
