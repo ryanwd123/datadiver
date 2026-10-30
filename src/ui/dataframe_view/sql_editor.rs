@@ -175,7 +175,7 @@ FROM apples a";
     }
 
     pub(crate) fn reset_sql_editor(&mut self) {
-        self.sql_auto_save_task = None;
+        self.auto_save_task = None;
         self.stop_sql();
         self.sql_revision += 1;
         self.sql_panel = None;
@@ -314,8 +314,6 @@ FROM apples a";
         let startup_script = matches!(self.session.identity, SessionIdentity::StartupSql);
         let auto_run = config.auto_run && !startup_script;
         panel.startup_script = startup_script;
-        panel.auto_save = config.auto_save;
-        panel.auto_run = config.auto_run;
         panel.busy = true;
         panel.status = "Opening database…".into();
         let catalog_handle = panel.catalog.clone();
@@ -396,60 +394,16 @@ FROM apples a";
         }
     }
 
-    pub(crate) fn handle_sql_panel_event(&mut self, event: SqlPanelEvent, cx: &mut Cx<Self>) {
+    fn handle_sql_panel_event(&mut self, event: SqlPanelEvent, cx: &mut Cx<Self>) {
         match event {
             SqlPanelEvent::Changed(text) => {
                 self.session.set_sql_text(text);
-                self.schedule_sql_auto_save(cx);
+                self.schedule_auto_save(cx);
                 self.schedule_file_schemas(cx);
                 cx.notify();
             }
-            SqlPanelEvent::AutoRun(enabled) => {
-                if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
-                    config.auto_run = enabled;
-                    self.session.dirty = true;
-                }
-                if let Some(panel) = &mut self.sql_panel {
-                    panel.auto_run = enabled;
-                }
-                // Kept like Auto-save: a saved view stores it at once.
-                if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
-                    self.persist_sql_view();
-                }
-                cx.notify();
-            }
-            SqlPanelEvent::AutoSave(enabled) => {
-                let was_dirty = self.session.dirty;
-                if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
-                    config.auto_save = enabled;
-                    self.session.dirty = true;
-                }
-                if let Some(panel) = &mut self.sql_panel {
-                    panel.auto_save = enabled;
-                }
-                self.sql_auto_save_task = None;
-                if matches!(self.session.identity, SessionIdentity::StartupSql) {
-                    let result = self.repository.load_settings().and_then(|mut settings| {
-                        settings.startup_sql_auto_save = enabled;
-                        self.repository.save_settings(&settings)
-                    });
-                    if let Err(error) = result {
-                        self.error = Some(format!("Cannot save startup SQL settings: {error}"));
-                    } else {
-                        self.session.dirty = was_dirty;
-                        if enabled {
-                            self.persist_sql_view();
-                        }
-                    }
-                } else if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
-                    self.persist_sql_view();
-                } else if enabled {
-                    self.open_save_dialog(cx);
-                }
-                cx.notify();
-            }
             SqlPanelEvent::Save => {
-                self.persist_sql_view();
+                self.persist_view();
                 cx.notify();
             }
             SqlPanelEvent::Run(all) => self.run_sql(all, cx),
@@ -590,6 +544,19 @@ FROM apples a";
         .detach();
     }
 
+    /// Runs the whole script each time it opens. Kept like Auto-save: a
+    /// saved script stores it at once.
+    pub(crate) fn set_auto_run(&mut self, enabled: bool, cx: &mut Cx<Self>) {
+        if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
+            config.auto_run = enabled;
+            self.session.dirty = true;
+        }
+        if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
+            self.persist_view();
+        }
+        cx.notify();
+    }
+
     pub(crate) fn stop_sql(&self) {
         if let Some(stopped) = &self.sql_stopped {
             stopped.store(true, Ordering::Release);
@@ -597,66 +564,6 @@ FROM apples a";
         if let Some(interrupt) = &self.sql_interrupt {
             interrupt.interrupt();
         }
-    }
-
-    pub(crate) fn persist_sql_view(&mut self) {
-        if !self.session.dirty
-            || !matches!(self.session.identity, SessionIdentity::SavedSql(_) | SessionIdentity::StartupSql)
-        {
-            return;
-        }
-        let Some(mut definition) = self.session.working.clone() else {
-            return;
-        };
-        if matches!(self.session.identity, SessionIdentity::StartupSql) {
-            let ViewKind::Sql(config) = &definition.view else {
-                return;
-            };
-            match self.repository.save_startup_sql(&config.text) {
-                Ok(()) => {
-                    self.session.dirty = false;
-                    self.error = None;
-                }
-                Err(error) => self.error = Some(format!("Cannot save {}: {error}", crate::infrastructure::source_database::STARTUP_SCRIPT)),
-            }
-            return;
-        }
-        match self.repository.save_view(&mut definition) {
-            Ok(_) => {
-                self.session.saved(definition);
-                self.error = None;
-            }
-            Err(error) => self.error = Some(format!("SQL auto-save failed: {error}")),
-        }
-    }
-
-    pub(crate) fn flush_sql_auto_save(&mut self) {
-        self.sql_auto_save_task = None;
-        if self
-            .session
-            .working
-            .as_ref()
-            .is_some_and(|d| matches!(&d.view, ViewKind::Sql(config) if config.auto_save))
-        {
-            self.persist_sql_view();
-        }
-    }
-
-    fn schedule_sql_auto_save(&mut self, cx: &mut Cx<Self>) {
-        self.sql_auto_save_task = None;
-        if !matches!(self.session.identity, SessionIdentity::SavedSql(_) | SessionIdentity::StartupSql)
-            || !self
-                .session
-                .working
-                .as_ref()
-                .is_some_and(|d| matches!(&d.view, ViewKind::Sql(config) if config.auto_save))
-        {
-            return;
-        }
-        self.sql_auto_save_task = Some(cx.timer(Duration::from_millis(2000), |view, cx| {
-            view.persist_sql_view();
-            cx.notify();
-        }));
     }
 
     pub(crate) fn refresh_sql_catalog(&mut self, cx: &mut Cx<Self>) {

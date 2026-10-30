@@ -15,8 +15,6 @@ use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, butt
 
 pub enum SqlPanelEvent {
     Changed(String),
-    AutoSave(bool),
-    AutoRun(bool),
     Save,
     Run(bool),
     Stop,
@@ -74,8 +72,6 @@ pub struct SqlPanel {
     pub busy: bool,
     pub status: String,
     pub error: Option<String>,
-    pub auto_save: bool,
-    pub auto_run: bool,
     pub startup_script: bool,
     pub ask_open: bool,
     pub ask_input: Editor,
@@ -117,8 +113,6 @@ impl SqlPanel {
             busy: false,
             status: "Ctrl+Enter · selection or current statement".into(),
             error: None,
-            auto_save: false,
-            auto_run: false,
             startup_script: false,
             ask_open: false,
             ask_input: Editor::single_line().with_placeholder("Describe the query you want, then Enter"),

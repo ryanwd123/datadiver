@@ -161,7 +161,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 - **Deleting from the tree:** **Delete** removes what the selected item stands for. A saved view is archived, a recent file is forgotten, a watched file or folder stops being watched, and an attached database is detached. A table or view in the profile database is dropped after you confirm. Folders are watched whole, so deleting a file inside a watched folder offers to stop watching the folder; to leave files out, move them out of the folder.
 - **Favorites:** **Ctrl+Shift+1–9** assigns the current file or view to a slot, and **Ctrl+1–9** opens it.
 
-The end of the search row shows the open file or view, **● Unsaved** when it has changes, and when its file was modified. The gear after it opens **View options** (also in the command palette), the settings that apply to what is open: the query engine and **Preserve order** for a file, **Auto-save** and **Auto-run** for an SQL view, and the slicer options. **Enter** switches an option in place.
+The end of the search row shows the open file or view, **● Unsaved** when it has changes, and when its file was modified. The gear after it opens **View options** (also in the command palette), the settings that apply to what is open: the query engine and **Preserve order** for a file, **Auto-save**, **Auto-run** for SQL, and the slicer options. **Enter** switches an option in place. With **Auto-save** on, a saved view stores each change two seconds after you make it, and before the window opens something else or closes; turning it on for an unsaved view asks for a name first.
 
 ## Query engines
 
@@ -256,7 +256,7 @@ The editor understands DuckDB's SQL as you type:
 
 **Settings** (**Ctrl+,**) › **Editor options** changes how the editor looks and behaves: the completion list's font, size and number of rows; whether completions and signature help open while typing; problem underlines and hover docs; word wrap, line numbers, whitespace, indent guides and highlights; closing brackets and quotes; the blinking cursor; tab size, spaces or tabs, and indentation detection; and Ctrl+wheel zoom. The options are saved with your settings and apply to every window.
 
-Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you tick **Auto-run** in the toolbar. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
+Save SQL with **Ctrl+S**. Saved scripts appear under **SQL views** and reopen without execution unless you turn on **Auto-run** in **View options**. Results and temporary objects are not saved. Closing the panel keeps its text and connection while the document remains open. **F** freezes leading result columns, and the view remembers them.
 
 **New SQL query** in the command palette starts an empty SQL draft, even when the editor is already open.
 

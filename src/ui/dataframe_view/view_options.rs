@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::infrastructure::store::Engine;
-use crate::ui::sql_panel::SqlPanelEvent;
 use crate::ui::widgets::list::Item;
 
 /// The rows of the View options list.
@@ -22,12 +21,23 @@ impl DataFrameView {
     /// and state when it is a switch.
     pub(crate) fn view_options(&self) -> Vec<(ViewOption, &'static str, String, Option<bool>)> {
         let mut rows = Vec::new();
-        if let Some(panel) = self.sql_panel.as_ref().filter(|_| self.session.is_sql()) {
-            rows.push((ViewOption::AutoSave, "Auto-save", "Save the SQL 2 seconds after typing stops".into(), Some(panel.auto_save)));
-            // The startup script already runs whenever the database opens.
-            if !panel.startup_script {
-                rows.push((ViewOption::AutoRun, "Auto-run", "Run the whole script each time it opens".into(), Some(panel.auto_run)));
-            }
+        let sql = match self.session.working.as_ref().map(|definition| &definition.view) {
+            Some(ViewKind::Sql(config)) => Some(config.auto_run),
+            _ => None,
+        };
+        if sql.is_some() || self.session.working.is_some() || self.session.source_path.as_deref().is_some_and(|path| !path.is_empty()) {
+            let detail = if sql.is_some() {
+                "Save the SQL 2 seconds after typing stops"
+            } else {
+                "Save changes to this view 2 seconds after making them"
+            };
+            rows.push((ViewOption::AutoSave, "Auto-save", detail.into(), Some(self.auto_save())));
+        }
+        // The startup script already runs whenever the database opens.
+        if let Some(auto_run) = sql
+            && !matches!(self.session.identity, SessionIdentity::StartupSql)
+        {
+            rows.push((ViewOption::AutoRun, "Auto-run", "Run the whole script each time it opens".into(), Some(auto_run)));
         }
         if self.settings_file().is_some() {
             // The file's setting changes before the file is read again.
@@ -77,21 +87,13 @@ impl DataFrameView {
     /// Switches the option at `index`, staying in the list so it shows the
     /// new value.
     pub(crate) fn confirm_view_option(&mut self, index: usize, cx: &mut Cx<Self>) {
-        let Some((option, ..)) = self.view_options().get(index).cloned() else {
+        let Some((option, _, _, check)) = self.view_options().get(index).cloned() else {
             return;
         };
-        let panel = self.sql_panel.as_ref().map(|panel| (panel.auto_save, panel.auto_run));
+        let on = check == Some(true);
         match option {
-            ViewOption::AutoSave => {
-                if let Some((auto_save, _)) = panel {
-                    self.handle_sql_panel_event(SqlPanelEvent::AutoSave(!auto_save), cx);
-                }
-            }
-            ViewOption::AutoRun => {
-                if let Some((_, auto_run)) = panel {
-                    self.handle_sql_panel_event(SqlPanelEvent::AutoRun(!auto_run), cx);
-                }
-            }
+            ViewOption::AutoSave => self.set_auto_save(!on, cx),
+            ViewOption::AutoRun => self.set_auto_run(!on, cx),
             ViewOption::Engine => {
                 let engine = match self.file_settings.engine.unwrap_or(self.session.source.engine) {
                     Engine::Polars => Engine::DuckDb,

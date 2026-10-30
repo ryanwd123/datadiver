@@ -282,7 +282,6 @@ pub struct QueryConfig {
 #[serde(default)]
 pub struct SqlConfig {
     pub text: String,
-    pub auto_save: bool,
     pub result_sort: Vec<SortKey>,
     /// Runs the whole script each time the view opens.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -500,6 +499,9 @@ pub struct DocumentDefinition {
     pub filters: Vec<ValueFilter>,
     #[serde(default)]
     pub actions: Vec<ViewAction>,
+    /// Saves each change a moment after it is made, once the view has a name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_save: bool,
     #[serde(flatten)]
     pub view: ViewKind,
 }
@@ -515,6 +517,7 @@ impl DocumentDefinition {
             slicers: Vec::new(),
             filters: Vec::new(),
             actions: Vec::new(),
+            auto_save: false,
             view: ViewKind::Table(TableConfig::default()),
         }
     }

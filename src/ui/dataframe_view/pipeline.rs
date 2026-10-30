@@ -392,6 +392,7 @@ impl DataFrameView {
                         } else {
                             view.remember_navigation_current();
                             view.undo_history.record(view.session.view_state());
+                            view.schedule_auto_save(cx);
                         }
                     }
                 }

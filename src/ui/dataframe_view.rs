@@ -44,6 +44,7 @@ use crate::ui::widgets::{Fonts, WidgetId};
 
 #[cfg(test)]
 mod action_tests;
+mod auto_save;
 mod commands;
 mod database_tree;
 mod dialogs;
@@ -492,7 +493,7 @@ pub struct DataFrameView {
     pub(crate) sql_panel_open: bool,
     pub(crate) sql_running: bool,
     sql_revision: u64,
-    sql_auto_save_task: Option<Task>,
+    auto_save_task: Option<Task>,
     sql_service: std::sync::Arc<std::sync::Mutex<Option<crate::infrastructure::sql_execution::SqlExecution>>>,
     sql_interrupt: Option<std::sync::Arc<duckdb::InterruptHandle>>,
     sql_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -756,7 +757,7 @@ impl DataFrameView {
             sql_panel_open: false,
             sql_running: false,
             sql_revision: 0,
-            sql_auto_save_task: None,
+            auto_save_task: None,
             sql_service: std::sync::Arc::new(std::sync::Mutex::new(None)),
             sql_interrupt: None,
             sql_stopped: None,
@@ -1226,6 +1227,7 @@ impl DataFrameView {
                 if owner == self.width_owner() {
                     self.session.set_column_width(column, width);
                     self.autosave_table_preferences(cx);
+                    self.schedule_auto_save(cx);
                     cx.notify();
                 }
             }

@@ -72,12 +72,12 @@ fn configuration(state: &NavigationEntry) -> NavigationEntry {
         definition.id.clear();
         definition.name.clear();
         definition.actions.clear();
+        definition.auto_save = false;
         match &mut definition.view {
             ViewKind::Table(config) => config.presentation.clear(),
             // SQL text belongs to the editor, which has its own undo.
             ViewKind::Sql(config) => {
                 config.text.clear();
-                config.auto_save = false;
                 config.auto_run = false;
             }
             ViewKind::Query(_) => {}

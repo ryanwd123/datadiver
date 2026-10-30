@@ -88,7 +88,7 @@ impl DataFrameView {
         cx: &mut Cx<Self>,
     ) {
         self.rollback_navigation(cx);
-        self.flush_sql_auto_save();
+        self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.remember_navigation_current();
         self.navigation_target = target;

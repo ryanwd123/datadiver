@@ -103,13 +103,13 @@ impl WindowSession {
         if let (Some(current), Some(definition)) = (current, &mut self.working) {
             definition.name = current.name;
             definition.actions = current.actions;
+            definition.auto_save = current.auto_save;
             match (current.view, &mut definition.view) {
                 (ViewKind::Table(current), ViewKind::Table(config)) => {
                     config.presentation = current.presentation;
                 }
                 (ViewKind::Sql(current), ViewKind::Sql(config)) => {
                     config.text = current.text;
-                    config.auto_save = current.auto_save;
                     config.auto_run = current.auto_run;
                 }
                 _ => {}

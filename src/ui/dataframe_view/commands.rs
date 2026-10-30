@@ -744,7 +744,7 @@ impl DataFrameView {
         } else {
             self.undo_history.record(self.session.view_state());
             self.sync_frozen_count();
-            self.flush_sql_auto_save();
+            self.flush_auto_save();
         }
         cx.notify();
     }
@@ -1037,7 +1037,7 @@ impl DataFrameView {
     /// Saves what needs saving before the window closes.
     pub(crate) fn prepare_close(&mut self, cx: &mut Cx<Self>) {
         self.stop_sql();
-        self.flush_sql_auto_save();
+        self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.update_geometry(cx);
         self.save_geometry();

@@ -343,10 +343,10 @@ impl ViewRepository {
             crate::infrastructure::source_database::STARTUP_SCRIPT.into(),
             String::new(),
         );
+        definition.auto_save = self.load_settings()?.startup_sql_auto_save;
         definition.view =
             crate::domain::documents::ViewKind::Sql(crate::domain::documents::SqlConfig {
                 text,
-                auto_save: self.load_settings()?.startup_sql_auto_save,
                 ..Default::default()
             });
         Ok(definition)

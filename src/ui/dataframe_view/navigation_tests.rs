@@ -1224,3 +1224,42 @@ fn the_aggregation_editor_speaks_the_files_engine() {
     assert!(functions.iter().any(|name| name.starts_with("arg_max")), "{functions:?}");
     assert!(sql.starts_with("stddev_pop"), "{sql}");
 }
+
+#[test]
+fn auto_save_keeps_saved_table_and_query_views_up_to_date() {
+    use super::view_options::ViewOption;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,units\nnorth,3\nsouth,5\n").unwrap();
+    let mut table = DocumentDefinition::draft_table("Sales table".into(), path.to_string_lossy().into_owned());
+    repository.save_view(&mut table).unwrap();
+    let mut query = DocumentDefinition::draft_table("Sales query".into(), path.to_string_lossy().into_owned());
+    query.view = ViewKind::Query(QueryConfig {
+        group_by: vec!["region".into()],
+        ..Default::default()
+    });
+    repository.save_view(&mut query).unwrap();
+    let stored = |id: &str| repository.load_views().0.into_iter().find(|view| view.id == id).unwrap();
+    let viewer = viewer(repository.clone());
+    for saved in [table, query] {
+        open(&viewer, FileEntry::View(saved.clone()));
+        viewer.view_option(ViewOption::AutoSave);
+        viewer.close_dialog();
+        assert!(stored(&saved.id).auto_save);
+        viewer.update(|view, cx| {
+            view.session.set_sort_direction("region".into(), true);
+            view.schedule_search(String::new(), cx);
+        });
+        viewer.run_until_parked();
+        assert!(viewer.read(|view| view.session.dirty));
+        viewer.advance_clock(std::time::Duration::from_millis(2000));
+        let sort = match stored(&saved.id).view {
+            ViewKind::Table(config) => config.sort,
+            ViewKind::Query(config) => config.result_sort,
+            ViewKind::Sql(_) => unreachable!(),
+        };
+        assert_eq!(sort, [SortKey { column: "region".into(), descending: true }]);
+        assert!(!viewer.read(|view| view.session.dirty));
+    }
+}

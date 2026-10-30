@@ -80,7 +80,7 @@ impl View for DataFrameView {
     }
 
     fn closing(&mut self, cx: &mut Cx<Self>) {
-        self.flush_sql_auto_save();
+        self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
     }

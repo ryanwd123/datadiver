@@ -168,7 +168,7 @@ impl DataFrameView {
 
     pub(crate) fn open_save_dialog(&mut self, cx: &mut Cx<Self>) {
         if matches!(self.session.identity, SessionIdentity::StartupSql) {
-            self.persist_sql_view();
+            self.persist_view();
             cx.notify();
             return;
         }

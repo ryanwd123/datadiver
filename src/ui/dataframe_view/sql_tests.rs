@@ -247,7 +247,7 @@ fn sql_auto_save_debounces_persists_checkbox_and_never_executes() {
     repository.save_view(&mut saved).unwrap();
     let viewer = viewer(repository.clone(), Some(saved));
     switch(&viewer, ViewOption::AutoSave);
-    assert!(saved_sql(&repository).auto_save);
+    assert!(repository.load_views().0[0].auto_save);
     edit_sql(&viewer, "CREATE TABLE should_not_run(id INT)");
     viewer.advance_clock(Duration::from_millis(1500));
     assert_eq!(saved_sql(&repository).text, "SELECT 1");
@@ -257,19 +257,19 @@ fn sql_auto_save_debounces_persists_checkbox_and_never_executes() {
     assert_eq!(saved_sql(&repository).text, "SELECT 1");
     viewer.advance_clock(Duration::from_millis(1));
     let saved = repository.load_views().0.remove(0);
-    assert!(matches!(&saved.view, ViewKind::Sql(config) if config.auto_save && config.text == latest));
+    assert!(saved.auto_save && matches!(&saved.view, ViewKind::Sql(config) if config.text == latest));
     viewer.read(|view| {
         assert!(!view.session.dirty);
         assert_eq!(view.session.result.row_count(), 0);
     });
     assert_eq!(table_count(&viewer, "'should_not_run'"), 0);
     let reopened = self::viewer(repository.clone(), Some(saved));
-    assert!(panel(&reopened, |panel| panel.auto_save));
+    assert!(reopened.read(|view| view.auto_save()));
     switch(&viewer, ViewOption::AutoSave);
     edit_sql(&viewer, "SELECT 3");
     viewer.advance_clock(Duration::from_secs(3));
     let config = saved_sql(&repository);
-    assert!(!config.auto_save && config.text == latest);
+    assert!(!repository.load_views().0[0].auto_save && config.text == latest);
     assert!(viewer.read(|view| view.session.dirty));
 }
 
@@ -280,11 +280,11 @@ fn sql_auto_save_flushes_before_navigation_and_cancels_old_timer() {
     let mut saved = sql_view(
         "Auto SQL",
         SqlConfig {
-            auto_save: true,
             text: "SELECT 1".into(),
             ..Default::default()
         },
     );
+    saved.auto_save = true;
     repository.save_view(&mut saved).unwrap();
     let viewer = viewer(repository.clone(), Some(saved));
     edit_sql(&viewer, "SELECT 9");
@@ -312,7 +312,7 @@ fn enabling_sql_auto_save_on_a_draft_names_and_saves_it_once() {
     click(&viewer, Button::DialogOk);
     assert!(!viewer.has_dialog());
     let saved = repository.load_views().0.remove(0);
-    assert!(matches!(&saved.view, ViewKind::Sql(config) if config.auto_save && config.text == "SELECT 7"));
+    assert!(saved.auto_save && matches!(&saved.view, ViewKind::Sql(config) if config.text == "SELECT 7"));
     edit_sql(&viewer, "SELECT 8");
     viewer.advance_clock(Duration::from_secs(2));
     let views = repository.load_views().0;
@@ -327,11 +327,9 @@ fn sql_auto_save_failure_keeps_dirty_text_and_recovers_on_next_edit() {
     let repository = repository(home.path());
     let mut saved = sql_view(
         "Auto SQL",
-        SqlConfig {
-            auto_save: true,
-            ..Default::default()
-        },
+        SqlConfig::default(),
     );
+    saved.auto_save = true;
     let saved_path = repository.save_view(&mut saved).unwrap();
     let viewer = viewer(repository.clone(), Some(saved));
     std::fs::remove_file(&saved_path).unwrap();
@@ -340,7 +338,7 @@ fn sql_auto_save_failure_keeps_dirty_text_and_recovers_on_next_edit() {
     viewer.advance_clock(Duration::from_secs(2));
     viewer.read(|view| {
         assert!(view.session.dirty);
-        assert!(view.error.as_ref().unwrap().contains("SQL auto-save failed"));
+        assert!(view.error.as_ref().unwrap().contains("Auto-save failed"));
     });
     assert_eq!(sql_config(&viewer).text, "SELECT 9");
     std::fs::remove_dir(&saved_path).unwrap();
@@ -1037,7 +1035,7 @@ fn auto_run_sql_views_run_when_opened() {
         let result = &view.session.result;
         assert_eq!(result.columns[0].0, "lucky");
         assert_eq!(result.row_count(), 1);
-        assert!(view.sql_panel.as_ref().unwrap().auto_run);
+        assert!(matches!(&view.session.working.as_ref().unwrap().view, ViewKind::Sql(config) if config.auto_run));
     });
 }
 
