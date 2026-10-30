@@ -579,6 +579,31 @@ mod tests {
     }
 
     #[test]
+    fn unusual_names_resolve_through_the_catalog() {
+        let mut catalog = catalog();
+        catalog.schemas.push(("db".into(), "_sys_bic".into()));
+        catalog.relations.push(Relation {
+            catalog: "db".into(),
+            schema: "_sys_bic".into(),
+            name: "org.department.abc/myview_name".into(),
+            columns: vec!["dept".into(), "Head Count".into()],
+            is_view: true,
+            current_database: true,
+            ..Default::default()
+        });
+        let labels = |sql: &str| {
+            let at = sql.find('|').unwrap();
+            completions(&sql.replace('|', ""), at, &catalog)
+                .into_iter()
+                .map(|i| i.label)
+                .collect::<Vec<_>>()
+        };
+        let sql = "from _sys_bic.\"org.department.abc/myview_name\" a\nselect a.|";
+        assert_eq!(labels(sql), ["dept", "\"Head Count\""]);
+        assert!(labels("from _sys_bic.|").contains(&"\"org.department.abc/myview_name\"".to_string()));
+    }
+
+    #[test]
     fn path_queries_need_a_path_prefix_or_a_file_position() {
         let typed = |sql: &str| path_query(sql, sql.len()).map(|q| q.typed);
         assert_eq!(

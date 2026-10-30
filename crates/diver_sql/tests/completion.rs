@@ -1004,3 +1004,53 @@ fn quoted_insert_text() {
         diver_sql::TextRange::new(7.into(), 10.into())
     );
 }
+
+/// Names with dots, slashes and a leading underscore resolve through FROM-first
+/// queries, from the catalog or from the script's own CREATE statements.
+#[test]
+fn unusual_names_resolve_and_complete() {
+    let catalog = diver_sql::MockCatalog::new()
+        .schema("memory", "_sys_bic")
+        .view_in("memory", "_sys_bic", "org.department.abc/myview_name", CUSTOMERS);
+    let labels = |sql: &str| -> Vec<String> {
+        let (text, offset) = common::split_cursor(sql);
+        diver_sql::complete_with(&text, offset, &catalog)
+            .into_iter()
+            .map(|i| i.label)
+            .collect()
+    };
+    let view = "\"org.department.abc/myview_name\"";
+    for sql in [
+        "from _sys_bic.\"org.department.abc/myview_name\" a\nselect a.|",
+        "from _sys_bic.\"org.department.abc/myview_name\" AS a select a.| where true",
+        "select a.| from _sys_bic.\"org.department.abc/myview_name\" a",
+        "from _sys_bic.\"org.department.abc/myview_name\" select \"org.department.abc/myview_name\".|",
+        "CREATE SCHEMA s; CREATE VIEW s.\"x.y/z\" AS SELECT 1 AS customer_id, 2 AS name, 3 AS region;\nfrom s.\"x.y/z\" a select a.|",
+    ] {
+        let got = labels(sql);
+        for c in CUSTOMERS {
+            assert!(got.iter().any(|g| g == c), "{sql}: {got:?}");
+        }
+    }
+    assert!(labels("from _sys_bic.|").contains(&view.to_string()));
+    assert!(labels("from _|").contains(&"_sys_bic".to_string()));
+    // A quoted name being typed replaces the whole quoted word.
+    let (text, offset) = common::split_cursor("from _sys_bic.\"org.dep|");
+    let item = diver_sql::complete_with(&text, offset, &catalog)
+        .into_iter()
+        .find(|i| i.label == view)
+        .expect("the view is offered");
+    assert_eq!(item.insert_text, view);
+    assert_eq!(usize::from(item.replace_range.start()), "from _sys_bic.".len());
+}
+
+/// A table the script creates lends its columns to later statements, by
+/// alias and by name.
+#[test]
+fn script_tables_complete_their_columns() {
+    let script = "CREATE TABLE abc(\n    t VARCHAR,\n    z VARCHAR\n);\n\n";
+    for query in ["from abc a SELECT a.|", "from abc SELECT abc.|", "from abc select |"] {
+        let got = labels(&format!("{script}{query}"));
+        assert!(got.iter().any(|g| g == "t") && got.iter().any(|g| g == "z"), "{query}: {got:?}");
+    }
+}
