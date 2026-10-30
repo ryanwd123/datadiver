@@ -212,8 +212,11 @@ impl DataFrameView {
     /// Whether the shown rows stopped at the row limit: the file read into
     /// memory has more rows, or the query does. A query is judged by its own
     /// rows, before search narrowed them, so the warning stays while
-    /// searching a truncated result.
+    /// searching a truncated result. A SQL run knows whether it stopped.
     pub(crate) fn limit_reached(&self) -> bool {
+        if self.session.is_sql() {
+            return !self.busy && !self.loading && self.error.is_none() && self.sql_result_truncated;
+        }
         let query_rows = self
             .query_cache
             .as_ref()

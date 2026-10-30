@@ -893,6 +893,8 @@ fn sql_results_filter_every_row_undo_and_prune_missing_columns() {
     );
     assert!(viewer.read(|view| view.sql_result_complete));
     assert_eq!(rows(), 6);
+    // Every row is there, so the limit warning stays off.
+    assert!(!viewer.read(|view| view.limit_reached()));
     let add_slicer = || {
         viewer.update(|view, cx| {
             view.error = None;
@@ -920,8 +922,11 @@ fn sql_results_filter_every_row_undo_and_prune_missing_columns() {
     viewer.read(|view| assert!(view.error.is_none(), "{:?}", view.error));
     assert_eq!(rows(), 6);
     // A writing statement keeps the row limit and explains why filters are off.
+    run_all_sql(&viewer, "INSERT INTO fruit SELECT 'blue', range FROM range(5) RETURNING color");
+    assert!(viewer.read(|view| view.limit_reached()), "five rows came back and two are shown");
     run_all_sql(&viewer, "INSERT INTO fruit VALUES ('blue', 7) RETURNING color");
     assert!(!viewer.read(|view| view.sql_result_complete));
+    assert!(!viewer.read(|view| view.limit_reached()));
     let (opened, error) = add_slicer();
     assert!(!opened && error.is_some_and(|error| error.contains("last statement")));
     filter_first_cell(false);

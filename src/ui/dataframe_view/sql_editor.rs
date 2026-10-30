@@ -189,6 +189,7 @@ FROM apples a";
         self.sql_restore_sort = false;
         self.sql_catalog_refreshing = false;
         self.sql_result_complete = false;
+        self.sql_result_truncated = false;
     }
 
     /// Shows the editor of the SQL source or script that is open, or of the
@@ -756,6 +757,7 @@ FROM apples a";
                         view.refresh_file_schemas(cx);
                         if run.result.is_some() {
                             view.sql_result_complete = run.complete;
+                            view.sql_result_truncated = run.truncated;
                             if !run.complete {
                                 run.status.push_str(
                                     " · slicers and = / - filters are off: the last statement is not a plain query",
@@ -865,6 +867,7 @@ FROM apples a";
                 if let Some(store) = result {
                     // Polars keeps every row, so slicers and filters see them all.
                     view.sql_result_complete = true;
+                    view.sql_result_truncated = false;
                     view.show_sql_result(store.into(), cx);
                 }
                 cx.notify();

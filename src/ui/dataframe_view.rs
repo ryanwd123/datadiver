@@ -528,6 +528,8 @@ pub struct DataFrameView {
     sql_describe_again: bool,
     /// The SQL result holds every row of its query, so it can be filtered.
     pub(crate) sql_result_complete: bool,
+    /// The SQL result stopped at the row limit and the query had more rows.
+    pub(crate) sql_result_truncated: bool,
     pub(crate) sql_editor_height: f32,
     pub(crate) database_tree: DatabaseTree,
     pub(crate) database_tree_open: bool,
@@ -794,6 +796,7 @@ impl DataFrameView {
             sql_describing: false,
             sql_describe_again: false,
             sql_result_complete: false,
+            sql_result_truncated: false,
             sql_editor_height: settings.sql_editor_height.unwrap_or(280.),
             database_tree: DatabaseTree::new(),
             database_tree_open: settings.database_tree_open,
