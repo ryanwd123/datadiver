@@ -1,0 +1,9 @@
+[package]
+name = "diver_sql"
+version = "0.1.0"
+edition = "2024"
+description = "Editor-oriented DuckDB SQL parser: lossless syntax trees, completion, highlighting"
+license = "MIT"
+publish = false
+
+[dependencies]

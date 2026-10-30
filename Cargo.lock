@@ -838,6 +838,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "diver_sql"
+version = "0.1.0"
+
+[[package]]
 name = "duckdb"
 version = "1.10505.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

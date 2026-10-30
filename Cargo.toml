@@ -9,6 +9,11 @@ repository = "https://github.com/ryanwd123/datadiver"
 readme = "README.md"
 publish = false
 
+# The app is the root package and the default member, so plain `cargo build` and
+# `cargo test` build only the app; `-p <crate>` or `--workspace` reach the others.
+[workspace]
+members = ["crates/*"]
+
 [lib]
 name = "datadiver"
 path = "src/lib.rs"
