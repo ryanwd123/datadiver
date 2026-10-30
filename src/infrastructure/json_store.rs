@@ -575,9 +575,10 @@ impl ViewRepository {
             deleted_at_unix_ms: unix_ms(),
             original_name: view.name.clone(),
             original_kind: match view.view {
-                crate::domain::documents::ViewKind::Table(_) => "table",
-                crate::domain::documents::ViewKind::Query(_) => "query",
-                crate::domain::documents::ViewKind::Sql(_) => "sql",
+                crate::domain::documents::ViewKind::Table(_) => "table view",
+                crate::domain::documents::ViewKind::Query(_) => "query view",
+                crate::domain::documents::ViewKind::Sql(_) if view.is_sql_script() => "SQL script",
+                crate::domain::documents::ViewKind::Sql(_) => "SQL source",
             }
             .into(),
             view,
@@ -647,7 +648,40 @@ impl ViewRepository {
         (archives, issues)
     }
 
-    pub fn recover(&self, archive_path: &Path) -> io::Result<DocumentDefinition> {
+    /// The latest archive of the view `id`, if it was archived rather than
+    /// deleted for good.
+    pub fn archived(&self, id: &str) -> Option<ArchivedView> {
+        self.load_archives()
+            .0
+            .into_iter()
+            .map(|(_, archive)| archive)
+            .find(|archive| archive.view.id == id)
+    }
+
+    /// The saved views that read the rows of the SQL source `id`.
+    pub fn views_on_sql_source(&self, id: &str) -> Vec<DocumentDefinition> {
+        self.load_views()
+            .0
+            .into_iter()
+            .filter(|view| view.sql_source.as_deref() == Some(id))
+            .collect()
+    }
+
+    /// Removes the saved view `id` for good, without archiving it.
+    pub fn delete(&self, id: &str) -> io::Result<()> {
+        let path = self
+            .find_by_id(id)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "view not found"))?;
+        fs::remove_file(path)
+    }
+
+    /// Removes an archived view for good.
+    pub fn delete_archive(&self, archive_path: &Path) -> io::Result<()> {
+        self.check_archive_path(archive_path)?;
+        fs::remove_file(archive_path)
+    }
+
+    fn check_archive_path(&self, archive_path: &Path) -> io::Result<()> {
         let deleted_dir = self.paths.data.join("deleted");
         if archive_path.parent() != Some(deleted_dir.as_path()) {
             return Err(io::Error::new(
@@ -655,6 +689,11 @@ impl ViewRepository {
                 "archive is outside deleted views",
             ));
         }
+        Ok(())
+    }
+
+    pub fn recover(&self, archive_path: &Path) -> io::Result<DocumentDefinition> {
+        self.check_archive_path(archive_path)?;
         let archive: ArchivedView = read_json(archive_path)?;
         if archive.schema_version != SCHEMA_VERSION {
             return Err(io::Error::new(
@@ -1133,5 +1172,44 @@ mod tests {
         assert_eq!(recovered.id, first.id);
         assert_eq!(recovered.name, "Sales (2)");
         assert_eq!(repository.load_views().0.len(), 2);
+    }
+
+    #[test]
+    fn sql_sources_archive_with_their_kind_and_delete_for_good() {
+        use crate::domain::documents::{SqlConfig, ViewKind};
+        let home = tempfile::tempdir().unwrap();
+        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        let mut source = DocumentDefinition::draft_table("Orders SQL".into(), String::new());
+        source.view = ViewKind::Sql(SqlConfig::default());
+        repository.save_view(&mut source).unwrap();
+        let mut on_source = DocumentDefinition::draft_sql_source(&source);
+        on_source.name = "Orders by region".into();
+        repository.save_view(&mut on_source).unwrap();
+        let mut script = DocumentDefinition::draft_table("Cleanup".into(), String::new());
+        script.view = ViewKind::Sql(SqlConfig {
+            script: true,
+            ..Default::default()
+        });
+        repository.save_view(&mut script).unwrap();
+
+        let dependents = repository.views_on_sql_source(&source.id);
+        assert_eq!(dependents.iter().map(|view| view.name.as_str()).collect::<Vec<_>>(), ["Orders by region"]);
+        assert!(repository.archived(&source.id).is_none());
+
+        assert_eq!(repository.archive(&source.id).unwrap().original_kind, "SQL source");
+        assert_eq!(repository.archive(&script.id).unwrap().original_kind, "SQL script");
+        assert_eq!(repository.archived(&source.id).unwrap().original_name, "Orders SQL");
+        // The view on the source stays saved, reading a source that is archived.
+        assert_eq!(repository.load_views().0.len(), 1);
+
+        let (archives, _) = repository.load_archives();
+        let script_archive = archives.iter().find(|(_, archive)| archive.view.id == script.id).unwrap();
+        repository.delete_archive(&script_archive.0).unwrap();
+        assert_eq!(repository.load_archives().0.len(), 1);
+        assert!(repository.delete_archive(&home.path().join("views/outside.json")).is_err());
+
+        repository.delete(&on_source.id).unwrap();
+        assert!(repository.load_views().0.is_empty());
+        assert_eq!(repository.delete(&on_source.id).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }
