@@ -25,7 +25,7 @@ use crate::widgets::input::{Edited, Input};
 use crate::widgets::suggest::{self, CompletionContext, CompletionItem, CompletionKind, CompletionProvider, Suggest};
 use crate::widgets::{Focus, Rect};
 use crate::syntax::{self, Context, HighlightCache, Span, Syntax};
-use crate::text::{self, Buffer, Change};
+use crate::text::{self, Buffer, Change, Edit, Transaction};
 use crate::decorations::Decorations;
 use crate::theme::{Paint, Palette, Theme};
 use crate::view::{LineMap, Region, View};
@@ -846,6 +846,10 @@ impl State {
         if triggers.contains(&c) {
             return self.open_suggest(Some(c), false);
         }
+        // Inside strings only the provider's own ranges apply, such as paths.
+        if self.provider.is_some() && self.context_at(head) == Context::String {
+            return self.open_ranged();
+        }
         if (c.is_alphanumeric() || c == '_')
             && self.suggest_dead != Some(self.word_start(head))
             && self.context_at(head) == Context::Code
@@ -868,20 +872,12 @@ impl State {
         if prefix.is_empty() && trigger.is_none() && !explicit {
             return;
         }
-        let mut items: Vec<CompletionItem> = Vec::new();
-        if let Some(p) = self.provider.clone() {
-            let text = self.snapshot();
-            let cx = CompletionContext {
-                text: &text,
-                offset: head,
-                pos: self.doc.buffer.pos(head),
-                prefix: &prefix,
-                trigger,
-                language: self.lang.map(|l| l.id),
-            };
-            items = p.complete(&cx);
-        }
+        let mut items = self.provider_items(start, trigger);
         self.suggest_dead = None;
+        if let Some(ranged) = ranged_start(&items) {
+            items.retain(|it| it.range.as_ref().is_some_and(|r| r.start == ranged));
+            return self.show_ranged(items, ranged);
+        }
         if trigger.is_none() {
             if let Some(l) = self.lang {
                 items.extend(l.keywords.iter().map(|k| CompletionItem::new(*k, CompletionKind::Keyword)));
@@ -897,14 +893,67 @@ impl State {
         items.retain(|it| seen.insert(it.label.clone()));
         self.suggest.items = items;
         self.suggest.word_start = start;
+        self.suggest.ranged = false;
         self.suggest.open = true;
         self.update_suggest();
+    }
+
+    /// The provider's items for the word starting at `start`.
+    fn provider_items(&mut self, start: usize, trigger: Option<char>) -> Vec<CompletionItem> {
+        let Some(p) = self.provider.clone() else {
+            return Vec::new();
+        };
+        let head = self.doc.sels.primary().head;
+        let prefix = self.doc.buffer.slice(start, head);
+        let text = self.snapshot();
+        let cx = CompletionContext {
+            text: &text,
+            offset: head,
+            pos: self.doc.buffer.pos(head),
+            prefix: &prefix,
+            trigger,
+            language: self.lang.map(|l| l.id),
+        };
+        p.complete(&cx)
+    }
+
+    /// Opens (or refreshes) the popup with only the provider's ranged items;
+    /// closes it when there are none.
+    fn open_ranged(&mut self) {
+        let start = self.word_start(self.doc.sels.primary().head);
+        let mut items = self.provider_items(start, None);
+        match ranged_start(&items) {
+            Some(ranged) => {
+                items.retain(|it| it.range.as_ref().is_some_and(|r| r.start == ranged));
+                self.show_ranged(items, ranged);
+            }
+            None => self.close_suggest(),
+        }
+    }
+
+    fn show_ranged(&mut self, items: Vec<CompletionItem>, start: usize) {
+        if items.is_empty() {
+            return self.close_suggest();
+        }
+        self.suggest.items = items;
+        self.suggest.word_start = start;
+        self.suggest.ranged = true;
+        self.suggest.open = true;
+        self.suggest.filter("");
+        self.invalidate();
     }
 
     /// Refilters by the word typed so far; closes when the caret left it or
     /// nothing matches.
     fn update_suggest(&mut self) {
         let head = self.doc.sels.primary().head;
+        if self.suggest.ranged {
+            let start = self.suggest.word_start;
+            if head < start || self.doc.buffer.line_of(head) != self.doc.buffer.line_of(start) {
+                return self.close_suggest();
+            }
+            return self.open_ranged();
+        }
         let start = self.suggest.word_start;
         if head < start || self.word_start(head) != start || self.doc.buffer.line_of(head) != self.doc.buffer.line_of(start) {
             return self.close_suggest();
@@ -930,6 +979,21 @@ impl State {
             return self.close_suggest();
         };
         let head = self.doc.sels.primary().head;
+        if let Some(range) = item.range.clone().filter(|_| self.suggest.ranged) {
+            let insert = item.insert_text.unwrap_or(item.label);
+            self.close_suggest();
+            let len = self.doc.buffer.len();
+            let start = range.start.min(len);
+            let end = range.end.max(head).min(len);
+            let tx = Transaction::new(vec![Edit::new(start, end, insert.clone())]);
+            let caret = start + insert.len();
+            let sels = Selections::single(Selection::cursor(caret));
+            self.edit(commands::Outcome { tx, sels }, EditKind::Other);
+            if item.retrigger {
+                self.open_ranged();
+            }
+            return;
+        }
         let n = head - self.suggest.word_start;
         let prefix = self.doc.buffer.slice(self.suggest.word_start, head);
         let insert = item.insert_text.unwrap_or(item.label);
@@ -2451,6 +2515,12 @@ fn replace_primary(sels: &Selections, s: Selection) -> Selections {
     Selections::new(v, i)
 }
 
+/// Where the provider's ranged items start: items with a range replace it
+/// rather than the word before the caret.
+fn ranged_start(items: &[CompletionItem]) -> Option<usize> {
+    items.iter().find_map(|it| it.range.as_ref()).map(|r| r.start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2808,7 +2878,7 @@ mod suggest_tests {
                 label: "customers".into(),
                 detail: Some("table".into()),
                 kind: CompletionKind::Class,
-                insert_text: None,
+                ..Default::default()
             }]
         }
 
@@ -2852,6 +2922,54 @@ mod suggest_tests {
         key(&mut st, VK_DOWN);
         key(&mut st, VK_RETURN);
         assert_eq!(shown(&st), "SELECT * FROM customers c.name|");
+    }
+
+    /// Lists file names after a `'`, replacing the last path segment.
+    struct Paths;
+
+    impl CompletionProvider for Paths {
+        fn complete(&self, cx: &CompletionContext) -> Vec<CompletionItem> {
+            let before = &cx.text[..cx.offset];
+            let Some(quote) = before.rfind('\'') else { return Vec::new() };
+            let typed = &before[quote + 1..];
+            let segment = typed.rfind('/').map_or(quote + 1, |i| quote + 2 + i);
+            let names: &[&str] = if typed.starts_with("data/") { &["a.parquet"] } else { &["data/", "notes.txt"] };
+            let partial = &cx.text[segment..cx.offset];
+            names
+                .iter()
+                .filter(|n| n.starts_with(partial))
+                .map(|n| CompletionItem {
+                    label: n.to_string(),
+                    range: Some(segment..cx.offset),
+                    retrigger: n.ends_with('/'),
+                    ..Default::default()
+                })
+                .collect()
+        }
+
+        fn trigger_characters(&self) -> Vec<char> {
+            vec!['\'', '/']
+        }
+    }
+
+    #[cfg(feature = "lang-sql")]
+    #[test]
+    fn ranged_items_replace_their_range_and_retrigger() {
+        let mut st = state(Some("sql"), "FROM |");
+        st.provider = Some(Rc::new(Paths));
+        type_in(&mut st, "'");
+        assert!(st.suggest.open && st.suggest.ranged);
+        assert_eq!(labels(&st), vec!["data/", "notes.txt"]);
+        // The provider is asked again as the range grows, with no keywords or words mixed in.
+        type_in(&mut st, "da");
+        assert_eq!(labels(&st), vec!["data/"]);
+        key(&mut st, VK_TAB);
+        assert_eq!(shown(&st), "FROM 'data/|'");
+        assert!(st.suggest.open);
+        assert_eq!(labels(&st), vec!["a.parquet"]);
+        key(&mut st, VK_RETURN);
+        assert_eq!(shown(&st), "FROM 'data/a.parquet|'");
+        assert!(!st.suggest.open);
     }
 
     #[test]

@@ -46,6 +46,13 @@ pub struct CompletionItem {
     /// Shown dimmed after the label (a type, a table, ...).
     pub detail: Option<String>,
     pub kind: CompletionKind,
+    /// The byte range the item replaces, when it is not the word before the
+    /// caret (a path inside a string, a quoted name). Items with their own
+    /// range are listed in the provider's order and asked for again as the
+    /// user types.
+    pub range: Option<std::ops::Range<usize>>,
+    /// Open the list again after accepting (a folder, to list what is inside).
+    pub retrigger: bool,
 }
 
 impl CompletionItem {
@@ -105,12 +112,21 @@ pub struct Suggest {
     pub top: usize,
     /// Where the word being completed starts (byte offset).
     pub word_start: usize,
+    /// The items replace the provider's own range from `word_start`.
+    pub ranged: bool,
 }
 
 impl Suggest {
     /// Filters and sorts the items by `prefix`: best fuzzy score first, then
     /// shorter labels, then alphabetically. An empty prefix keeps everything.
     pub fn filter(&mut self, prefix: &str) {
+        if self.ranged {
+            // The provider already filtered and ranked what fits its range.
+            self.rows = (0..self.items.len()).map(|item| Row { item, matches: Vec::new() }).collect();
+            self.selected = 0;
+            self.top = 0;
+            return;
+        }
         let mut config = Config::DEFAULT;
         config.prefer_prefix = true;
         let mut matcher = Matcher::new(config);
