@@ -708,3 +708,15 @@ pub(crate) fn query_columns(query: &Query) -> Columns {
     }
     .query_columns(query, 0, 1)
 }
+
+/// The relations a FROM item brings in, with the CTEs visible where it is.
+pub(crate) fn item_relations(item: &FromItem) -> Vec<VisibleRelation> {
+    let anchor = SyntaxElement::Node(item.syntax().clone());
+    let mut walker = Walker {
+        offset: item.syntax().text_range().start(),
+        path: ancestors(&anchor).collect(),
+        ctes: Vec::new(),
+    };
+    walker.collect_ctes(&anchor);
+    walker.item_relations(item, 0, 0)
+}

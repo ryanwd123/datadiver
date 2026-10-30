@@ -78,7 +78,11 @@ pub(crate) fn parse_tokens(
             }
             kinds.push(t.kind);
             let word = &text[offset..offset + len];
-            kws.push(if t.kind == SyntaxKind::IDENT { Kw::lookup(word) } else { None });
+            kws.push(if t.kind == SyntaxKind::IDENT {
+                Kw::lookup(word)
+            } else {
+                None
+            });
             texts.push(word);
         }
         offset += len;
@@ -137,7 +141,11 @@ impl<'a> Parser<'a> {
     /// The n-th token without spending fuel, for bounded lookahead scans.
     pub(crate) fn raw_nth(&self, n: usize) -> SyntaxKind {
         let i = self.pos + n;
-        if i < self.limit { self.kinds[i] } else { SyntaxKind::EOF }
+        if i < self.limit {
+            self.kinds[i]
+        } else {
+            SyntaxKind::EOF
+        }
     }
 
     /// The keyword the n-th token spells, without spending fuel.
@@ -157,7 +165,11 @@ impl<'a> Parser<'a> {
 
     /// The keyword the n-th token spells, if it is a plain word.
     pub(crate) fn nth_kw(&self, n: usize) -> Option<Kw> {
-        if self.fuel() { self.raw_nth_kw(n) } else { None }
+        if self.fuel() {
+            self.raw_nth_kw(n)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn at_eof(&self) -> bool {

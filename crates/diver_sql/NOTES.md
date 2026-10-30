@@ -94,6 +94,39 @@ Whether `(` starts a query or a join is decided by lookahead: `((SELECT 1)
 UNION ...)` is a query, `((VALUES (1)) t JOIN ...)` a join and `((SELECT 1) +
 1)` an expression, by what follows the inner parenthesis.
 
+## Editor features
+
+- `highlight` classes tokens by their place in the tree, so a keyword used as
+  a name (`SELECT name, year`) highlights as a column; `highlight_with` marks
+  the catalog's aggregates.
+- `diagnostics` reports lexer problems (unterminated strings, quoted names,
+  comments, stray characters), parse errors (one per position) and a hint on
+  statements the grammar doesn't know. `diagnostics_with` adds "unknown
+  table" warnings, only for schemas the catalog lists tables for, and never
+  for CTEs, the script's own tables or table functions.
+- Statement hover docs are Dabbler's `statement_docs.py` (adapted from
+  DuckDB's MIT-licensed docs) as `src/statement_docs.rs`; the key is picked
+  from the statement node the hovered keyword belongs to, so `DO UPDATE` in
+  ON CONFLICT doesn't show the UPDATE doc.
+
+## Performance
+
+`cargo bench -p diver_sql` (release, this machine):
+
+| | time |
+|---|---|
+| parse, 30-line query | 45 µs |
+| complete, 30-line query | 62 µs |
+| complete_with (catalog + document objects), 30-line query | 106 µs |
+| parse, 5k-line script (215 KB, 105k tokens) | 11.4 ms |
+| complete in the 5k-line script | 1.9 ms |
+
+For the 5k-line script, lexing is about 1.8 ms, the grammar 4 ms and
+building the rowan tree 4.3 ms; the plan's "a few ms" for a full parse is
+not met, but completion parses only the statement under the cursor and
+stays under 2 ms. `document_objects` needs the full parse, so the app should
+compute it once per edit, not per keystroke.
+
 ## Dabbler parity
 
 All of Dabbler's `test_completion_cases.py` cases (columns, derived tables,

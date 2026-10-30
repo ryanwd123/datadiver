@@ -29,7 +29,15 @@ const QUERY_START: &[Kw] = &[
 /// `INSERT INTO t (SELECT ...)`) rather than a join or a column list.
 pub(super) fn at_query_start(p: &mut Parser, inside_paren: bool) -> bool {
     if p.at_hole() {
-        for kw in [Kw::Select, Kw::From, Kw::With, Kw::Values, Kw::Table, Kw::Pivot, Kw::Unpivot] {
+        for kw in [
+            Kw::Select,
+            Kw::From,
+            Kw::With,
+            Kw::Values,
+            Kw::Table,
+            Kw::Pivot,
+            Kw::Unpivot,
+        ] {
             p.record(Expected::Keyword(kw));
         }
         return false;
@@ -217,7 +225,9 @@ fn query_term(p: &mut Parser) -> Option<CompletedMarker> {
             from.complete(p, K::FROM_CLAUSE);
             Some(m.complete(p, K::SELECT_CORE))
         }
-        Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => Some(misc::pivot_stmt(p)),
+        Some(Kw::Pivot | Kw::PivotWider | Kw::Unpivot | Kw::PivotLonger) => {
+            Some(misc::pivot_stmt(p))
+        }
         Some(Kw::Summarize | Kw::Describe | Kw::Show) => {
             // Statements DuckDB lets stand as a query (`FROM (DESCRIBE t)`).
             let m = p.start();

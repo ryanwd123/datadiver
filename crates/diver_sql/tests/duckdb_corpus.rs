@@ -20,12 +20,17 @@ fn corpus_dir() -> PathBuf {
 }
 
 fn test_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             test_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "test" || e == "test_slow") {
+        } else if path
+            .extension()
+            .is_some_and(|e| e == "test" || e == "test_slow")
+        {
             out.push(path);
         }
     }
@@ -39,7 +44,9 @@ fn records(text: &str) -> Vec<String> {
     let mut i = 0;
     while i < lines.len() {
         let head = lines[i].trim();
-        let is_record = head.starts_with("statement ok") || head.starts_with("statement maybe") || head.starts_with("query ");
+        let is_record = head.starts_with("statement ok")
+            || head.starts_with("statement maybe")
+            || head.starts_with("query ");
         i += 1;
         if !is_record {
             continue;
@@ -51,7 +58,9 @@ fn records(text: &str) -> Vec<String> {
         }
         let text = sql.join("\n").trim().to_string();
         // sqllogictest substitutions and test-only paths
-        let templated = text.contains("${") || text.contains("__TEST_DIR__") || text.contains("__WORKING_DIRECTORY__");
+        let templated = text.contains("${")
+            || text.contains("__TEST_DIR__")
+            || text.contains("__WORKING_DIRECTORY__");
         let braces = text.contains('{') && regex_like_template(&text);
         if !text.is_empty() && !templated && !braces {
             out.push(text);
@@ -68,7 +77,12 @@ fn regex_like_template(text: &str) -> bool {
         let end = rest.find('}');
         if let Some(end) = end {
             let inner = &rest[..end];
-            if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && !inner.bytes().all(|b| b.is_ascii_digit()) {
+            if !inner.is_empty()
+                && inner
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && !inner.bytes().all(|b| b.is_ascii_digit())
+            {
                 // `{a: 1}` is a struct; `{x}` alone is a template
                 if !rest[end + 1..].trim_start().starts_with(':') {
                     return true;
@@ -82,7 +96,11 @@ fn regex_like_template(text: &str) -> bool {
 
 /// What to group a failure by: the statement's first word and where it failed.
 fn failure_key(sql: &str, error: &diver_sql::SyntaxError) -> String {
-    let first = sql.split(|c: char| !c.is_alphanumeric() && c != '_').find(|w| !w.is_empty()).unwrap_or("?").to_uppercase();
+    let first = sql
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|w| !w.is_empty())
+        .unwrap_or("?")
+        .to_uppercase();
     let start = usize::from(error.range.start()).min(sql.len());
     let end = usize::from(error.range.end()).min(sql.len());
     let at = sql.get(start..end).unwrap_or("");
@@ -114,7 +132,10 @@ mod duckdb_parser {
             unsafe {
                 let mut db = std::ptr::null_mut();
                 let mut con = std::ptr::null_mut();
-                assert_eq!(ffi::duckdb_open(std::ptr::null(), &mut db), ffi::DuckDBSuccess);
+                assert_eq!(
+                    ffi::duckdb_open(std::ptr::null(), &mut db),
+                    ffi::DuckDBSuccess
+                );
                 assert_eq!(ffi::duckdb_connect(db, &mut con), ffi::DuckDBSuccess);
                 DuckParser { db, con }
             }
@@ -148,7 +169,11 @@ mod duckdb_parser {
 #[ignore = "needs tools/fetch_duckdb_corpus.ps1"]
 fn duckdb_test_corpus() {
     let dir = corpus_dir();
-    assert!(dir.exists(), "run tools/fetch_duckdb_corpus.ps1 first ({})", dir.display());
+    assert!(
+        dir.exists(),
+        "run tools/fetch_duckdb_corpus.ps1 first ({})",
+        dir.display()
+    );
     let mut files = Vec::new();
     test_files(&dir, &mut files);
     files.sort();
@@ -163,7 +188,12 @@ fn duckdb_test_corpus() {
     for path in &files {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         for sql in records(&text) {
-            let key = sql.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(';').to_lowercase();
+            let key = sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim_end_matches(';')
+                .to_lowercase();
             if !seen.insert(key) {
                 continue;
             }
@@ -193,22 +223,35 @@ fn duckdb_test_corpus() {
             assert_eq!(parse.syntax().to_string(), sql);
             if let Some(e) = parse.errors().first() {
                 groups.entry(failure_key(&sql, e)).or_default().push(sql);
-            } else if parse.syntax().descendants().any(|n| n.kind() == diver_sql::SyntaxKind::UNKNOWN_STMT) {
+            } else if parse
+                .syntax()
+                .descendants()
+                .any(|n| n.kind() == diver_sql::SyntaxKind::UNKNOWN_STMT)
+            {
                 let first = sql.split_whitespace().next().unwrap_or("").to_uppercase();
-                groups.entry(format!("{first:10} unknown statement")).or_default().push(sql);
+                groups
+                    .entry(format!("{first:10} unknown statement"))
+                    .or_default()
+                    .push(sql);
             }
         }
     }
     let failed: usize = groups.values().map(Vec::len).sum();
     let rate = 100.0 * (total - failed) as f64 / total.max(1) as f64;
-    println!("{total} distinct statements; {} parse cleanly ({rate:.2}%)\n", total - failed);
+    println!(
+        "{total} distinct statements; {} parse cleanly ({rate:.2}%)\n",
+        total - failed
+    );
     let mut sorted: Vec<_> = groups.iter().collect();
     sorted.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
     for (key, items) in sorted.iter().take(60) {
         println!("{:6}  {key}", items.len());
         for sql in items.iter().take(3) {
             let one_line: String = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-            println!("          {}", one_line.chars().take(160).collect::<String>());
+            println!(
+                "          {}",
+                one_line.chars().take(160).collect::<String>()
+            );
         }
     }
     if let Ok(path) = std::env::var("DIVER_SQL_FAILURES") {
@@ -222,10 +265,16 @@ fn duckdb_test_corpus() {
     }
     #[cfg(feature = "duckdb-diff")]
     {
-        println!("\n{} statement-splitting mismatches", split_mismatches.len());
+        println!(
+            "\n{} statement-splitting mismatches",
+            split_mismatches.len()
+        );
         for m in split_mismatches.iter().take(10) {
             println!("    {}", m.chars().take(160).collect::<String>());
         }
     }
-    assert!(rate >= RATCHET, "pass rate {rate:.2}% is below the ratchet {RATCHET}%");
+    assert!(
+        rate >= RATCHET,
+        "pass rate {rate:.2}% is below the ratchet {RATCHET}%"
+    );
 }

@@ -40,8 +40,23 @@ pub(super) fn is_literal_type(word: &str) -> bool {
         "timestamp_s",
         "timestamp_ms",
         "timestamp_ns",
-        "time_ns", "bitstring", "varint", "bignum", "uhugeint", "ubigint", "uinteger",
-        "usmallint", "utinyint", "int1", "int2", "int4", "int8", "float4", "float8", "char", "bpchar",
+        "time_ns",
+        "bitstring",
+        "varint",
+        "bignum",
+        "uhugeint",
+        "ubigint",
+        "uinteger",
+        "usmallint",
+        "utinyint",
+        "int1",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "char",
+        "bpchar",
         "timestamp_us",
     ];
     TYPES.iter().any(|t| t.eq_ignore_ascii_case(word))
@@ -92,7 +107,10 @@ fn type_name_inner(p: &mut Parser) -> Option<CompletedMarker> {
             Some(Kw::Interval) => {
                 p.bump_kw(Kw::Interval);
                 // INTERVAL DAY TO SECOND
-                if p.current() == K::IDENT && !p.nth_kw(0).is_some_and(|kw| kw.is_reserved()) && p.nth_at_kw(1, Kw::To) {
+                if p.current() == K::IDENT
+                    && !p.nth_kw(0).is_some_and(|kw| kw.is_reserved())
+                    && p.nth_at_kw(1, Kw::To)
+                {
                     p.bump_any_kw();
                     p.bump_kw(Kw::To);
                     p.bump_any_kw();

@@ -105,8 +105,7 @@ pub(super) fn create(p: &mut Parser) {
             if_not_exists(p);
             object_name(p, NewNameKind::Type);
             if p.expect_kw(Kw::As) {
-                if p.at_kw(Kw::Enum) && p.nth(1) == K::L_PAREN && select::query_inside(p, 2)
-                {
+                if p.at_kw(Kw::Enum) && p.nth(1) == K::L_PAREN && select::query_inside(p, 2) {
                     p.bump_kw(Kw::Enum);
                     p.bump();
                     select::query(p);

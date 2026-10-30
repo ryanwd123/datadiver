@@ -478,7 +478,10 @@ fn keyword_atom(p: &mut Parser) -> Option<CompletedMarker> {
         // `interval` is also a column name (`interval::VARCHAR`)
         Some(Kw::Interval)
             if next.is_string()
-                || matches!(next, K::INT_NUMBER | K::FLOAT_NUMBER | K::PARAM | K::L_PAREN | K::MINUS) =>
+                || matches!(
+                    next,
+                    K::INT_NUMBER | K::FLOAT_NUMBER | K::PARAM | K::L_PAREN | K::MINUS
+                ) =>
         {
             return Some(interval(p));
         }

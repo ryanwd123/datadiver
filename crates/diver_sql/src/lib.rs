@@ -7,12 +7,18 @@
 pub mod ast;
 mod catalog;
 mod complete;
+mod diagnostics;
 mod dialect;
 mod document;
+mod folding;
+mod highlight;
+mod hover;
 mod items;
 mod lexer;
 mod parser;
 mod scope;
+mod signature;
+mod statement_docs;
 mod syntax_kind;
 
 pub use rowan::{TextRange, TextSize};
@@ -26,11 +32,16 @@ pub use catalog::{
 pub use complete::{
     CompletionContext, Expected, FunctionKind, Name, NewNameKind, complete, complete_with_options,
 };
+pub use diagnostics::{Diagnostic, Severity, diagnostics, diagnostics_with};
 pub use dialect::{Dialect, takes_path};
 pub use document::{DocumentObject, ObjectKind, document_objects};
+pub use folding::{folding_ranges, selection_ranges};
+pub use highlight::{HighlightClass, highlight, highlight_with};
+pub use hover::{Hover, hover};
 pub use items::{CompletionItem, ItemKind, items, needs_quotes, quote_if_needed, relation_columns};
 pub use lexer::{Token, tokenize};
 pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation};
+pub use signature::{SignatureHelp, signature_help, signature_help_with};
 pub use syntax_kind::{
     DuckSql, Kw, KwCategory, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken,
 };
