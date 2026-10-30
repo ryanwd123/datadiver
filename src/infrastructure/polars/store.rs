@@ -465,7 +465,14 @@ impl PolarsStore {
         frame = self.sorted(frame, &order, &view.sort);
         let frame = frame.select([col(ROW)]);
         let plan = frame.describe_plan().unwrap_or_default();
-        let rows = trace.execute("Result search and sort", &plan, &[], || self.collect(frame))?;
+        // The in-memory engine that `Engine::Auto` picks evaluates a search's
+        // OR of every column an order of magnitude slower than streaming does.
+        let rows = trace.execute("Result search and sort", &plan, &[], || {
+            frame
+                .collect_with_engine(Engine::Streaming)
+                .map(|result| result.unwrap_single())
+                .map_err(polars_error)
+        })?;
         crate::infrastructure::performance::record("row_map_creation", start);
         let _span = crate::infrastructure::performance::Span::new("row_id_extraction");
         let ids = rows
@@ -780,6 +787,7 @@ impl PolarsStore {
 
     fn search_predicate(&self, text: &str, hidden: &[String]) -> Expr {
         let needle = text.to_lowercase();
+        let needs_lowercase = !needle.chars().all(|ch| ch.is_ascii() && !ch.is_ascii_alphabetic());
         let predicates = self
             .columns
             .iter()
@@ -787,6 +795,9 @@ impl PolarsStore {
             .filter_map(|column| {
                 let value = rendered(col(column.name.as_str()), &column.dtype());
                 let value = match search_rendering(&column.sql_type)? {
+                    // Lowercasing only changes letters, so a needle without them,
+                    // such as a year, matches the text as it is.
+                    SearchRendering::Text if !needs_lowercase => value,
                     SearchRendering::Text => value.str().to_lowercase(),
                     // Converting every value to text dominates search on wide numeric
                     // tables, so skip columns whose rendering cannot contain the needle.
@@ -1697,6 +1708,22 @@ mod tests {
             })
             .unwrap();
         assert_eq!(descending, [0, 1]);
+    }
+
+    #[test]
+    fn letterless_search_matches_text_as_is_and_keeps_source_order() {
+        let store = store(
+            "SELECT * FROM (VALUES ('1998 Winter', NULL), ('ÉTÉ 1996', 'x'), ('Spring', 'A-1998')) AS t(games, code)",
+        );
+        assert_eq!(search(&store, "1998").unwrap(), [0, 2]);
+        assert_eq!(search(&store, "1996").unwrap(), [1]);
+        assert_eq!(search(&store, "été").unwrap(), [1]);
+        assert_eq!(search(&store, "a-1998").unwrap(), [2]);
+        // Enough rows for the engine to split the work, which must not reorder it.
+        let many = PolarsStore::synthetic(1_000_000).unwrap();
+        let ids = search(&many, "7").unwrap();
+        assert_eq!(ids.len(), 468_559);
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]
