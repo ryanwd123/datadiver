@@ -175,6 +175,11 @@ impl Find {
         }
     }
 
+    /// The widget's rectangle while it is open.
+    pub fn frame(&self, width: f32) -> Option<Rect> {
+        self.open.then(|| self.layout(width).frame)
+    }
+
     pub fn hit(&self, width: f32, x: f32, y: f32) -> Option<Hit> {
         if !self.open {
             return None;

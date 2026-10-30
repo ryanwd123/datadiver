@@ -69,6 +69,7 @@ pub use theme::{Ink, Theme};
 pub use decorations::{DecorationId, DecorationOptions, Severity, Stickiness};
 pub use theme::Paint;
 pub use widgets::suggest::{CompletionContext, CompletionItem, CompletionKind, CompletionProvider};
+pub use editor::Mods;
 pub use window::{Decoration, Editor, TextEdit};
 
 /// Editor options; [`Options::default`] matches Monaco's defaults where they

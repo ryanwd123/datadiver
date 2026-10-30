@@ -93,6 +93,7 @@ impl Shell {
     fn invalidate(&self) {
         unsafe {
             match self.hosted.get() {
+                Some(h) if h.host.is_invalid() => {}
                 Some(h) => {
                     let rc = RECT {
                         left: h.x,
@@ -935,6 +936,14 @@ impl Editor {
             return;
         }
         let mut st = self.shell.state.borrow_mut();
+        // The host's target decides the DPI, which also covers bitmap targets
+        // for screenshots.
+        let (mut dpi, mut dpi_y) = (0.0, 0.0);
+        unsafe { rt.GetDpi(&mut dpi, &mut dpi_y) };
+        if dpi > 0.0 && dpi != st.view.dpi {
+            st.set_dpi(dpi);
+            st.resize(h.w.max(0) as u32, h.h.max(0) as u32);
+        }
         let k = st.view.dpi / 96.0;
         unsafe {
             let mut old = windows_numerics::Matrix3x2::default();
@@ -948,6 +957,132 @@ impl Editor {
             st.paint(rt);
             rt.SetTransform(&old);
         }
+    }
+
+    // ---- Input from hosts that translate their own events ----
+    //
+    // A host with its own keymap, focus and hit testing calls these instead of
+    // `handle_message`. Positions are DIPs from the editor's top-left.
+
+    /// Marks a hosted editor focused or not; the host decides where keys go.
+    pub fn set_focused(&self, focused: bool) {
+        if self.read(|s| s.focused) != focused {
+            self.with(|s| s.set_focus(focused));
+        }
+    }
+
+    /// A key press. Returns whether the editor used it; the host gets the rest.
+    pub fn key_down(&self, chord: Chord) -> bool {
+        let r = self.with(|s| {
+            s.hide_tooltip();
+            s.key(chord)
+        });
+        match r {
+            KeyResult::Handled => true,
+            KeyResult::ContextMenu => {
+                self.show_context_menu(None);
+                true
+            }
+            KeyResult::Unhandled => false,
+        }
+    }
+
+    /// Typed text, as WM_CHAR delivers it: auto-closing and suggestions apply.
+    pub fn type_chars(&self, text: &str) {
+        self.with(|s| text.encode_utf16().for_each(|u| s.on_char(u)));
+    }
+
+    /// A left button press; `clicks` counts double and triple clicks.
+    pub fn mouse_down(&self, x: f32, y: f32, mods: Mods, clicks: u32) {
+        self.with(|s| {
+            s.set_focus(true);
+            s.hide_tooltip();
+            s.mouse_down(x, y, mods, clicks);
+        });
+    }
+
+    /// The mouse moved: drags a selection or scrollbar, or tracks hover.
+    pub fn mouse_move(&self, x: f32, y: f32) {
+        let shell = &self.shell;
+        self.with(|s| {
+            if s.drag.is_some() {
+                s.drag_to(x, y);
+                shell.set_timer(TIMER_SCROLL, s.autoscroll_needed().then_some(30));
+            } else {
+                s.hover_at(x, y);
+                if s.tooltip.as_ref().is_some_and(|t| (t.0 - x).abs() > 4.0 || (t.1 - y).abs() > 4.0) {
+                    s.hide_tooltip();
+                }
+            }
+        });
+    }
+
+    pub fn mouse_up(&self) {
+        self.shell.set_timer(TIMER_SCROLL, None);
+        self.with(|s| s.mouse_up());
+    }
+
+    pub fn mouse_leave(&self) {
+        self.with(|s| {
+            s.mouse_leave();
+            s.hide_tooltip();
+        });
+    }
+
+    /// Wheel notches (positive: away from the user, or right when horizontal).
+    pub fn wheel(&self, notches: f32, horizontal: bool, mods: Mods) {
+        self.with(|s| {
+            s.hide_tooltip();
+            s.wheel(notches, horizontal, mods);
+        });
+    }
+
+    /// A right click: moves the caret there unless it is in a selection, then
+    /// shows the context menu.
+    pub fn context_menu_at(&self, x: f32, y: f32) {
+        self.with(|s| {
+            s.set_focus(true);
+            s.right_down(x, y);
+        });
+        self.show_context_menu(Some((x, y)));
+    }
+
+    /// Shows the context menu at (x, y) DIPs, or at the caret.
+    fn show_context_menu(&self, at: Option<(f32, f32)>) {
+        let input = self.shell.input_hwnd();
+        if input.is_invalid() {
+            return;
+        }
+        let lparam = match at {
+            None => LPARAM(-1),
+            Some((x, y)) => {
+                let k = self.read(|s| s.view.dpi / 96.0);
+                let (ox, oy) = self.shell.origin();
+                let mut pt = POINT {
+                    x: ox + (x * k) as i32,
+                    y: oy + (y * k) as i32,
+                };
+                unsafe {
+                    let _ = ClientToScreen(input, &mut pt);
+                }
+                LPARAM(((pt.y as u16 as isize) << 16) | pt.x as u16 as isize)
+            }
+        };
+        context_menu(&self.shell, lparam);
+    }
+
+    /// The caret in DIPs from the editor's top-left: (x, y, height).
+    pub fn caret(&self) -> (f32, f32, f32) {
+        self.with(|s| s.caret_point())
+    }
+
+    /// Where the mouse pointer should be an arrow rather than an I-beam (the
+    /// gutter, scrollbars and overlays), as (x, y, width, height) in DIPs.
+    pub fn arrow_areas(&self) -> Vec<(f32, f32, f32, f32)> {
+        self.with(|s| s.arrow_areas())
+            .into_iter()
+            .map(|r| (r.l, r.t, r.w(), r.h()))
+            .collect()
     }
 
     pub fn text(&self) -> String {
@@ -1051,6 +1186,43 @@ impl Editor {
             let sels = s.doc.sels.map_tx(&tx);
             s.edit(crate::commands::Outcome { tx, sels }, EditKind::Other);
         });
+    }
+
+    /// The primary selection as a byte range of `text()` (start before end).
+    pub fn selection_range(&self) -> std::ops::Range<usize> {
+        self.read(|s| {
+            let p = s.doc.sels.primary();
+            p.start()..p.end()
+        })
+    }
+
+    /// The primary caret as a byte offset of `text()`.
+    pub fn caret_offset(&self) -> usize {
+        self.read(|s| s.doc.sels.primary().head)
+    }
+
+    /// Selects `anchor..head` (byte offsets, clamped to char boundaries) as the
+    /// only selection, and scrolls the caret into view.
+    pub fn select_range(&self, anchor: usize, head: usize) {
+        self.with(|s| {
+            let b = &s.doc.buffer;
+            let (anchor, head) = (b.floor_char(anchor.min(b.len())), b.floor_char(head.min(b.len())));
+            s.set_sels(Selections::single(Selection::new(anchor, head)));
+            s.reveal(false);
+        });
+    }
+
+    /// Replaces a byte range of `text()` as one undo step.
+    pub fn replace_range(&self, range: std::ops::Range<usize>, text: &str) {
+        let (start, end) = self.read(|s| {
+            let b = &s.doc.buffer;
+            (b.pos(b.floor_char(range.start.min(b.len()))), b.pos(b.floor_char(range.end.min(b.len()))))
+        });
+        self.apply_edits(&[TextEdit {
+            start,
+            end,
+            text: text.to_string(),
+        }]);
     }
 
     /// The primary caret.
@@ -1420,5 +1592,33 @@ mod tests {
         unsafe {
             let _ = DestroyWindow(host);
         }
+    }
+
+    #[test]
+    fn hosted_editor_takes_translated_input_without_a_host_window() {
+        // A host's headless tests have no window to give it.
+        let ed = Editor::create_hosted(HWND::default(), Options::default(), Theme::Light).unwrap();
+        ed.set_language("sql");
+        ed.set_bounds(0, 0, 400, 200);
+        ed.set_focused(true);
+        ed.type_chars("x (");
+        assert_eq!(ed.text(), "x ()");
+        assert_eq!(ed.caret_offset(), 3);
+        // Keys the editor has no use for are the host's.
+        assert!(!ed.key_down(Chord::new(VK_F9.0, false, false, false)));
+        assert!(ed.key_down(Chord::new(VK_HOME.0, false, false, false)));
+        assert_eq!(ed.caret_offset(), 0);
+        ed.select_range(2, 4);
+        assert_eq!(ed.selection_range(), 2..4);
+        ed.replace_range(2..4, "y");
+        assert_eq!(ed.text(), "x y");
+        // A double click selects the word under it: the caret is after `y`.
+        let (x, _, h) = ed.caret();
+        ed.mouse_down(x - 2.0, h / 2.0, Mods::default(), 2);
+        ed.mouse_up();
+        assert_eq!(ed.selection_range(), 2..3);
+        assert!(ed.arrow_areas().iter().any(|&(x, _, w, _)| x == 0.0 && w > 0.0));
+        ed.set_focused(false);
+        assert!(!ed.has_focus());
     }
 }

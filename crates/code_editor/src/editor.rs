@@ -79,7 +79,7 @@ pub(crate) enum Drag {
 }
 
 #[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct Mods {
+pub struct Mods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
@@ -1450,6 +1450,26 @@ impl State {
         if self.tooltip.take().is_some() {
             self.invalidate();
         }
+    }
+
+    /// Where the mouse pointer is an arrow rather than an I-beam: the gutter,
+    /// the scrollbars and the overlays.
+    pub fn arrow_areas(&mut self) -> Vec<Rect> {
+        let sb = crate::view::SCROLLBAR;
+        let v = &self.view;
+        let mut out = vec![Rect::new(0.0, 0.0, v.gutter_w(), v.height)];
+        if v.vthumb().is_some() {
+            out.push(Rect::new(v.width - sb, 0.0, v.width, v.height));
+        }
+        if v.hthumb().is_some() {
+            out.push(Rect::new(v.text_x(), v.height - sb, v.width, v.height));
+        }
+        if self.goto.is_some() {
+            out.push(GoTo::frame(v.width));
+        }
+        out.extend(self.find.frame(v.width));
+        out.extend(self.suggest_frame());
+        out
     }
 
     /// Whether (x, y) is over an overlay (for the mouse cursor).
