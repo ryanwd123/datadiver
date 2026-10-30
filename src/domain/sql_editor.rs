@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use diver_sql::{
-    Catalog, ColumnInfo, CompletionItem, Expected, FunctionInfo, ItemKind, RelationSource,
+    Catalog, ColumnInfo, CompletionItem, Expected, FunctionInfo, ItemKind, Quoting, RelationSource,
     SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize,
 };
 
@@ -374,12 +374,59 @@ pub fn file_sources(text: &str) -> Vec<FileSource> {
         .collect()
 }
 
+/// Which typed characters open the SQL editor's completion list, and how
+/// the names it inserts are quoted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionOptions {
+    /// `.` lists what the name before it holds.
+    pub after_dot: bool,
+    /// `"` lists names to write quoted.
+    pub after_quote: bool,
+    /// A space after FROM, JOIN or PIVOT lists what a query can read from.
+    pub after_from: bool,
+    pub quoting: Quoting,
+}
+
+impl Default for CompletionOptions {
+    fn default() -> Self {
+        Self {
+            after_dot: true,
+            after_quote: true,
+            after_from: true,
+            quoting: Quoting::WhenNeeded,
+        }
+    }
+}
+
+/// Whether the caret is in the space right after FROM, JOIN, PIVOT or
+/// UNPIVOT, where a table, schema or table function goes.
+pub fn after_relation_keyword(text: &str, offset: usize) -> bool {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let before = &text[..offset];
+    let Some(last) = tokens(before).pop() else {
+        return false;
+    };
+    let gap = &before[last.range.end..];
+    !gap.is_empty()
+        && gap.chars().all(char::is_whitespace)
+        && ["from", "join", "pivot", "unpivot"]
+            .iter()
+            .any(|word| is_word(before, &last, word))
+}
+
 /// Completion items at `offset`: `diver_sql`'s, plus the relations a bare
 /// name doesn't reach, under the qualified name to write, where a table may go.
 pub fn completions(text: &str, offset: usize, catalog: &SqlCatalog) -> Vec<CompletionItem> {
+    completions_with(text, offset, catalog, Quoting::WhenNeeded)
+}
+
+pub fn completions_with(text: &str, offset: usize, catalog: &SqlCatalog, quoting: Quoting) -> Vec<CompletionItem> {
     let ctx = diver_sql::complete(text, TextSize::new(offset.min(text.len()) as u32));
     let objects = diver_sql::document_objects(&diver_sql::parse(text));
-    let mut items = diver_sql::items(&ctx, catalog, &objects);
+    let mut items = diver_sql::items_with(&ctx, catalog, &objects, quoting);
     let tables = ctx
         .expected
         .iter()
@@ -388,7 +435,10 @@ pub fn completions(text: &str, offset: usize, catalog: &SqlCatalog) -> Vec<Compl
         for (relation, path) in catalog.qualified_elsewhere() {
             let insert = path
                 .iter()
-                .map(|part| diver_sql::quote_if_needed(part))
+                .map(|part| match quoting {
+                    Quoting::Always => diver_sql::quote(part),
+                    Quoting::WhenNeeded => diver_sql::quote_if_needed(part),
+                })
                 .collect::<Vec<_>>()
                 .join(".");
             items.push(CompletionItem {
@@ -576,6 +626,36 @@ mod tests {
         assert!(labels("from files.|").contains(&"sales".to_string()));
         // A CTE that shadows a table has its own columns.
         assert!(labels("WITH apples AS (select 1 AS one) select a.| from apples a").contains(&"one".to_string()));
+    }
+
+    #[test]
+    fn a_space_completes_after_from_join_and_pivot() {
+        for sql in ["select * from ", "FROM a JOIN  ", "select 1 from
+", "PIVOT ", "from t left join "] {
+            assert!(after_relation_keyword(sql, sql.len()), "{sql:?}");
+        }
+        for sql in ["from", "select ", "select 'from ", "from -- note ", "select fromage ", "from t "] {
+            assert!(!after_relation_keyword(sql, sql.len()), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn always_quoting_quotes_qualified_names_too() {
+        let inserts = |sql: &str| {
+            completions_with(sql, sql.len(), &catalog(), Quoting::Always)
+                .into_iter()
+                .filter(|i| i.kind != ItemKind::Keyword)
+                .map(|i| i.insert_text)
+                .collect::<Vec<_>>()
+        };
+        let tables = inserts("select * from ");
+        assert!(tables.contains(&"\"apples\"".to_string()), "{tables:?}");
+        assert!(tables.contains(&"\"shop\".\"orders\"".to_string()), "{tables:?}");
+        let columns = completions_with("select a. from apples a", 9, &catalog(), Quoting::Always)
+            .into_iter()
+            .map(|i| i.insert_text)
+            .collect::<Vec<_>>();
+        assert_eq!(columns, ["\"color\"", "\"café\""]);
     }
 
     #[test]

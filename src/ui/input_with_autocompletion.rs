@@ -8,7 +8,7 @@ use diver_sql::Dialect;
 
 use crate::domain::expression_completion::{self, ExpressionCatalog};
 
-use crate::domain::sql_editor::{self, SqlCatalog};
+use crate::domain::sql_editor::{self, CompletionOptions, SqlCatalog};
 use crate::infrastructure::path_completion::{self, PathRoots};
 use crate::ui::widgets::editor::{Completer, CompletionItem, Editor};
 
@@ -45,9 +45,14 @@ impl Completer for ExpressionCompleter {
     }
 }
 
-/// The SQL panel's completions: tables, columns, and file paths.
-pub fn sql_catalog(catalog: Arc<RwLock<SqlCatalog>>, path_roots: Arc<RwLock<PathRoots>>) -> impl code_editor::CompletionProvider {
-    SqlCompletionProvider { catalog, path_roots }
+/// The SQL panel's completions: tables, columns, and file paths, opened by
+/// the characters `options` turns on.
+pub fn sql_catalog(
+    catalog: Arc<RwLock<SqlCatalog>>,
+    path_roots: Arc<RwLock<PathRoots>>,
+    options: Arc<RwLock<CompletionOptions>>,
+) -> impl code_editor::CompletionProvider {
+    SqlCompletionProvider { catalog, path_roots, options }
 }
 
 /// File and folder completions for a path typed inside a SQL string literal.
@@ -82,6 +87,13 @@ pub fn path_completions(text: &str, offset: usize, roots: &RwLock<PathRoots>) ->
 struct SqlCompletionProvider {
     catalog: Arc<RwLock<SqlCatalog>>,
     path_roots: Arc<RwLock<PathRoots>>,
+    options: Arc<RwLock<CompletionOptions>>,
+}
+
+impl SqlCompletionProvider {
+    fn options(&self) -> CompletionOptions {
+        self.options.read().map(|o| *o).unwrap_or_default()
+    }
 }
 
 impl code_editor::CompletionProvider for SqlCompletionProvider {
@@ -102,10 +114,14 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 })
                 .collect();
         }
+        // A space opens the list only where a table goes.
+        if cx.trigger == Some(' ') && !sql_editor::after_relation_keyword(cx.text, cx.offset) {
+            return Vec::new();
+        }
         let Ok(catalog) = self.catalog.read() else {
             return Vec::new();
         };
-        let items = sql_editor::completions(cx.text, cx.offset, &catalog);
+        let items = sql_editor::completions_with(cx.text, cx.offset, &catalog, self.options().quoting);
         // A plain word lets the editor filter what fits the caret; a quoted
         // name replaces its own range, so the list is filtered here.
         let word_start = cx.offset - cx.prefix.len();
@@ -135,7 +151,14 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
     }
 
     fn trigger_characters(&self) -> Vec<char> {
-        vec!['.', '\'', '"', '/', '\\']
+        let options = self.options();
+        let mut triggers = vec!['\'', '/', '\\'];
+        for (on, c) in [(options.after_dot, '.'), (options.after_quote, '"'), (options.after_from, ' ')] {
+            if on {
+                triggers.push(c);
+            }
+        }
+        triggers
     }
 
     /// diver_sql offers the keywords that fit the caret.

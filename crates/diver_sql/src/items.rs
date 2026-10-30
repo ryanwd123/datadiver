@@ -58,6 +58,16 @@ mod rank {
     pub const KEYWORD: u32 = 900;
 }
 
+/// How identifier items are inserted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Quoting {
+    /// Quoted only when DuckDB needs it: `amount`, `"Order Date"`.
+    #[default]
+    WhenNeeded,
+    /// Database, schema, table and column names are always quoted: `"amount"`.
+    Always,
+}
+
 /// Words that never stand alone: offered only as part of their phrase.
 const PHRASE_ONLY: &[Kw] = &[Kw::Group, Kw::Order, Kw::Partition];
 
@@ -66,8 +76,18 @@ pub fn items(
     catalog: &dyn Catalog,
     objects: &[DocumentObject],
 ) -> Vec<CompletionItem> {
+    items_with(ctx, catalog, objects, Quoting::default())
+}
+
+pub fn items_with(
+    ctx: &CompletionContext,
+    catalog: &dyn Catalog,
+    objects: &[DocumentObject],
+    quoting: Quoting,
+) -> Vec<CompletionItem> {
     let mut out = Items {
         ctx,
+        quoting,
         out: Vec::new(),
     };
     for expected in &ctx.expected {
@@ -165,6 +185,7 @@ pub fn items(
 
 struct Items<'a> {
     ctx: &'a CompletionContext,
+    quoting: Quoting,
     out: Vec<CompletionItem>,
 }
 
@@ -200,7 +221,17 @@ impl Items<'_> {
 
     /// An identifier item, quoted when it has to be.
     fn name(&mut self, name: &str, kind: ItemKind, detail: Option<String>, sort_key: u32) {
-        let insert = if self.ctx.quoted {
+        let always = self.quoting == Quoting::Always
+            && matches!(
+                kind,
+                ItemKind::Database
+                    | ItemKind::Schema
+                    | ItemKind::Table
+                    | ItemKind::View
+                    | ItemKind::Cte
+                    | ItemKind::Column
+            );
+        let insert = if self.ctx.quoted || always {
             quote(name)
         } else {
             quote_if_needed(name)
@@ -514,5 +545,19 @@ mod tests {
         assert_eq!(quote_if_needed("Mixed"), "\"Mixed\"");
         assert_eq!(quote_if_needed("x\"y"), "\"x\"\"y\"");
         assert_eq!(quote_if_needed("1st"), "\"1st\"");
+    }
+
+    #[test]
+    fn always_quoting_quotes_names_but_not_keywords_or_functions() {
+        let catalog = crate::EmptyCatalog;
+        let text = "SELECT  FROM t";
+        let ctx = crate::complete(text, 7.into());
+        let objects = crate::document_objects(&crate::parse("CREATE TABLE t(amount INT)"));
+        let items = items_with(&ctx, &catalog, &objects, Quoting::Always);
+        let insert = |label: &str| items.iter().find(|i| i.label == label).map(|i| i.insert_text.clone());
+        assert_eq!(insert("amount").as_deref(), Some("\"amount\""));
+        assert_eq!(insert("DISTINCT").as_deref(), Some("DISTINCT"));
+        let items = super::items(&ctx, &catalog, &objects);
+        assert_eq!(items.iter().find(|i| i.label == "amount").unwrap().insert_text, "amount");
     }
 }

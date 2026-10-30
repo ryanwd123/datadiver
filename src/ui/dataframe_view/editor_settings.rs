@@ -15,6 +15,10 @@ pub(crate) enum EditorOption {
     CompletionFontSize,
     CompletionRows,
     SuggestWhileTyping,
+    SuggestAfterDot,
+    SuggestAfterQuote,
+    SuggestAfterFrom,
+    QuoteNames,
     SignatureHelp,
     Problems,
     Hover,
@@ -33,12 +37,16 @@ pub(crate) enum EditorOption {
     WheelZoom,
 }
 
-const OPTIONS: [EditorOption; 21] = [
+const OPTIONS: [EditorOption; 25] = [
     EditorOption::Font,
     EditorOption::CompletionFont,
     EditorOption::CompletionFontSize,
     EditorOption::CompletionRows,
     EditorOption::SuggestWhileTyping,
+    EditorOption::SuggestAfterDot,
+    EditorOption::SuggestAfterQuote,
+    EditorOption::SuggestAfterFrom,
+    EditorOption::QuoteNames,
     EditorOption::SignatureHelp,
     EditorOption::Problems,
     EditorOption::Hover,
@@ -63,14 +71,31 @@ fn choices(option: EditorOption) -> Vec<Option<u8>> {
         EditorOption::CompletionFontSize => std::iter::once(None).chain((9..=24).map(Some)).collect(),
         EditorOption::CompletionRows => [6, 8, 10, 12, 16, 20, 30].into_iter().map(Some).collect(),
         EditorOption::TabSize => [2, 4, 8].into_iter().map(Some).collect(),
+        EditorOption::QuoteNames => vec![Some(0), Some(1)],
         _ => Vec::new(),
     }
+}
+
+/// How a choice row names one of its values.
+fn choice_label(option: EditorOption, value: u8) -> String {
+    match option {
+        EditorOption::CompletionFontSize => format!("{value} pt"),
+        EditorOption::QuoteNames => quote_names_label(value == 1).into(),
+        _ => value.to_string(),
+    }
+}
+
+fn quote_names_label(always: bool) -> &'static str {
+    if always { "Always" } else { "Only when needed" }
 }
 
 /// A switch's state, or `None` for rows that are not switches.
 fn switch(settings: &mut EditorSettings, option: EditorOption) -> Option<&mut bool> {
     Some(match option {
         EditorOption::SuggestWhileTyping => &mut settings.suggest_while_typing,
+        EditorOption::SuggestAfterDot => &mut settings.suggest_after_dot,
+        EditorOption::SuggestAfterQuote => &mut settings.suggest_after_quote,
+        EditorOption::SuggestAfterFrom => &mut settings.suggest_after_from,
         EditorOption::SignatureHelp => &mut settings.signature_help,
         EditorOption::Problems => &mut settings.problems,
         EditorOption::Hover => &mut settings.hover,
@@ -97,6 +122,10 @@ fn label(option: EditorOption) -> &'static str {
         EditorOption::CompletionFontSize => "Completion list font size",
         EditorOption::CompletionRows => "Completion list rows",
         EditorOption::SuggestWhileTyping => "Suggest completions while typing",
+        EditorOption::SuggestAfterDot => "Suggest after . (columns, tables of a schema)",
+        EditorOption::SuggestAfterQuote => "Suggest after \" (quoted names)",
+        EditorOption::SuggestAfterFrom => "Suggest after FROM, JOIN or PIVOT and a space",
+        EditorOption::QuoteNames => "Quote schema, table and column names",
         EditorOption::SignatureHelp => "Show signature help while typing",
         EditorOption::Problems => "Underline problems",
         EditorOption::Hover => "Show docs on hover",
@@ -139,6 +168,7 @@ impl DataFrameView {
             },
             EditorOption::CompletionRows => s.completion_rows.to_string(),
             EditorOption::TabSize => s.tab_size.to_string(),
+            EditorOption::QuoteNames => quote_names_label(s.always_quote_names).into(),
             option => {
                 let mut copy = s.clone();
                 let on = switch(&mut copy, option).is_some_and(|on| *on);
@@ -185,14 +215,14 @@ impl DataFrameView {
                 let current = match option {
                     EditorOption::CompletionFontSize => self.editor_settings.completion_font_size,
                     EditorOption::CompletionRows => Some(self.editor_settings.completion_rows),
+                    EditorOption::QuoteNames => Some(u8::from(self.editor_settings.always_quote_names)),
                     _ => Some(self.editor_settings.tab_size),
                 };
                 let items = values
                     .iter()
                     .map(|value| {
                         let mut item = Item::new(match value {
-                            Some(v) if option == EditorOption::CompletionFontSize => format!("{v} pt"),
-                            Some(v) => v.to_string(),
+                            Some(v) => choice_label(option, *v),
                             None => format!("Editor size · {} pt", self.font.size),
                         });
                         item.check = Some(*value == current);
@@ -215,6 +245,7 @@ impl DataFrameView {
             EditorOption::CompletionFontSize => settings.completion_font_size = value,
             EditorOption::CompletionRows => settings.completion_rows = value.unwrap_or(12),
             EditorOption::TabSize => settings.tab_size = value.unwrap_or(4),
+            EditorOption::QuoteNames => settings.always_quote_names = value == Some(1),
             _ => {}
         }
         self.close_dialog(cx);
@@ -255,7 +286,7 @@ impl DataFrameView {
 
     pub(crate) fn set_editor_settings(&mut self, settings: EditorSettings) {
         if let Some(panel) = &mut self.sql_panel {
-            panel.editor.set_settings(&settings);
+            panel.set_editor_settings(&settings);
         }
         self.editor_settings = settings;
     }

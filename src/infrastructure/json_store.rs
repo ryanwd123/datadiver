@@ -72,6 +72,15 @@ pub struct EditorSettings {
     /// Rows the completion list shows before it scrolls.
     pub completion_rows: u8,
     pub suggest_while_typing: bool,
+    /// Typing `.` opens the completion list.
+    pub suggest_after_dot: bool,
+    /// Typing `"` opens it.
+    pub suggest_after_quote: bool,
+    /// A space after FROM, JOIN or PIVOT opens it.
+    pub suggest_after_from: bool,
+    /// Completions quote database, schema, table and column names even
+    /// where DuckDB does not need it.
+    pub always_quote_names: bool,
     pub signature_help: bool,
     pub problems: bool,
     pub hover: bool,
@@ -97,6 +106,10 @@ impl Default for EditorSettings {
             completion_font_size: None,
             completion_rows: 12,
             suggest_while_typing: true,
+            suggest_after_dot: true,
+            suggest_after_quote: true,
+            suggest_after_from: true,
+            always_quote_names: false,
             signature_help: true,
             problems: true,
             hover: true,

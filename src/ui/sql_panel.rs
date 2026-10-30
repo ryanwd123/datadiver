@@ -4,7 +4,8 @@ use std::sync::{Arc, RwLock};
 use super::column_completion::{ColumnCompletion, ColumnSyntax};
 use super::input_with_autocompletion;
 use crate::domain::ai::{AiEvent, SqlCheck, SqlProposal, insertion, relation_name};
-use crate::domain::sql_editor::{SqlCatalog, current_statement};
+use crate::domain::sql_editor::{CompletionOptions, SqlCatalog, current_statement};
+use crate::infrastructure::json_store::EditorSettings;
 use crate::infrastructure::path_completion::PathRoots;
 use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
@@ -69,6 +70,8 @@ pub struct SqlPanel {
     pub window_active: bool,
     pub catalog: Arc<RwLock<SqlCatalog>>,
     pub path_roots: Arc<RwLock<PathRoots>>,
+    /// The completion triggers and quoting from the editor options.
+    completion_options: Arc<RwLock<CompletionOptions>>,
     pub busy: bool,
     pub status: String,
     pub error: Option<String>,
@@ -100,7 +103,8 @@ impl SqlPanel {
     pub fn new(text: String, host: Option<windows::Win32::Foundation::HWND>) -> Self {
         let catalog = Arc::new(RwLock::new(SqlCatalog::default()));
         let path_roots = Arc::new(RwLock::new(PathRoots::default()));
-        let completions = input_with_autocompletion::sql_catalog(catalog.clone(), path_roots.clone());
+        let completion_options = Arc::new(RwLock::new(CompletionOptions::default()));
+        let completions = input_with_autocompletion::sql_catalog(catalog.clone(), path_roots.clone(), completion_options.clone());
         let language = super::sql_language::SqlLanguage::new(catalog.clone());
         let mut editor = HostedEditor::sql(host, completions, language);
         editor.set_text(text);
@@ -110,6 +114,7 @@ impl SqlPanel {
             window_active: true,
             catalog,
             path_roots,
+            completion_options,
             busy: false,
             status: "Ctrl+Enter · selection or current statement".into(),
             error: None,
@@ -131,6 +136,23 @@ impl SqlPanel {
             proposal_scroll: scroll::Scroll::default(),
             events: Vec::new(),
         }
+    }
+
+    /// Applies the editor options to the editor and its completions.
+    pub fn set_editor_settings(&mut self, settings: &EditorSettings) {
+        if let Ok(mut options) = self.completion_options.write() {
+            *options = CompletionOptions {
+                after_dot: settings.suggest_after_dot,
+                after_quote: settings.suggest_after_quote,
+                after_from: settings.suggest_after_from,
+                quoting: if settings.always_quote_names {
+                    diver_sql::Quoting::Always
+                } else {
+                    diver_sql::Quoting::WhenNeeded
+                },
+            };
+        }
+        self.editor.set_settings(settings);
     }
 
     /// What happened since the last call. A change to the SQL comes first, so

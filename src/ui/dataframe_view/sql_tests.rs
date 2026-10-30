@@ -703,6 +703,49 @@ fn sql_alias_completion_triggers_on_dot_and_inserts_only_column() {
 }
 
 #[test]
+fn sql_completion_triggers_and_quoting_follow_the_editor_options() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    panel(&viewer, |panel| {
+        *panel.catalog.write().unwrap() = crate::domain::sql_editor::SqlCatalog {
+            relations: vec![crate::domain::sql_editor::Relation {
+                catalog: "db".into(),
+                schema: "main".into(),
+                name: "apples".into(),
+                columns: vec!["color".into()],
+                current_database: true,
+                ..Default::default()
+            }],
+            current_database: "db".into(),
+            ..Default::default()
+        };
+    });
+    let typed = |text: &str, typed: &str| {
+        place(&viewer, text, text.len()..text.len());
+        viewer.input(typed);
+        viewer.run_until_parked();
+        viewer.render();
+        completion_labels(&viewer)
+    };
+    // A space after FROM lists the tables; a space elsewhere opens nothing.
+    assert!(typed("SELECT * FROM", " ").unwrap().contains(&"apples".to_string()));
+    viewer.press("escape");
+    assert_eq!(typed("SELECT", " "), None);
+    viewer.update(|view, _| {
+        let mut settings = view.editor_settings.clone();
+        settings.suggest_after_from = false;
+        settings.always_quote_names = true;
+        view.set_editor_settings(settings);
+    });
+    assert_eq!(typed("SELECT * FROM", " "), None);
+    assert_eq!(typed("SELECT * FROM apples a WHERE a", ".").unwrap()[0], "color");
+    press(&viewer, "enter");
+    assert_eq!(sql_text(&viewer), "SELECT * FROM apples a WHERE a.\"color\"");
+}
+
+#[test]
 fn sql_alias_of_a_file_completes_its_columns_once_described() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

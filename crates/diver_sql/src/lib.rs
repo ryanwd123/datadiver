@@ -38,7 +38,10 @@ pub use document::{DocumentObject, ObjectKind, document_objects};
 pub use folding::{folding_ranges, selection_ranges};
 pub use highlight::{HighlightClass, highlight, highlight_with};
 pub use hover::{Hover, hover};
-pub use items::{CompletionItem, ItemKind, items, needs_quotes, quote_if_needed, relation_columns};
+pub use items::{
+    CompletionItem, ItemKind, Quoting, items, items_with, needs_quotes, quote, quote_if_needed,
+    relation_columns,
+};
 pub use lexer::{Token, tokenize};
 pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation, file_relations};
 pub use signature::{SignatureHelp, signature_help, signature_help_with};
