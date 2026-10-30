@@ -532,7 +532,7 @@ fn history_sql_restores_text_and_search_without_results_or_execution() {
     std::fs::write(&path, "n\n1\n").unwrap();
     let viewer = viewer(repository(home.path()));
     open(&viewer, FileEntry::Source(path.clone()));
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     let text = "CREATE TABLE history_marker AS SELECT 42 AS n; SELECT n FROM history_marker;";
     viewer.update(|view, cx| {

@@ -183,7 +183,12 @@ impl DataFrameView {
             | CommandId::SqlInsertLineBelow
             | CommandId::SqlInsertLineAbove => {}
             CommandId::AskSql => {
-                self.open_sql_editor(cx);
+                // Asking needs an editor; without SQL to edit it starts a source.
+                if self.session.is_sql() || self.session.working.as_ref().is_some_and(|d| d.sql_source.is_some()) {
+                    self.open_sql_editor(cx);
+                } else {
+                    self.new_sql(false, cx);
+                }
                 if self.session.is_sql()
                     && let Some(panel) = &mut self.sql_panel
                 {

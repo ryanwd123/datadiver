@@ -48,7 +48,7 @@ impl DataFrameView {
     /// Opens the SQL editor for a screenshot, running sample SQL first for
     /// targets that show results.
     pub(crate) fn capture_sql_editor(&mut self, target: &str, cx: &mut Cx<Self>) {
-        self.begin_sql_editor(cx);
+        self.begin_new_sql(false, cx);
         if target == "editor:sql" {
             return;
         }
@@ -191,19 +191,28 @@ FROM apples a";
         self.sql_result_complete = false;
     }
 
+    /// Shows the editor of the SQL source or script that is open, or of the
+    /// SQL source whose rows the view reads. Anything else has no SQL to edit.
     pub(crate) fn open_sql_editor(&mut self, cx: &mut Cx<Self>) {
-        if !self.session.is_sql() && self.session.dirty {
-            self.confirm(
-                "Open SQL editor?".into(),
-                "The current view has unsaved changes. Opening SQL replaces the working document.".into(),
-                "Open SQL editor".into(),
-                false,
-                dialogs::ConfirmAction::OpenSqlEditor,
-                cx,
-            );
-        } else {
+        if self.session.is_sql() {
             self.begin_sql_editor(cx);
+            return;
         }
+        if let Some(id) = self.session.working.as_ref().and_then(|d| d.sql_source.clone()) {
+            match self.repository.load_view(&id) {
+                Ok(source) => {
+                    self.navigate_to_file(FileEntry::View(source), false, false, false, cx);
+                    // Set after navigating starts, which drops a command from an earlier location.
+                    self.after_open = Some(CommandId::SqlEditor);
+                }
+                Err(error) => self.error = Some(format!("Cannot open the SQL source: {error}")),
+            }
+            cx.notify();
+            return;
+        }
+        self.copy_status =
+            Some("The SQL editor opens SQL sources and scripts; start one with New SQL source or New SQL script".into());
+        cx.notify();
     }
 
     /// Starts an empty SQL source, or with `script` a SQL script, replacing

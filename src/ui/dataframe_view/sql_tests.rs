@@ -60,6 +60,12 @@ fn click(viewer: &Viewer, button: Button) {
     viewer.run_until_parked();
 }
 
+/// Starts an empty SQL source, as New SQL source does.
+fn new_source(viewer: &Viewer) {
+    viewer.update(|view, cx| view.dispatch_command(CommandId::NewSqlSource, cx));
+    viewer.run_until_parked();
+}
+
 /// Switches a View option from the gear, then closes the list unless the
 /// switch opened another dialog.
 fn switch(viewer: &Viewer, option: ViewOption) {
@@ -303,7 +309,7 @@ fn enabling_sql_auto_save_on_a_draft_names_and_saves_it_once() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
     let viewer = viewer(repository.clone(), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     edit_sql(&viewer, "SELECT 7");
     switch(&viewer, ViewOption::AutoSave);
@@ -424,7 +430,7 @@ fn check_sql_file_picker_focus(hide_panel: bool) {
 fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     viewer.read(|view| {
         assert!(view.session.is_sql());
         assert!(view.sql_panel_open);
@@ -463,7 +469,7 @@ fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
     let saved = repository.load_settings().unwrap().sql_editor_height.unwrap();
     assert!((saved - 180.0).abs() < 2.0, "{saved}");
     let reopened = self::viewer(repository, None);
-    press(&reopened, "ctrl-j");
+    new_source(&reopened);
     assert!((reopened.read(|view| view.sql_editor_height) - saved).abs() < 2.0);
 }
 
@@ -472,7 +478,7 @@ fn sql_editor_keys_follow_the_keymap_and_its_actions_are_commands() {
     use crate::application::keymap::{ActionId, DisabledDefault, KeyContext, UserBinding};
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     // Run moves from Ctrl+Enter to F5; Ctrl+/ no longer comments.
     viewer.update(|view, _| {
         for (action, keystroke) in [(ActionId::RunSql, "ctrl-enter"), (ActionId::SqlToggleLineComment, "ctrl-/")] {
@@ -521,7 +527,7 @@ fn sql_editor_keys_follow_the_keymap_and_its_actions_are_commands() {
 fn sql_editor_underlines_problems_and_shows_the_call_being_typed() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     place(&viewer, "SELECT * FROM t WHERE;\nSELECT 1", 0..0);
     let problems = panel(&viewer, |panel| panel.editor.diagnostics());
@@ -544,7 +550,7 @@ fn editor_options_change_the_sql_editor_and_persist() {
     use super::dialogs::{Dialog, PaletteKind};
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     let row = |viewer: &Viewer, label: &str| {
         viewer.read(|view| match &view.dialog {
@@ -579,7 +585,7 @@ fn sql_search_sort_and_save_never_reexecute_statements() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
     let viewer = viewer(repository.clone(), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     place(
         &viewer,
@@ -648,7 +654,7 @@ fn sql_search_sort_and_save_never_reexecute_statements() {
 fn sql_completion_escape_and_selection_are_editor_local() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     place(&viewer, "SELECT 1; SELECT 2", 0..8);
     assert_eq!(panel(&viewer, |panel| panel.sql_to_run(false)), "SELECT 1");
@@ -666,7 +672,7 @@ fn sql_completion_escape_and_selection_are_editor_local() {
 fn sql_alias_completion_triggers_on_dot_and_inserts_only_column() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     panel(&viewer, |panel| {
         *panel.catalog.write().unwrap() = crate::domain::sql_editor::SqlCatalog {
@@ -706,7 +712,7 @@ fn sql_alias_of_a_file_completes_its_columns_once_described() {
         .execute_batch(&format!("COPY (SELECT 1 AS id, 'Ann' AS name) TO '{file}'"))
         .unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     let text = format!("FROM '{file}' a\nSELECT a");
     place(&viewer, &text, text.len()..text.len());
@@ -736,7 +742,7 @@ fn sql_path_completion_lists_search_roots_and_tab_accepts_into_folders() {
     std::fs::write(data.path().join("sales data").join("q1.csv"), "a\n1\n").unwrap();
     std::fs::write(data.path().join("summary.txt"), "").unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     panel(&viewer, |panel| {
         *panel.path_roots.write().unwrap() = crate::infrastructure::path_completion::PathRoots {
@@ -771,7 +777,7 @@ fn sql_completion_retriggers_before_an_earlier_completion() {
     std::fs::create_dir(data.path().join("empty")).unwrap();
     std::fs::write(data.path().join("sales.csv"), "a\n1\n").unwrap();
     let viewer = viewer(repository(home.path()), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     panel(&viewer, |panel| {
         *panel.path_roots.write().unwrap() = crate::infrastructure::path_completion::PathRoots {
@@ -804,7 +810,7 @@ fn sql_results_filter_every_row_undo_and_prune_missing_columns() {
     settings.query_limit = 2;
     repository.save_settings(&settings).unwrap();
     let viewer = viewer(repository, None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     let rows = || viewer.read(|view| view.session.result.row_count());
     let filter_first_cell = |exclude: bool| {
@@ -878,7 +884,7 @@ fn ask_ai_writes_checked_sql_and_tab_inserts_it() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
     let viewer = viewer(repository.clone(), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     edit_sql(&viewer, "CREATE TEMP TABLE fruit AS SELECT 'red' AS color;");
     press(&viewer, "ctrl-enter");
 
@@ -972,7 +978,7 @@ fn ask_sql_command_opens_the_editor_with_the_prompt_focused() {
 fn sql_views_freeze_leading_columns_without_reordering() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     run_all_sql(&viewer, "SELECT 1 AS region, 2 AS product, 3 AS \"2024\"");
     let frozen = || (sql_config(&viewer).frozen_columns, viewer.read(|view| view.grid.frozen_count()));
     // F on the second column freezes the first two.
@@ -1045,7 +1051,7 @@ fn auto_run_sql_views_run_when_opened() {
 fn sql_editor_indents_four_spaces() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(repository(home.path()), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     viewer.render();
     viewer.press("tab");
     viewer.input("x");
@@ -1059,7 +1065,7 @@ fn ask_ai_at_mentions_complete_and_send_only_those_tables() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
     let viewer = viewer(repository.clone(), None);
-    press(&viewer, "ctrl-j");
+    new_source(&viewer);
     run_all_sql(
         &viewer,
         "CREATE TEMP TABLE fruit AS SELECT * FROM (VALUES ('red', 1), ('green', 2)) t(color, n); COMMENT ON COLUMN fruit.color IS 'Skin color'; CREATE TEMP TABLE other AS SELECT 1 AS secret_column",
@@ -1167,7 +1173,7 @@ fn reset_database_connection_drops_sql_temp_tables_and_reruns_the_startup_script
     )
     .unwrap();
     let viewer = viewer(repository.clone(), None);
-    viewer.update(|view, cx| view.open_sql_editor(cx));
+    viewer.update(|view, cx| view.new_sql(false, cx));
     viewer.run_until_parked();
     run_all_sql(&viewer, "CREATE TEMP TABLE scratch AS SELECT 1 AS n;\nSELECT * FROM scratch;");
     assert!(viewer.read(|view| view.error.is_none()));
@@ -1297,4 +1303,37 @@ fn sql_sources_switch_to_polars_sql_and_keep_its_tables_between_runs() {
     // Switching back stores DuckDB again.
     switch(&viewer, ViewOption::Engine);
     assert_eq!(saved_sql(&repository).engine, Engine::DuckDb);
+}
+
+#[test]
+fn open_sql_editor_opens_only_sql_sources_and_scripts() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut source = sql_view(
+        "Answers",
+        SqlConfig {
+            text: "SELECT 42 AS answer".into(),
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut source).unwrap();
+    let viewer = viewer(repository.clone(), None);
+    // A plain table has no SQL to edit.
+    press(&viewer, "ctrl-j");
+    viewer.read(|view| {
+        assert!(!view.session.is_sql());
+        assert!(view.sql_panel.is_none());
+        assert!(view.copy_status.as_deref().unwrap().contains("New SQL source"));
+    });
+    // From the rows of a SQL source it opens that source's editor.
+    viewer.update(|view, cx| view.navigate_to_file(FileEntry::View(DocumentDefinition::draft_sql_source(&source)), false, false, false, cx));
+    viewer.run_until_parked();
+    assert!(!viewer.read(|view| view.session.is_sql()));
+    press(&viewer, "ctrl-j");
+    viewer.read(|view| {
+        assert_eq!(view.session.identity, SessionIdentity::SavedSql(source.id.clone()));
+        assert!(view.sql_panel_open);
+    });
+    assert!(editor_focused(&viewer));
+    assert_eq!(sql_text(&viewer), "SELECT 42 AS answer");
 }

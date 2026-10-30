@@ -167,6 +167,9 @@ impl DataFrameView {
                             }
                             view.commit_navigation_history();
                             let _ = view.record_opened();
+                            if let Some(command) = view.after_open.take() {
+                                view.dispatch_command(command, cx);
+                            }
                         }
                         Err(error) => {
                             view.navigation_target = None;

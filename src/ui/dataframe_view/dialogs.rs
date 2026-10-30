@@ -30,7 +30,6 @@ fn command_item((command, label, shortcut): &(&'static crate::application::comma
 /// What a confirmation does once accepted.
 #[derive(Clone, Debug)]
 pub enum ConfirmAction {
-    OpenSqlEditor,
     /// A new SQL script, or else a new SQL source.
     NewSql { script: bool },
     DropRelation(crate::domain::documents::DatabaseView),
@@ -221,7 +220,6 @@ impl DataFrameView {
 
     fn run_confirmed(&mut self, action: ConfirmAction, cx: &mut Cx<Self>) {
         match action {
-            ConfirmAction::OpenSqlEditor => self.begin_sql_editor(cx),
             ConfirmAction::NewSql { script } => self.begin_new_sql(script, cx),
             ConfirmAction::DropRelation(relation) => {
                 let database = self.database.clone();

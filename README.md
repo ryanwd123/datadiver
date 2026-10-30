@@ -235,7 +235,7 @@ Views store the source path and the exploration configuration. They reference th
 
 ## SQL editor
 
-Press **Ctrl+J** or choose **Open SQL editor** to open a resizable panel below the grid. **Ctrl+Enter** runs selected SQL, or the statement at the cursor; **Ctrl+Shift+Enter** or **Run All** executes the script in order. **Stop** interrupts execution. The grid shows the last result set and keeps search, sorting, navigation, and copy/export available without running SQL again.
+Start with **New SQL source** or **New SQL script** in the command palette, which open the editor in a resizable panel below the grid. **Ctrl+J** (**Open SQL editor**) shows it again for the open SQL source or script, or, on the rows of a SQL source or a view built on one, opens that source in the editor; other views have no SQL to edit. **Ctrl+Enter** runs selected SQL, or the statement at the cursor; **Ctrl+Shift+Enter** or **Run All** executes the script in order. **Stop** interrupts execution. The grid shows the last result set and keeps search, sorting, navigation, and copy/export available without running SQL again.
 
 SQL runs on DuckDB against the active profile database, and can read files with `read_csv('path')`, `read_parquet('path')`, or, while a window shows a file with the DuckDB engine, `files.<name>`. Database changes are allowed. Temporary objects and explicit transactions survive between runs in the same SQL document. Run All stops on the first error and follows DuckDB's normal transaction behavior. The row limit caps captured results, including `RETURNING`, without limiting writes; a changed limit applies on the next run.
 
