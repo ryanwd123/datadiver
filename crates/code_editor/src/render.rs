@@ -167,6 +167,13 @@ impl Fonts {
             let suggest = make(suggest_size, &suggest_family)?;
             suggest.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             suggest.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            // Long labels and details end in "…" instead of running past their box.
+            let trimming = DWRITE_TRIMMING {
+                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                delimiter: 0,
+                delimiterCount: 0,
+            };
+            suggest.SetTrimming(&trimming, &dw.CreateEllipsisTrimmingSign(&suggest)?)?;
             let suggest_center = make(suggest_size, &suggest_family)?;
             suggest_center.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             suggest_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -692,9 +699,18 @@ impl crate::editor::State {
                 CompletionKind::Text => Ink::WidgetDim,
             };
             r.text(rt, it.kind.icon(), &f.suggest_center, fr.l + 4.0, y, fr.l + icon_w, y + row_h, icon);
-            let detail_w = it.detail.as_deref().map_or(0.0, |d| r.text_w(d, &f.suggest) + 12.0);
+            // The label comes first; the detail gets the room left after it,
+            // trimmed, and is left out when only a sliver remains.
             let lx = fr.l + icon_w + 4.0;
-            if let Some(l) = r.ui_layout(&it.label, &f.suggest, (fr.r - lx - detail_w).max(10.0), row_h) {
+            let room = (fr.r - 4.0 - lx).max(10.0);
+            let label_w = r.text_w(&it.label, &f.suggest).min(room);
+            let detail_w = it
+                .detail
+                .as_deref()
+                .map(|d| r.text_w(d, &f.suggest).min(room - label_w - 12.0))
+                .filter(|w| *w >= 3.0 * row_h);
+            let label_room = room - detail_w.map_or(0.0, |w| w + 12.0);
+            if let Some(l) = r.ui_layout(&it.label, &f.suggest, label_room.max(10.0), row_h) {
                 let text16: Vec<u32> = {
                     let mut acc = 0u32;
                     it.label.chars().map(|c| { let a = acc; acc += c.len_utf16() as u32; a }).collect()
@@ -706,8 +722,8 @@ impl crate::editor::State {
                 }
                 r.draw_layout(rt, &l, lx, y, Ink::WidgetText);
             }
-            if let Some(d) = &it.detail {
-                r.text(rt, d, &f.suggest, fr.r - detail_w, y, fr.r - 4.0, y + row_h, Ink::WidgetDim);
+            if let (Some(d), Some(w)) = (&it.detail, detail_w) {
+                r.text(rt, d, &f.suggest, fr.r - 4.0 - w, y, fr.r - 4.0, y + row_h, Ink::WidgetDim);
             }
         }
         unsafe { rt.PopAxisAlignedClip() };
