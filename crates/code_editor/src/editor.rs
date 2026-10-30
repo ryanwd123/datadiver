@@ -917,6 +917,9 @@ impl State {
         };
         if pairs.is_empty() {
             self.type_text(c.encode_utf8(&mut [0; 4]));
+            if !self.opts.read_only {
+                self.typed_for_suggest(c);
+            }
             return self.typed_for_signature(c);
         }
         self.parse_now();
@@ -3206,6 +3209,43 @@ mod suggest_tests {
         key(&mut st, VK_DOWN);
         key(&mut st, VK_RETURN);
         assert_eq!(shown(&st), "SELECT * FROM customers c.name|");
+    }
+
+    /// Lists tables after `FROM ` only.
+    struct Tables;
+
+    impl CompletionProvider for Tables {
+        fn complete(&self, cx: &CompletionContext) -> Vec<CompletionItem> {
+            if cx.trigger == Some(' ') && !cx.text[..cx.offset].to_lowercase().ends_with("from ") {
+                return Vec::new();
+            }
+            vec![CompletionItem::new("customers", CompletionKind::Class)]
+        }
+
+        fn trigger_characters(&self) -> Vec<char> {
+            vec![' ']
+        }
+
+        fn extra_words(&self) -> bool {
+            false
+        }
+    }
+
+    #[cfg(feature = "lang-sql")]
+    #[test]
+    fn a_space_trigger_opens_where_the_provider_has_items() {
+        for auto_closing in [true, false] {
+            let mut st = state(Some("sql"), "|");
+            st.opts.auto_closing = auto_closing;
+            st.provider = Some(Rc::new(Tables));
+            // The word list for FROM closes at the space and the trigger opens the tables.
+            type_in(&mut st, "select * fro");
+            type_in(&mut st, "m ");
+            assert!(st.suggest.open, "auto_closing {auto_closing}");
+            assert_eq!(labels(&st), vec!["customers"]);
+            type_in(&mut st, "x ");
+            assert!(!st.suggest.open);
+        }
     }
 
     /// Lists file names after a `'`, replacing the last path segment.
