@@ -683,16 +683,14 @@ impl DataFrameView {
         cx.spawn(
             move || {
                 let state = ApplicationState::load(repository).map_err(|error| error.to_string())?;
-                let mut groups: [Vec<FileEntry>; 5] = std::array::from_fn(|_| Vec::new());
+                let mut groups: [Vec<FileEntry>; 6] = std::array::from_fn(|_| Vec::new());
                 for view in state.views {
                     match view.view {
                         ViewKind::Table(_) => groups[0].push(FileEntry::View(view)),
                         ViewKind::Query(_) => groups[1].push(FileEntry::View(view)),
                         // A SQL source opens as its rows, like the other sources.
-                        ViewKind::Sql(_) if !view.is_sql_script() => {
-                            groups[3].push(FileEntry::View(DocumentDefinition::draft_sql_source(&view)))
-                        }
-                        ViewKind::Sql(_) => {}
+                        ViewKind::Sql(_) if view.is_sql_script() => groups[5].push(FileEntry::View(view)),
+                        ViewKind::Sql(_) => groups[3].push(FileEntry::View(DocumentDefinition::draft_sql_source(&view))),
                     }
                 }
                 let folders = state.settings.watched_folders.iter().map(PathBuf::from).collect::<Vec<_>>();
@@ -750,6 +748,10 @@ impl DataFrameView {
         if !groups[3].is_empty() {
             titles.push("SQL sources".into());
             new_sections.push(groups[3].clone());
+        }
+        if !groups[5].is_empty() {
+            titles.push("SQL scripts".into());
+            new_sections.push(groups[5].clone());
         }
         if !groups[4].is_empty() {
             titles.push("Database views".into());

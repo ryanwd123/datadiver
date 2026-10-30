@@ -342,6 +342,19 @@ impl DataFrameView {
             "actions" | "action-menu" => self.capture_actions(target, cx),
             "ai-providers" => self.open_ai_settings(cx),
             "database-tree" => self.toggle_database_tree(cx),
+            "database-tree:sql" => {
+                // Captures run on a throwaway profile, so samples are safe to save.
+                for (name, script) in [("Fruit by color", false), ("Tidy temp tables", true)] {
+                    let mut sample = DocumentDefinition::draft_table(name.into(), String::new());
+                    sample.view = ViewKind::Sql(crate::domain::documents::SqlConfig {
+                        text: "SELECT 1 AS n".into(),
+                        script,
+                        ..Default::default()
+                    });
+                    let _ = self.repository.save_view(&mut sample);
+                }
+                self.toggle_database_tree(cx);
+            }
             "search-columns" => {
                 let id = self.search_input.id;
                 self.set_focus(Some(id), cx);

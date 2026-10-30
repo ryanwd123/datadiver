@@ -131,7 +131,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// Top-level groups open on first show.
-const OPEN_GROUPS: [&str; 3] = ["group:views", "group:databases", "group:sources"];
+const OPEN_GROUPS: [&str; 4] = ["group:views", "group:scripts", "group:databases", "group:sources"];
 
 /// A folder under construction: subfolders by name, then leaves.
 #[derive(Default)]
@@ -281,6 +281,14 @@ fn build_tree(
         .collect();
     groups.extend(builder.folder("group:views", "Saved views", views));
 
+    let scripts = data
+        .views
+        .iter()
+        .filter(|view| view.is_sql_script())
+        .filter_map(|view| builder.leaf(format!("script:{}", view.id), view.name.clone(), TreeTarget::View(Box::new(view.clone()))))
+        .collect();
+    groups.extend(builder.folder("group:scripts", "SQL scripts", scripts));
+
     let mut databases = BTreeMap::<(bool, String), BTreeMap<String, Vec<TreeItem>>>::new();
     for relation in &data.relations {
         let catalog = relation.catalog.clone().unwrap_or_else(|| "profile".into());
@@ -408,8 +416,8 @@ fn build_tree(
     (groups, builder.targets, builder.deletable)
 }
 
-/// A left pane listing saved views, database relations, watched source
-/// folders, and DuckDB's metadata functions.
+/// A left pane listing saved views, SQL scripts, database relations, SQL
+/// sources and watched source folders, and DuckDB's metadata functions.
 pub struct DatabaseTree {
     pub(crate) tree: Tree,
     pub(crate) filter: Editor,
@@ -796,6 +804,12 @@ mod tests {
         let mut sql = DocumentDefinition::draft_table("Monthly SQL".into(), String::new());
         sql.id = "sql-1".into();
         sql.view = ViewKind::Sql(Default::default());
+        let mut script = DocumentDefinition::draft_table("Cleanup".into(), String::new());
+        script.id = "script-1".into();
+        script.view = ViewKind::Sql(crate::domain::documents::SqlConfig {
+            script: true,
+            ..Default::default()
+        });
         let mut table = DocumentDefinition::draft_table("Sales table".into(), "s.csv".into());
         table.id = "table-1".into();
         let mut query = table.clone();
@@ -803,7 +817,7 @@ mod tests {
         query.name = "Sales by region".into();
         query.view = ViewKind::Query(QueryConfig::default());
         TreeData {
-            views: vec![sql, table, query],
+            views: vec![sql, script, table, query],
             relations: vec![
                 DatabaseView::view("main", "notes"),
                 DatabaseView {
@@ -853,6 +867,8 @@ mod tests {
                 "Saved views",
                 "  +Table views",
                 "  +Query views",
+                "SQL scripts",
+                "  Cleanup",
                 "Databases",
                 "  +profile",
                 "  +shop",
@@ -864,7 +880,7 @@ mod tests {
                 "+DuckDB metadata",
             ]
         );
-        assert_eq!(targets.len(), 10);
+        assert_eq!(targets.len(), 11);
         assert!(
             targets
                 .values()
@@ -875,6 +891,7 @@ mod tests {
             Some(TreeTarget::Relation(view)) if view.kind == RelationKind::Function
         ));
         assert!(matches!(targets.get("sql:sql-1"), Some(TreeTarget::SqlSource(view)) if view.name == "Monthly SQL"));
+        assert!(matches!(targets.get("script:script-1"), Some(TreeTarget::View(view)) if view.is_sql_script()));
     }
 
     #[test]

@@ -139,6 +139,7 @@ fn main() {
                             | "editor:aggregation-completion"
                             | "editor:group-completion"
                             | "database-tree"
+                            | "database-tree:sql"
                             | "cell-detail"
                     ) {
                         eprintln!("unsupported --show target: {target}");

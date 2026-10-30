@@ -697,8 +697,13 @@ impl DataFrameView {
                         self.schedule_search(String::new(), cx);
                     }
                 }
-                self.file_groups[0].retain(|entry| !matches!(entry, FileEntry::View(view) if view.id == definition.id));
-                self.file_groups[1].retain(|entry| !matches!(entry, FileEntry::View(view) if view.id == definition.id));
+                // A SQL source is listed as a draft of its rows.
+                for group in &mut self.file_groups {
+                    group.retain(|entry| {
+                        !matches!(entry, FileEntry::View(view) if view.id == definition.id
+                            || view.id.is_empty() && view.sql_source.as_ref() == Some(&definition.id))
+                    });
+                }
             }
             Err(error) => self.error = Some(format!("Archive failed: {error}")),
         }

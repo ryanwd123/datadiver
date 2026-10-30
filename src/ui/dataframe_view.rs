@@ -571,7 +571,7 @@ pub struct DataFrameView {
     pub(crate) cell_detail: Option<CellDetailPane>,
     /// Every column's values, wanted while the Add Slicer picker is open.
     slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
-    pub(crate) file_groups: [Vec<FileEntry>; 5],
+    pub(crate) file_groups: [Vec<FileEntry>; 6],
     pub(crate) file_loading: bool,
     file_revision: u64,
     pub(crate) space_menu_open: bool,
