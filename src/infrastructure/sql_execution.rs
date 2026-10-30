@@ -615,15 +615,25 @@ impl SqlExecution {
         );
         // The query goes on its own lines so a trailing comment cannot hide the `)`.
         let body = sql.trim_end().trim_end_matches(';');
-        self.connection
-            .execute_batch(&format!("CREATE TABLE {table} AS FROM (\n{body}\n)"))
+        self.database
+            .keeping_order(|| self.connection.execute_batch(&format!("CREATE TABLE {table} AS FROM (\n{body}\n)")))
             .map_err(|error| error.to_string())?;
         // The table lasts as long as a view shows it, even after this editor
         // runs again or closes.
-        DuckDbStore::owning_table(self.database.connect()?, table).map(Some)
+        DuckDbStore::owning_table(self.database.clone(), self.database.connect()?, table).map(Some)
     }
 
+    /// Runs one statement, keeping at most `limit` of its rows, while the
+    /// database preserves insertion order, so its rows and writes keep theirs.
     fn execute(
+        &self,
+        sql: &str,
+        limit: u64,
+    ) -> Result<(Option<(DuckDbStore, bool)>, usize), String> {
+        self.database.keeping_order(|| self.execute_in_order(sql, limit))
+    }
+
+    fn execute_in_order(
         &self,
         sql: &str,
         limit: u64,

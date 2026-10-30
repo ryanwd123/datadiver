@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::UNIX_EPOCH;
 
 use duckdb::{Connection, OptionalExt, params};
@@ -91,6 +91,10 @@ pub struct SourceDatabase {
     revision: std::sync::atomic::AtomicU64,
     /// Tables of files no store reads any more, dropped on the next load.
     retired_tables: Arc<Mutex<Vec<String>>>,
+    /// Held to write while an import has `preserve_insertion_order` off,
+    /// which DuckDB applies to every connection of the database, and to
+    /// read while a query writes rows whose order matters.
+    insertion_order: RwLock<()>,
 }
 
 pub(crate) struct PersistentBacking {
@@ -147,6 +151,7 @@ impl SourceDatabase {
             state: Mutex::new(None),
             revision: std::sync::atomic::AtomicU64::new(0),
             retired_tables: Arc::default(),
+            insertion_order: RwLock::new(()),
         });
         profiles.insert(profile, Arc::downgrade(&database));
         database
@@ -154,6 +159,14 @@ impl SourceDatabase {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Runs `f`, which writes rows in an order that must hold (a query
+    /// result, an ordered table), while no import has insertion order off.
+    /// `f` must not take the writer lock, which an import holds while it waits.
+    pub(crate) fn keeping_order<T>(&self, f: impl FnOnce() -> T) -> T {
+        let _order = self.insertion_order.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f()
     }
 
     pub fn revision(&self) -> u64 {
@@ -408,6 +421,10 @@ impl SourceDatabase {
         existing: Option<&PersistentSourceIdentity>,
         mut after_import: impl FnMut(),
     ) -> Result<SourceLoad, String> {
+        // Queries that write ordered rows wait until insertion order is back.
+        // Taken before the writer lock, so waiting for it never holds that up.
+        let _unordered = (!preserve_order)
+            .then(|| self.insertion_order.write().unwrap_or_else(std::sync::PoisonError::into_inner));
         let mut state_guard = self
             .state
             .lock()
@@ -1044,6 +1061,33 @@ pub(crate) fn path_key(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_writes_wait_while_an_import_turns_insertion_order_off() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("numbers.csv");
+        fs::write(&path, "n\n1\n2\n").unwrap();
+        let database = SourceDatabase::for_profile(home.path());
+        database.initialize().unwrap();
+        let wrote = Arc::new(AtomicBool::new(false));
+        let mut writer = None;
+        let loaded = database.load_internal(&path, LoadMode::Force, false, None, None, || {
+            let (database, flag) = (database.clone(), wrote.clone());
+            writer = Some(std::thread::spawn(move || database.keeping_order(|| flag.store(true, Ordering::SeqCst))));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // Still importing, with insertion order off: the write waits.
+            assert!(!wrote.load(Ordering::SeqCst));
+        });
+        assert!(loaded.is_ok());
+        writer.unwrap().join().unwrap();
+        assert!(wrote.load(Ordering::SeqCst));
+        // An ordered import leaves ordered writes alone.
+        let loaded = database.load_internal(&path, LoadMode::Force, true, None, None, || {
+            database.keeping_order(|| ());
+        });
+        assert!(loaded.is_ok());
+    }
 
     #[test]
     fn reset_connection_detaches_databases_and_runs_the_edited_startup_script() {

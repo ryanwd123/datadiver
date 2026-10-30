@@ -191,6 +191,25 @@ impl DuckDbStore {
         input: Option<QueryInput<'_>>,
         trace: &mut SqlTrace,
     ) -> Result<Self, String> {
+        // The result's rows keep the query's order only while the profile
+        // database preserves insertion order.
+        match &self.persistent {
+            Some(backing) => backing
+                .database
+                .clone()
+                .keeping_order(|| self.materialize_query_in_order(stage, sql, values, input, trace)),
+            None => self.materialize_query_in_order(stage, sql, values, input, trace),
+        }
+    }
+
+    fn materialize_query_in_order(
+        &self,
+        stage: &str,
+        sql: &str,
+        values: &[Value],
+        input: Option<QueryInput<'_>>,
+        trace: &mut SqlTrace,
+    ) -> Result<Self, String> {
         if let Some(backing) = &self.persistent
             && (backing.source_version.is_some() || self.relation.is_some())
         {
@@ -342,9 +361,13 @@ impl DuckDbStore {
         Self::from_named_connection(connection, "qp_data".into())
     }
 
-    /// Reads `table_sql`, a table nothing else reads, and drops it once the
-    /// store is gone.
-    pub(crate) fn owning_table(connection: Connection, table_sql: String) -> Result<Self, String> {
+    /// Reads `table_sql`, a table of `database` nothing else reads, and drops
+    /// it once the store is gone.
+    pub(crate) fn owning_table(
+        database: Arc<super::source_database::SourceDatabase>,
+        connection: Connection,
+        table_sql: String,
+    ) -> Result<Self, String> {
         // Made first, so a store that fails to open still drops the table.
         let owned = OwnedTable {
             connection: connection.try_clone().map_err(|error| error.to_string())?,
@@ -352,6 +375,14 @@ impl DuckDbStore {
         };
         let mut store = Self::from_named_connection(connection, table_sql)?;
         store.owned_table = Some(owned);
+        // A plain query result, known to the database so its own queries
+        // keep their order; see `materialize_query_traced`.
+        store.persistent = Some(PersistentBacking {
+            database,
+            source_version: None,
+            _table: None,
+            cut_at: None,
+        });
         Ok(store)
     }
 
@@ -1007,11 +1038,22 @@ impl DuckDbStore {
                 row_map: None,
             });
         }
-        let (row_sql, values) = self.build_view_sql(view)?;
+        let (predicates, values, mut order) = self.view_clauses(view)?;
+        order.push("rowid ASC".into());
+        let filter = if predicates.is_empty() {
+            String::new()
+        } else {
+            format!("\nWHERE {}", predicates.join("\n    AND "))
+        };
         let (table_name, row_map) = self.allocate_view_row_map();
+        // The window orders the positions itself: an ordered subquery keeps
+        // its order only while DuckDB preserves insertion order, which an
+        // unordered import turns off for the whole database.
         let create_sql = format!(
-            "CREATE TEMP TABLE {} AS\nSELECT\n    row_number() OVER () - 1 AS display_position,\n    ordered.source_row_id\nFROM (\n{row_sql}\n) AS ordered(source_row_id)",
-            quote_identifier(&table_name)
+            "CREATE TEMP TABLE {} AS\nSELECT\n    row_number() OVER (ORDER BY {}) - 1 AS display_position,\n    rowid AS source_row_id\nFROM {}{filter}",
+            quote_identifier(&table_name),
+            order.join(", "),
+            self.table_sql
         );
         let create_start = std::time::Instant::now();
         trace.execute("Result search and sort", &create_sql, &values, || {
