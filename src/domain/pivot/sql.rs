@@ -620,11 +620,12 @@ fn grouped_select(
         })
         .collect::<Vec<_>>();
     projection.extend(expressions);
-    let distinct = if group_count == 0 { "" } else { " DISTINCT" };
-    let group_clause = if group_count == 0 || config.aggregations.is_empty() {
-        ""
-    } else {
-        "\nGROUP BY ALL"
+    // Groups without aggregates are their distinct values; with aggregates,
+    // GROUP BY ALL groups them.
+    let (distinct, group_clause) = match (group_count, config.aggregations.is_empty()) {
+        (0, _) => ("", ""),
+        (_, true) => (" DISTINCT", ""),
+        (_, false) => ("", "\nGROUP BY ALL"),
     };
     let sql = format!(
         "SELECT{distinct}\n    {}\nFROM {}{}{group_clause}",
