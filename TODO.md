@@ -6,18 +6,6 @@ where it starts.
 
 ## Bugs
 
-- [ ] **Stop does nothing for Polars SQL.** `stop_sql` (`sql_editor.rs:577`)
-  only interrupts DuckDB. A long Polars run can't be stopped, and
-  `sql_running` blocks every other run until it finishes.
-- [ ] **Polars SQL behaves differently from DuckDB.**
-  `polars::sql::run` (`src/infrastructure/polars/sql.rs:22`):
-  - It returns the last statement that *returns rows*, while DuckDB sources
-    need the *last* statement to return rows. So
-    `SELECT …; CREATE TABLE …` works on Polars and fails on DuckDB.
-  - Runtime errors mostly happen at `collect()`. They lose the
-    `Statement N:` prefix, and they overwrite an earlier statement's error.
-    It also still collects after an error.
-  - There's no row limit, so a huge result is collected whole.
 - [ ] **Converting a Polars percentile to custom SQL changes its value.**
   `lazy::structured_sql` (`src/domain/pivot/lazy.rs`) still writes Lower,
   Higher and Nearest as `quantile_disc`, and Midpoint as `quantile_cont`.

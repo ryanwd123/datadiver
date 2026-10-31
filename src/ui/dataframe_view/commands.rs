@@ -13,9 +13,15 @@ use crate::ui::slicer_sidebar::{SlicerChoice, SlicerEvent, SlicerKind};
 impl DataFrameView {
     /// Why slicers and value filters are off for this SQL result, if they are.
     pub(crate) fn sql_filters_unavailable(&self) -> Option<&'static str> {
-        (self.session.is_sql() && !self.sql_result_complete).then_some(
-            "Slicers and = / - filters need the script's last statement to be a query (SELECT, WITH, FROM, VALUES, PIVOT, DESCRIBE), run outside a transaction",
-        )
+        if !self.session.is_sql() || self.sql_result_complete {
+            return None;
+        }
+        // Polars keeps a query's every row unless the limit cut it.
+        Some(if self.sql_engine() == crate::domain::documents::Engine::Polars && self.sql_result_truncated {
+            "Slicers and = / - filters need every row of the result, and it stopped at the row limit"
+        } else {
+            "Slicers and = / - filters need the script's last statement to be a query (SELECT, WITH, FROM, VALUES, PIVOT, DESCRIBE), run outside a transaction"
+        })
     }
 
     /// Whether the SQL editor holds a SQL source, whose rows views can be

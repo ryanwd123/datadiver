@@ -512,6 +512,8 @@ pub struct DataFrameView {
     sql_polars: std::sync::Arc<std::sync::Mutex<polars::sql::SQLContext>>,
     sql_interrupt: Option<std::sync::Arc<duckdb::InterruptHandle>>,
     sql_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Stops the Polars SQL run in progress, if there is one.
+    sql_polars_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     sql_restore_sort: bool,
     sql_catalog_revision: u64,
     sql_catalog_refreshing: bool,
@@ -784,6 +786,7 @@ impl DataFrameView {
             sql_polars: std::sync::Arc::new(std::sync::Mutex::new(polars::sql::SQLContext::new())),
             sql_interrupt: None,
             sql_stopped: None,
+            sql_polars_stop: None,
             sql_restore_sort: false,
             sql_catalog_revision: 0,
             sql_catalog_refreshing: false,

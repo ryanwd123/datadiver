@@ -1375,6 +1375,39 @@ fn sql_sources_switch_to_polars_sql_and_keep_its_tables_between_runs() {
 }
 
 #[test]
+fn polars_sql_stops_at_once_and_keeps_at_most_the_limit() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut saved = sql_view("Polars stop", SqlConfig::default());
+    repository.save_view(&mut saved).unwrap();
+    let viewer = viewer(repository.clone(), Some(saved));
+    switch(&viewer, ViewOption::Engine);
+    edit_sql(&viewer, "SELECT * FROM (VALUES (1), (2), (3)) AS t(n)");
+    viewer.update(|view, cx| {
+        view.query_limit = 2;
+        view.run_sql(true, cx);
+        view.stop_sql();
+    });
+    // The editor is free again before the stopped run finishes.
+    viewer.read(|view| {
+        assert!(!view.sql_running);
+        assert_eq!(view.sql_panel.as_ref().unwrap().status, "Stopped");
+    });
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 0);
+    viewer.update(|view, cx| view.run_sql(true, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        let panel = view.sql_panel.as_ref().unwrap();
+        assert!(panel.error.is_none(), "{:?}", panel.error);
+        assert!(panel.status.contains("truncated at row limit"), "{}", panel.status);
+        assert_eq!(view.session.result.row_count(), 2);
+        assert!(view.sql_result_truncated && !view.sql_result_complete);
+        assert!(view.sql_filters_unavailable().unwrap().contains("row limit"));
+    });
+}
+
+#[test]
 fn open_sql_editor_opens_only_sql_sources_and_scripts() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

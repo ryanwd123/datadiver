@@ -426,7 +426,10 @@ FROM apples a";
                 cx.notify();
             }
             SqlPanelEvent::Run(all) => self.run_sql(all, cx),
-            SqlPanelEvent::Stop => self.stop_sql(),
+            SqlPanelEvent::Stop => {
+                self.stop_sql();
+                cx.notify();
+            }
             SqlPanelEvent::Close => {
                 self.sql_panel_open = false;
                 self.focus_grid(cx);
@@ -581,7 +584,17 @@ FROM apples a";
         cx.notify();
     }
 
-    pub(crate) fn stop_sql(&self) {
+    pub(crate) fn stop_sql(&mut self) {
+        // A Polars query may not reach its next batch for a long while, so
+        // the editor lets it go at once; what it returns is dropped.
+        if let Some(stop) = self.sql_polars_stop.take() {
+            stop.store(true, Ordering::Release);
+            self.sql_running = false;
+            if let Some(panel) = &mut self.sql_panel {
+                panel.busy = false;
+                panel.status = "Stopped".into();
+            }
+        }
         if let Some(stopped) = &self.sql_stopped {
             stopped.store(true, Ordering::Release);
         }
@@ -845,28 +858,46 @@ FROM apples a";
         panel.status = "Running on Polars SQL…".into();
         let context = self.sql_polars.clone();
         let revision = self.sql_revision;
+        let limit = self.query_limit;
+        let stop = Arc::new(AtomicBool::new(false));
+        self.sql_polars_stop = Some(stop.clone());
         cx.spawn(
-            move || {
-                let started = Instant::now();
-                let mut context = context.lock().map_err(|_| "Polars SQL lock poisoned".to_string())?;
-                Ok::<_, String>((crate::infrastructure::polars::sql::run(&mut context, &text), started.elapsed()))
+            {
+                let stop = stop.clone();
+                move || {
+                    let started = Instant::now();
+                    // Planning needs the context; reading the rows does not, so a
+                    // stopped read never holds up the next run.
+                    let planned = crate::infrastructure::polars::sql::plan(
+                        &mut *context.lock().map_err(|_| "Polars SQL lock poisoned".to_string())?,
+                        &text,
+                    );
+                    Ok::<_, String>((planned.collect(limit, &stop), started.elapsed()))
+                }
             },
             move |view: &mut Self, cx, outcome| {
-                if revision != view.sql_revision || !view.session.is_sql() {
+                // Stop already let the run go.
+                if revision != view.sql_revision || !view.session.is_sql() || stop.load(Ordering::Acquire) {
                     return;
                 }
+                view.sql_polars_stop = None;
                 view.sql_running = false;
-                let (result, status, error) = match outcome {
+                let (result, truncated, status, error) = match outcome {
                     Ok((run, elapsed)) => {
                         let status = format!(
-                            "{} statement{} completed in {:.2}s on Polars SQL",
+                            "{} statement{} completed in {:.2}s on Polars SQL{}",
                             run.completed,
                             if run.completed == 1 { "" } else { "s" },
-                            elapsed.as_secs_f64()
+                            elapsed.as_secs_f64(),
+                            if run.truncated {
+                                " · result truncated at row limit"
+                            } else {
+                                ""
+                            }
                         );
-                        (run.result, status, run.error)
+                        (run.result, run.truncated, status, run.error)
                     }
-                    Err(error) => (None, String::new(), Some(error)),
+                    Err(error) => (None, false, String::new(), Some(error)),
                 };
                 if let Some(panel) = &mut view.sql_panel {
                     panel.busy = false;
@@ -876,9 +907,10 @@ FROM apples a";
                     panel.error = error;
                 }
                 if let Some(store) = result {
-                    // Polars keeps every row, so slicers and filters see them all.
-                    view.sql_result_complete = true;
-                    view.sql_result_truncated = false;
+                    // Polars keeps every row up to the limit, so slicers and
+                    // filters see them all unless it cut the result.
+                    view.sql_result_complete = !truncated;
+                    view.sql_result_truncated = truncated;
                     view.show_sql_result(store.into(), cx);
                 }
                 cx.notify();
