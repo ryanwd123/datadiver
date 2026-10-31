@@ -10,12 +10,17 @@ mod complete;
 mod diagnostics;
 mod dialect;
 mod document;
+mod edit;
 mod folding;
+mod format;
 mod highlight;
 mod hover;
 mod items;
 mod lexer;
+mod navigate;
 mod parser;
+mod query;
+mod refactor;
 mod scope;
 mod signature;
 mod statement_docs;
@@ -36,7 +41,9 @@ pub use complete::{
 pub use diagnostics::{Diagnostic, Severity, diagnostics, diagnostics_with};
 pub use dialect::{Dialect, string_name_arg, takes_path};
 pub use document::{DocumentObject, ObjectKind, document_objects};
+pub use edit::{EditStyle, Rewrite};
 pub use folding::{folding_ranges, selection_ranges};
+pub use format::format_sql;
 pub use highlight::{HighlightClass, highlight, highlight_with};
 pub use hover::{Hover, hover};
 pub use items::{
@@ -44,6 +51,14 @@ pub use items::{
     relation_columns,
 };
 pub use lexer::{Token, tokenize};
+pub use navigate::{OutlineItem, OutlineKind, definition, is_renamable, outline, references};
+pub use query::{
+    QueryNode, QueryNodeKind, extract_cte, inline_cte, pipeline_queries, query_nodes_at, runnable_query,
+    toggle_limit, wrap_query,
+};
+pub use refactor::{
+    collapse_star, expand_star, group_by, in_list, join_on, keyword_case, one_line_string, values_table,
+};
 pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation, file_relations};
 pub use signature::{SignatureHelp, signature_help, signature_help_with};
 pub use syntax_kind::{
