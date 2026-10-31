@@ -189,6 +189,9 @@ pub(crate) struct State {
     pub service: Option<Rc<dyn LanguageService>>,
     /// The service's colors by text version (`None`: it left them to the grammar).
     host_hl: Option<(u64, Option<Rc<[Span]>>)>,
+    /// The service's fold ranges by text version, since the gutter asks on
+    /// every paint.
+    host_folds: Option<(u64, Option<Rc<[std::ops::Range<usize>]>>)>,
     /// The service's problems, as decorations.
     diagnostics: Vec<DecorationId>,
     /// The signature popup, while it is open.
@@ -247,6 +250,7 @@ impl State {
             focus: Focus::Text,
             service: None,
             host_hl: None,
+            host_folds: None,
             diagnostics: Vec::new(),
             signature: None,
         })
@@ -613,11 +617,8 @@ impl State {
     /// Fold regions with headers in `first..=last`: from the grammar, or by
     /// indentation without one.
     pub fn fold_regions(&mut self, first: usize, last: usize) -> Vec<(usize, usize)> {
-        if let Some(service) = self.service.clone() {
-            let text = self.snapshot();
-            if let Some(ranges) = service.folding_ranges(&text) {
-                return self.fold_lines(&ranges, first, last);
-            }
+        if let Some(ranges) = self.host_fold_ranges() {
+            return self.fold_lines(&ranges, first, last);
         }
         self.parse_now();
         let b = &self.doc.buffer;
@@ -625,6 +626,20 @@ impl State {
             Some(s) if s.is_current() => s.fold_ranges(b.rope(), first, last),
             _ => crate::indent::fold_ranges(b, first, last, self.opts.tab_size.max(1)),
         }
+    }
+
+    /// The service's fold ranges for the current text, asked once per version.
+    fn host_fold_ranges(&mut self) -> Option<Rc<[std::ops::Range<usize>]>> {
+        let service = self.service.clone()?;
+        let version = self.doc.buffer.version;
+        if let Some((v, ranges)) = &self.host_folds
+            && *v == version
+        {
+            return ranges.clone();
+        }
+        let ranges: Option<Rc<[_]>> = service.folding_ranges(&self.snapshot()).map(Into::into);
+        self.host_folds = Some((version, ranges.clone()));
+        ranges
     }
 
     /// Byte ranges as fold regions (header line, last folded line) with headers
@@ -2550,7 +2565,14 @@ impl State {
 
     pub fn set_service(&mut self, service: Option<Rc<dyn LanguageService>>) {
         self.service = service;
+        self.service_changed();
+    }
+
+    /// Asks the service again for colors, folds and problems of the current
+    /// text, after what it knows changed (not the text).
+    pub fn service_changed(&mut self) {
         self.host_hl = None;
+        self.host_folds = None;
         self.host_spans();
         self.hl = HighlightCache::default();
         self.refresh_diagnostics();
@@ -3400,6 +3422,40 @@ mod suggest_tests {
         let mut st = state(None, "f(\n  1,\n  2\n)|");
         st.set_service(Some(Rc::new(Toy)));
         assert_eq!(st.fold_regions(0, 3), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn the_service_is_asked_once_per_text_until_what_it_knows_changes() {
+        use std::cell::Cell;
+        /// Calls `word` a keyword, counting how often it is asked.
+        struct Words {
+            word: RefCell<&'static str>,
+            asked: Cell<usize>,
+        }
+        impl LanguageService for Words {
+            fn highlight(&self, text: &str) -> Option<Vec<(std::ops::Range<usize>, Ink)>> {
+                let word = *self.word.borrow();
+                Some(text.match_indices(word).map(|(i, w)| (i..i + w.len(), Ink::Keyword)).collect())
+            }
+            fn folding_ranges(&self, text: &str) -> Option<Vec<std::ops::Range<usize>>> {
+                self.asked.set(self.asked.get() + 1);
+                Some(vec![0..text.len()])
+            }
+        }
+        let words = Rc::new(Words { word: RefCell::new("a"), asked: Cell::new(0) });
+        let mut st = state(None, "a\nb|");
+        st.set_service(Some(words.clone()));
+        st.fold_regions(0, 1);
+        st.fold_regions(0, 1);
+        assert_eq!(words.asked.get(), 1);
+        assert_eq!(st.line_spans(1), vec![]);
+        // The catalog behind the service changes: colors and folds are asked again.
+        *words.word.borrow_mut() = "b";
+        assert_eq!(st.line_spans(1), vec![]);
+        st.service_changed();
+        assert_eq!(st.line_spans(1), vec![(0, 1, Ink::Keyword)]);
+        st.fold_regions(0, 1);
+        assert_eq!(words.asked.get(), 2);
     }
 
     #[test]

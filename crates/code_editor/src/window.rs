@@ -1123,6 +1123,13 @@ impl Editor {
         self.with(|s| s.set_service(service));
     }
 
+    /// Asks the language service again for colors, folds and problems, after
+    /// what it knows changed without the text changing.
+    pub fn refresh_language_service(&self) {
+        self.shell.set_timer(TIMER_DIAGNOSE, None);
+        self.with(|s| s.service_changed());
+    }
+
     /// Asks the language service for problems now rather than after the pause.
     pub fn refresh_diagnostics(&self) {
         self.shell.set_timer(TIMER_DIAGNOSE, None);

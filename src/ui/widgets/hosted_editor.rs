@@ -104,6 +104,12 @@ impl HostedEditor {
         self.changed.replace(false)
     }
 
+    /// Colors and problems again from the language service, after the catalog
+    /// it reads changed.
+    pub fn refresh_language(&mut self) {
+        self.editor.refresh_language_service();
+    }
+
     /// The underlined problems as (start, end, message), checked now.
     pub fn diagnostics(&self) -> Vec<(usize, usize, String)> {
         self.editor.refresh_diagnostics();

@@ -2,21 +2,38 @@
 //! where a token sits in the parse tree, problems, hovers, signature help,
 //! folding and smart select, over the connection's catalog.
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use code_editor::{Diagnostic, Ink, LanguageService, Severity, SignatureHelp};
-use diver_sql::{HighlightClass, TextRange, TextSize};
+use diver_sql::{HighlightClass, Parse, TextRange, TextSize};
 
 use crate::domain::sql_editor::SqlCatalog;
 
 pub struct SqlLanguage {
     catalog: Arc<RwLock<SqlCatalog>>,
+    /// The last text parsed and its tree: the editor asks for colors,
+    /// problems, folds and smart select of the same text in turn.
+    last_parse: RefCell<Option<(String, Rc<Parse>)>>,
 }
 
 impl SqlLanguage {
     pub fn new(catalog: Arc<RwLock<SqlCatalog>>) -> Self {
-        Self { catalog }
+        Self { catalog, last_parse: RefCell::default() }
+    }
+
+    fn parse(&self, text: &str) -> Rc<Parse> {
+        let mut last = self.last_parse.borrow_mut();
+        if let Some((parsed, tree)) = last.as_ref()
+            && parsed == text
+        {
+            return tree.clone();
+        }
+        let tree = Rc::new(diver_sql::parse(text));
+        *last = Some((text.to_owned(), tree.clone()));
+        tree
     }
 
     fn with_catalog<T>(&self, f: impl FnOnce(&SqlCatalog) -> T) -> T {
@@ -104,7 +121,7 @@ fn argument_ranges(signature: &str) -> Vec<Range<usize>> {
 
 impl LanguageService for SqlLanguage {
     fn highlight(&self, text: &str) -> Option<Vec<(Range<usize>, Ink)>> {
-        let parse = diver_sql::parse(text);
+        let parse = self.parse(text);
         let classes = self.with_catalog(|catalog| diver_sql::highlight_with(&parse, catalog));
         Some(
             classes
@@ -115,7 +132,7 @@ impl LanguageService for SqlLanguage {
     }
 
     fn diagnostics(&self, text: &str) -> Vec<Diagnostic> {
-        let parse = diver_sql::parse(text);
+        let parse = self.parse(text);
         self.with_catalog(|catalog| diver_sql::diagnostics_with(&parse, catalog))
             .into_iter()
             .map(|d| Diagnostic {
@@ -173,7 +190,7 @@ impl LanguageService for SqlLanguage {
 
     fn folding_ranges(&self, text: &str) -> Option<Vec<Range<usize>>> {
         Some(
-            diver_sql::folding_ranges(&diver_sql::parse(text))
+            diver_sql::folding_ranges(&self.parse(text))
                 .into_iter()
                 .map(range)
                 .collect(),
@@ -182,7 +199,7 @@ impl LanguageService for SqlLanguage {
 
     fn selection_ranges(&self, text: &str, at: usize) -> Option<Vec<Range<usize>>> {
         Some(
-            diver_sql::selection_ranges(&diver_sql::parse(text), offset(at))
+            diver_sql::selection_ranges(&self.parse(text), offset(at))
                 .into_iter()
                 .map(range)
                 .collect(),

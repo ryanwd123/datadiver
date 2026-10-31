@@ -371,6 +371,7 @@ FROM apples a";
                         *roots_handle.write().unwrap() = path_roots;
                         view.refresh_file_schemas(cx);
                         if let Some(panel) = &mut view.sql_panel {
+                            panel.editor.refresh_language();
                             panel.default_catalog = default_catalog;
                             panel.busy = false;
                             panel.status = "Ctrl+Enter · selection or current statement".into();
@@ -624,6 +625,9 @@ FROM apples a";
                 if let Ok(catalog) = result {
                     catalog_handle.write().unwrap().replace(catalog);
                     view.sql_catalog_revision = catalog_revision;
+                    if let Some(panel) = &mut view.sql_panel {
+                        panel.editor.refresh_language();
+                    }
                 }
                 cx.notify();
             },
@@ -665,6 +669,7 @@ FROM apples a";
                 {
                     panel.catalog.write().unwrap().files = columns;
                     if described {
+                        panel.editor.refresh_language();
                         panel.editor.refresh_suggest(view.focus == Some(panel.editor.id));
                     }
                     cx.notify();
@@ -770,6 +775,7 @@ FROM apples a";
                             }
                         }
                         if let Some(panel) = &mut view.sql_panel {
+                            panel.editor.refresh_language();
                             panel.busy = false;
                             panel.status = run.status;
                             panel.error = run.error;
