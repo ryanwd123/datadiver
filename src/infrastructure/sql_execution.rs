@@ -223,11 +223,12 @@ impl SqlExecution {
     }
 
     /// Functions and macros by name, with up to a dozen signatures each like
-    /// `round(x DOUBLE, precision INTEGER) -> DOUBLE`. Operators are left out.
+    /// `round(x DOUBLE, precision INTEGER) -> DOUBLE`. Operators and DuckDB's
+    /// `__internal_*` helpers are left out.
     fn functions(&self) -> Result<Vec<diver_sql::FunctionInfo>, String> {
         use diver_sql::FunctionKind;
         const MAX_SIGNATURES: usize = 12;
-        let sql = "SELECT function_name, schema_name, function_type, array_to_string(parameters, chr(31)), array_to_string(parameter_types, chr(31)), varargs, return_type, description FROM duckdb_functions() WHERE function_type <> 'pragma' AND regexp_matches(function_name, '^[A-Za-z_][A-Za-z0-9_]*$') ORDER BY function_name, schema_name";
+        let sql = "SELECT function_name, schema_name, function_type, array_to_string(parameters, chr(31)), array_to_string(parameter_types, chr(31)), varargs, return_type, description FROM duckdb_functions() WHERE function_type <> 'pragma' AND regexp_matches(function_name, '^[A-Za-z_][A-Za-z0-9_]*$') AND NOT starts_with(function_name, '__') ORDER BY function_name, schema_name";
         let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -1353,6 +1354,7 @@ mod tests {
         // Functions come with their signatures, and macros the script made too.
         let round = catalog.functions.iter().find(|f| f.name == "round").unwrap();
         assert!(round.signatures.iter().any(|s| s.starts_with("round(") && s.contains(" -> ")), "{:?}", round.signatures);
+        assert!(!catalog.functions.iter().any(|f| f.name.starts_with("__")));
         assert!(catalog.settings.iter().any(|s| s.name == "threads"));
         assert!(
             service
