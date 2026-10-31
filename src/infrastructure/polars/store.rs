@@ -317,16 +317,29 @@ impl PolarsStore {
         self.distinct_counts(columns, |value| value.drop_nulls().n_unique())
     }
 
-    /// HyperLogLog estimates from a single scan, without exact per-value hash tables.
-    pub fn approximate_unique_counts(
-        &self,
-        columns: &[String],
-    ) -> Result<Vec<(String, usize)>, String> {
-        self.distinct_counts(columns, |value| value.drop_nulls().approx_n_unique())
+    /// Distinct non-null values of each column among the first `rows` rows: a
+    /// lower bound on its count that stops reading after those rows.
+    pub fn leading_unique_counts(&self, columns: &[String], rows: usize) -> Result<Vec<usize>, String> {
+        Ok(self
+            .distinct_counts_of(self.query_frame(false).limit(rows as IdxSize), columns, |value| {
+                value.drop_nulls().n_unique()
+            })?
+            .into_iter()
+            .map(|(_, count)| count)
+            .collect())
     }
 
     fn distinct_counts(
         &self,
+        columns: &[String],
+        count: impl Fn(Expr) -> Expr,
+    ) -> Result<Vec<(String, usize)>, String> {
+        self.distinct_counts_of(self.query_frame(false), columns, count)
+    }
+
+    fn distinct_counts_of(
+        &self,
+        frame: LazyFrame,
         columns: &[String],
         count: impl Fn(Expr) -> Expr,
     ) -> Result<Vec<(String, usize)>, String> {
@@ -341,7 +354,7 @@ impl PolarsStore {
                 Ok(count(col(name.as_str())).alias(format!("n{index}")))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let frame = self.collect(self.query_frame(false).select(projection))?;
+        let frame = self.collect(frame.select(projection))?;
         columns
             .iter()
             .enumerate()
@@ -427,6 +440,22 @@ impl PolarsStore {
             });
         }
         Ok(output)
+    }
+
+    /// The slicer values of each of `names`, or `None` for a column with more
+    /// values than a slicer shows. The frame is in memory, so each column is
+    /// read on its own.
+    pub fn slicer_values_of(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<Vec<crate::domain::slicers::SlicerValue>>>, String> {
+        names
+            .iter()
+            .map(|name| {
+                let values = self.slicer_values(name, &[], &[])?;
+                Ok((values.len() <= crate::domain::slicers::MAX_UNIQUE_VALUES).then_some(values))
+            })
+            .collect()
     }
 
     pub fn initial_row_ids(&self) -> Result<Vec<i64>, String> {

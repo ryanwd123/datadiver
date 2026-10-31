@@ -841,21 +841,24 @@ impl DuckDbStore {
     }
 
     pub fn unique_counts(&self, columns: &[String]) -> Result<Vec<(String, usize)>, String> {
-        self.distinct_counts(columns, "count(DISTINCT {})")
+        self.distinct_counts(columns, "count(DISTINCT {})", None)
     }
 
-    /// HyperLogLog estimates from a single scan, without exact per-value hash tables.
-    pub fn approximate_unique_counts(
-        &self,
-        columns: &[String],
-    ) -> Result<Vec<(String, usize)>, String> {
-        self.distinct_counts(columns, "approx_count_distinct({})")
+    /// Distinct non-null values of each column among the first `rows` rows: a
+    /// lower bound on its count that stops reading after those rows.
+    pub fn leading_unique_counts(&self, columns: &[String], rows: usize) -> Result<Vec<usize>, String> {
+        Ok(self
+            .distinct_counts(columns, "count(DISTINCT {})", Some(rows))?
+            .into_iter()
+            .map(|(_, count)| count)
+            .collect())
     }
 
     fn distinct_counts(
         &self,
         columns: &[String],
         aggregate: &str,
+        leading_rows: Option<usize>,
     ) -> Result<Vec<(String, usize)>, String> {
         self.drop_retired_view_row_maps()?;
         if columns.is_empty() {
@@ -871,7 +874,19 @@ impl DuckDbStore {
                     .ok_or_else(|| format!("column not found: {name}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let sql = format!("SELECT {} FROM {}", sql_columns.join(", "), self.table_sql);
+        let relation = match leading_rows {
+            Some(rows) => {
+                let projection = columns
+                    .iter()
+                    .filter_map(|name| self.columns.iter().find(|column| &column.name == name))
+                    .map(|column| quote_identifier(&column.storage_name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(SELECT {projection} FROM {} LIMIT {rows})", self.table_sql)
+            }
+            None => self.table_sql.clone(),
+        };
+        let sql = format!("SELECT {} FROM {relation}", sql_columns.join(", "));
         super::cancellation::interruptible(&self.connection, || {
             let mut statement = self
                 .connection
@@ -997,6 +1012,99 @@ impl DuckDbStore {
             }
             Ok(values)
         })
+    }
+
+    /// The slicer values of each of `names` from one scan of every row, or
+    /// `None` for a column with more values than a slicer shows. Each column
+    /// is its own grouping set, so one pass reads them all.
+    pub fn slicer_values_of(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<Vec<crate::domain::slicers::SlicerValue>>>, String> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let columns = names
+            .iter()
+            .map(|name| {
+                self.columns
+                    .iter()
+                    .find(|column| &column.name == name)
+                    .ok_or_else(|| format!("slicer column not found: {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let identifiers = columns
+            .iter()
+            .map(|column| quote_identifier(&column.storage_name))
+            .collect::<Vec<_>>();
+        let projection = identifiers
+            .iter()
+            .enumerate()
+            .map(|(index, identifier)| format!("{identifier} AS v{index}, CAST({identifier} AS VARCHAR) AS l{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sets = identifiers
+            .iter()
+            .map(|identifier| format!("({identifier})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Within a set the other columns are NULL, so ordering by every column
+        // in turn orders each set by its own column.
+        let order = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                if crate::domain::schema::from_duckdb(&column.sql_type) == crate::domain::schema::ColumnType::String {
+                    format!("l{index} ASC NULLS LAST")
+                } else {
+                    format!("v{index} ASC NULLS LAST")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // One value beyond the limit tells eligible columns from larger ones.
+        let sql = format!(
+            "SELECT * FROM (SELECT GROUPING({}) AS __dd_set, {projection} FROM {} GROUP BY GROUPING SETS ({sets})) \
+             QUALIFY row_number() OVER (PARTITION BY __dd_set) <= {} \
+             ORDER BY __dd_set, {order}",
+            identifiers.join(", "),
+            self.query_relation(false, &[]),
+            crate::domain::slicers::MAX_UNIQUE_VALUES + 1
+        );
+        let count = columns.len();
+        let mut output = vec![Vec::new(); count];
+        super::cancellation::interruptible(&self.connection, || {
+            let mut statement = self
+                .connection
+                .prepare(&sql)
+                .map_err(|error| error.to_string())?;
+            let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+            while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+                // GROUPING sets a bit for each column left out of the row's set,
+                // the first column in the highest bit.
+                let set = row.get::<_, i64>(0).map_err(|error| error.to_string())?;
+                let index = (0..count)
+                    .find(|index| set & (1 << (count - 1 - index)) == 0)
+                    .ok_or("slicer row belongs to no column")?;
+                let value = row.get::<_, Value>(1 + 2 * index).map_err(|error| error.to_string())?;
+                let key = crate::domain::slicers::scalar_key(value, &columns[index].sql_type)?;
+                let label = match &key {
+                    ScalarKey::Null => "(Blank)".into(),
+                    ScalarKey::String(value) if value.is_empty() => "(Empty)".into(),
+                    _ => row.get::<_, String>(2 + 2 * index).map_err(|error| error.to_string())?,
+                };
+                output[index].push(crate::domain::slicers::SlicerValue {
+                    key,
+                    label,
+                    available: true,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(output
+            .into_iter()
+            .map(|values| (values.len() <= crate::domain::slicers::MAX_UNIQUE_VALUES).then_some(values))
+            .collect())
     }
 
     pub fn initial_row_ids(&self) -> Result<Vec<i64>, String> {

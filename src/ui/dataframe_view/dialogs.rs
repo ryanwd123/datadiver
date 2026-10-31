@@ -975,7 +975,25 @@ impl DataFrameView {
         self.update_slicer_picker(None);
         if matches!(&self.dialog, Some(Dialog::SlicerPicker(picker)) if picker.loading) {
             self.schedule_search(self.session.search_text.clone(), cx);
+            self.poll_slicer_progress(cx);
         }
+    }
+
+    /// Shows how many columns discovery has checked while the picker waits for it.
+    fn poll_slicer_progress(&mut self, cx: &mut Cx<Self>) {
+        let progress = self.slicer_discovery.as_ref().and_then(|discovery| discovery.progress());
+        let Some(Dialog::SlicerPicker(picker)) = &mut self.dialog else {
+            return;
+        };
+        if !picker.loading {
+            return;
+        }
+        if picker.progress != progress {
+            picker.progress = progress;
+            cx.notify();
+        }
+        cx.timer(std::time::Duration::from_millis(100), |view, cx| view.poll_slicer_progress(cx))
+            .detach();
     }
 
     pub(crate) fn open_copy_as(&mut self, cx: &mut Cx<Self>) {

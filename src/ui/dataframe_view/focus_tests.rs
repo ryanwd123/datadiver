@@ -801,6 +801,9 @@ fn slicer_picker_offers_cards_without_values_before_discovery_finishes() {
     let (loading, after) = kinds();
     assert!(!loading);
     assert!(after.contains(&SlicerKind::Values));
+    // Discovery counted the columns it checked for the picker to show.
+    let progress = viewer.read(|view| view.slicer_discovery.as_ref().and_then(|discovery| discovery.progress()));
+    assert_eq!(progress, Some((2, 2)));
     // Closing the picker stops discovering every column.
     viewer.press("escape");
     assert!(!viewer.has_dialog());

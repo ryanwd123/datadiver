@@ -14,6 +14,11 @@ pub struct SlicerCatalog {
     pub examined: Option<Vec<String>>,
 }
 
+/// Rows read to rule out columns with too many values before reading them all.
+const PROBE_ROWS: usize = 100_000;
+/// Columns whose values one query reads.
+const COLUMNS_PER_SCAN: usize = 8;
+
 /// A request to discover every column's values for the Add Slicer picker.
 /// Discovery scans the whole source, so closing the picker or choosing a card
 /// that needs no values cancels it, interrupting the query that is running.
@@ -21,6 +26,8 @@ pub struct SlicerCatalog {
 pub struct SlicerDiscovery {
     cancelled: AtomicBool,
     running: Mutex<Option<Interrupt>>,
+    /// Columns checked so far, and how many there are.
+    progress: Mutex<Option<(usize, usize)>>,
 }
 
 impl SlicerDiscovery {
@@ -37,6 +44,17 @@ impl SlicerDiscovery {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn report(&self, checked: usize, total: usize) {
+        if let Ok(mut progress) = self.progress.lock() {
+            *progress = Some((checked, total));
+        }
+    }
+
+    /// Columns checked so far and how many there are, once discovery started.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.progress.lock().ok().and_then(|progress| *progress)
     }
 
     fn run<T>(
@@ -117,7 +135,7 @@ impl SlicerStage {
         let all = match discovery.filter(|_| discover_all && cached_catalog.is_none()) {
             Some(discovery) => discovery
                 .run(&store, || {
-                    SlicerCatalog::discover(&store, None, &|| discovery.is_cancelled())
+                    SlicerCatalog::discover(&store, None, Some(discovery))
                 })
                 .transpose()?,
             None => None,
@@ -125,7 +143,7 @@ impl SlicerStage {
         let catalog = match (all, cached_catalog) {
             (Some(all), _) => Arc::new(all),
             (None, Some(cached)) => cached.clone(),
-            (None, None) => Arc::new(SlicerCatalog::discover(&store, Some(&value_columns), &|| false)?),
+            (None, None) => Arc::new(SlicerCatalog::discover(&store, Some(&value_columns), None)?),
         };
         let cards = catalog.cards(&store, definitions, value_filters, options);
         // A card keeps its query's error, and the stage outlives a replaced
@@ -183,11 +201,12 @@ fn usable(definitions: &[SlicerDefinition], cards: &[SlicerCard]) -> Vec<SlicerD
 
 impl SlicerCatalog {
     /// Values for the columns with few enough of them, among `only` or every
-    /// column. `stopped` is checked between queries.
+    /// column. With `discovery`, reports progress to it and stops between
+    /// queries once it is cancelled.
     pub fn discover(
         store: &Store,
         only: Option<&[String]>,
-        stopped: &dyn Fn() -> bool,
+        discovery: Option<&SlicerDiscovery>,
     ) -> Result<Self, String> {
         let candidates = store
             .schema()
@@ -195,6 +214,12 @@ impl SlicerCatalog {
             .filter(|column| slicers::supported(&column.sql_type))
             .filter(|column| only.is_none_or(|only| only.contains(&column.name)))
             .collect::<Vec<_>>();
+        let report = |checked: usize| {
+            if let Some(discovery) = discovery {
+                discovery.report(checked, candidates.len());
+            }
+        };
+        report(0);
         if candidates.is_empty() {
             return Ok(Self {
                 columns: Vec::new(),
@@ -205,22 +230,33 @@ impl SlicerCatalog {
             .iter()
             .map(|column| column.name.clone())
             .collect::<Vec<_>>();
-        let estimates = store.approximate_unique_counts(&names)?;
+        // Reading every value of ids and free text is costly, but a column with
+        // too many values among the first rows has too many in all, and finding
+        // that out stops after those rows.
+        let leading = store.leading_unique_counts(&names, PROBE_ROWS)?;
+        let remaining = candidates
+            .iter()
+            .zip(leading)
+            .filter(|(_, count)| *count <= slicers::MAX_UNIQUE_VALUES)
+            .map(|(column, _)| *column)
+            .collect::<Vec<_>>();
+        let mut checked = candidates.len() - remaining.len();
+        report(checked);
         let mut columns = Vec::new();
-        for (column, (_, estimate)) in candidates.into_iter().zip(estimates) {
-            // Exact discovery hashes every distinct value, which is costly for ids and
-            // free text. Estimates overshoot by at most ~1.3x in practice, so this
-            // margin only skips columns that are certainly over the limit.
-            if estimate > slicers::MAX_UNIQUE_VALUES * 4 {
-                continue;
-            }
-            if stopped() {
+        // A batch is read in one pass; on a view that recomputes its rows for
+        // every query, that pass is most of the cost.
+        for batch in remaining.chunks(COLUMNS_PER_SCAN) {
+            if discovery.is_some_and(SlicerDiscovery::is_cancelled) {
                 return Err("slicer discovery was cancelled".into());
             }
-            let values = store.slicer_values(&column.name, &[], &[])?;
-            if values.len() <= slicers::MAX_UNIQUE_VALUES {
-                columns.push((column.name.clone(), column.sql_type.clone(), values));
+            let names = batch.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+            for (column, values) in batch.iter().zip(store.slicer_values_of(&names)?) {
+                if let Some(values) = values {
+                    columns.push((column.name.clone(), column.sql_type.clone(), values));
+                }
             }
+            checked += batch.len();
+            report(checked);
         }
         Ok(Self {
             columns,
@@ -439,6 +475,87 @@ mod tests {
     }
 
     #[test]
+    fn discovery_reads_columns_in_batches_like_one_column_at_a_time() {
+        // More columns than one scan reads. `late` has one value in the rows
+        // the first check reads and too many in all, so only the full read
+        // rules it out.
+        let mut columns = (0..10).map(|index| format!("range % {} AS c{index}", index + 2)).collect::<Vec<_>>();
+        columns.extend([
+            "CASE WHEN range < 150000 THEN 'x' ELSE 'v' || range END AS late".to_owned(),
+            "range AS id".to_owned(),
+            "CASE range % 4 WHEN 0 THEN NULL WHEN 1 THEN '' ELSE 'b' || (range % 7) END AS text".to_owned(),
+            "DATE '2024-01-01' + (range % 30)::INTEGER AS day".to_owned(),
+            "range % 2 = 0 AS flag".to_owned(),
+            "(range % 5) / 2.0 AS half".to_owned(),
+        ]);
+        let source = sql_frame(&format!("SELECT {} FROM range(200000)", columns.join(", ")));
+        let store = source.store.lock().unwrap();
+        let discovery = SlicerDiscovery::default();
+        let catalog = SlicerCatalog::discover(&store, None, Some(&discovery)).unwrap();
+        assert_eq!(discovery.progress(), Some((16, 16)));
+        let names = catalog.columns.iter().map(|(name, _, _)| name.as_str()).collect::<Vec<_>>();
+        let mut expected = (0..10).map(|index| format!("c{index}")).collect::<Vec<_>>();
+        expected.extend(["text", "day", "flag", "half"].map(String::from));
+        assert_eq!(names, expected);
+        for (name, _, values) in &catalog.columns {
+            assert_eq!(values, &store.slicer_values(name, &[], &[]).unwrap(), "{name}");
+        }
+    }
+
+    /// Times discovery on the relations named in `DATADIVER_SLICER_RELATIONS`
+    /// (default `t`) of the DuckDB file in `DATADIVER_SLICER_BENCH`.
+    #[test]
+    #[ignore]
+    fn slicer_discovery_benchmark() {
+        let Ok(path) = std::env::var("DATADIVER_SLICER_BENCH") else {
+            return;
+        };
+        let relations = std::env::var("DATADIVER_SLICER_RELATIONS").unwrap_or_else(|_| "t".into());
+        for relation in relations.split(',') {
+            let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly).unwrap();
+            let connection = duckdb::Connection::open_with_flags(&path, config).unwrap();
+            let store = Store::DuckDb(DuckDbStore::from_named_connection(connection, relation.into()).unwrap());
+            let mut times = Vec::new();
+            let mut found = Vec::new();
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                let catalog = SlicerCatalog::discover(&store, None, None).unwrap();
+                times.push(started.elapsed());
+                found = catalog.columns.into_iter().map(|(name, _, _)| name).collect();
+            }
+            times.sort();
+            println!("{relation}: median {:?}, min {:?}, max {:?}, columns {found:?}", times[2], times[0], times[4]);
+        }
+    }
+
+    #[test]
+    fn both_engines_discover_the_same_slicer_columns() {
+        use crate::infrastructure::polars::store::PolarsStore;
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("source.csv");
+        let mut csv = String::from("region,id,size
+");
+        for row in 0..3000 {
+            csv.push_str(&format!("r{},{row},{}
+", row % 7, row % 3));
+        }
+        std::fs::write(&path, csv).unwrap();
+        let polars = Store::Polars(PolarsStore::open_source(&path).unwrap());
+        let duckdb = sql_frame(&format!("SELECT * FROM read_csv('{}')", path.display()));
+        let summary = |store: &Store| {
+            SlicerCatalog::discover(store, None, None)
+                .unwrap()
+                .columns
+                .into_iter()
+                .map(|(name, _, values)| (name, values.into_iter().map(|value| value.label).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        let expected = summary(&duckdb.store.lock().unwrap());
+        assert_eq!(expected.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["region", "size"]);
+        assert_eq!(summary(&polars), expected);
+    }
+
+    #[test]
     fn slicer_discovery_cutoff_counts_null_and_excludes_nested_values() {
         for count in [999, 1_000, 1_001] {
             let source = sql_frame(&format!(
@@ -446,7 +563,7 @@ mod tests {
                  ELSE range % {count} END AS scalar, [range] AS nested FROM range({})",
                 count * 2
             ));
-            let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, &|| false).unwrap();
+            let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, None).unwrap();
             if count <= 1_000 {
                 assert_eq!(catalog.columns.len(), 1);
                 assert_eq!(catalog.columns[0].2.len(), count);
@@ -456,7 +573,7 @@ mod tests {
             }
         }
         let source = sql_frame("SELECT range AS id, range % 3 AS small FROM range(100000)");
-        let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, &|| false).unwrap();
+        let catalog = SlicerCatalog::discover(&source.store.lock().unwrap(), None, None).unwrap();
         assert_eq!(
             catalog
                 .columns

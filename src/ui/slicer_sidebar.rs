@@ -801,6 +801,8 @@ pub struct SlicerPicker {
     pub(crate) command: Palette,
     columns: Vec<SlicerChoice>,
     pub loading: bool,
+    /// Columns discovery has checked, and how many there are.
+    pub progress: Option<(usize, usize)>,
     pub error: Option<String>,
 }
 
@@ -816,6 +818,7 @@ impl SlicerPicker {
             command: Palette::new("Choose a source column"),
             columns: Vec::new(),
             loading: true,
+            progress: None,
             error: None,
         }
     }
@@ -841,7 +844,12 @@ impl SlicerPicker {
 
     pub fn message(&self) -> Option<String> {
         if self.loading {
-            Some("Finding columns with few enough values…".into())
+            Some(match self.progress {
+                Some((checked, total)) if total > 0 => {
+                    format!("Finding columns with few enough values… {checked} of {total} checked")
+                }
+                _ => "Finding columns with few enough values…".into(),
+            })
         } else if let Some(error) = &self.error {
             Some(error.clone())
         } else if self.columns.is_empty() {
@@ -854,7 +862,17 @@ impl SlicerPicker {
 
 #[cfg(test)]
 mod tests {
-    use super::card_heights;
+    use super::{SlicerPicker, card_heights};
+
+    #[test]
+    fn slicer_picker_counts_checked_columns_while_loading() {
+        let mut picker = SlicerPicker::new();
+        assert_eq!(picker.message().unwrap(), "Finding columns with few enough values…");
+        picker.progress = Some((38, 50));
+        assert_eq!(picker.message().unwrap(), "Finding columns with few enough values… 38 of 50 checked");
+        picker.set_columns(Vec::new(), false, None);
+        assert_eq!(picker.message().unwrap(), "Every column already has a slicer");
+    }
 
     #[test]
     fn slicer_card_heights_cap_short_cards_and_keep_oversubscribed_cards_reachable() {

@@ -298,8 +298,15 @@ impl Store {
         dispatch!(self, store => store.unique_counts(columns))
     }
 
-    pub fn approximate_unique_counts(&self, columns: &[String]) -> Result<Vec<(String, usize)>, String> {
-        dispatch!(self, store => store.approximate_unique_counts(columns))
+    pub fn leading_unique_counts(&self, columns: &[String], rows: usize) -> Result<Vec<usize>, String> {
+        dispatch!(self, store => store.leading_unique_counts(columns, rows))
+    }
+
+    pub fn slicer_values_of(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<Vec<crate::domain::slicers::SlicerValue>>>, String> {
+        dispatch!(self, store => store.slicer_values_of(names))
     }
 
     pub fn distinct_values(
