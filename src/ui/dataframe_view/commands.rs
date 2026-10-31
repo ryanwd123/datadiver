@@ -638,11 +638,19 @@ impl DataFrameView {
         cx.notify();
     }
 
-    /// Applies a changed limit to what is open: reads a file in memory again,
-    /// keeping the view as it is, or runs the query or read-only SQL again.
+    /// Applies a changed limit to what is open: reads a file in memory or a
+    /// SQL source again, keeping the view as it is, or runs the query or
+    /// read-only SQL again.
     pub(crate) fn apply_query_limit(&mut self, cx: &mut Cx<Self>) {
+        // A SQL source's rows change only when it was cut or the new limit
+        // cuts it; otherwise a query on it still runs again below.
+        let source = &self.session.source;
+        let sql_source_changes = self.sql_source().is_some()
+            && (source.cut_at.is_some() || source.row_count() as u64 > self.query_limit);
         if let Some(path) = self.file_in_memory() {
             self.load_source(path, false, crate::infrastructure::source_database::LoadMode::Check, cx);
+        } else if sql_source_changes {
+            self.reload(false, cx);
         } else if self.session.is_sql() {
             self.rerun_sql_for_limit(cx);
         } else if !self.is_table() {
@@ -661,6 +669,19 @@ impl DataFrameView {
         // The rest of the file was never read, so no rerun can include it.
         if let Some(limit) = self.session.source.cut_at {
             let rows = crate::domain::formatting::group_numeric_text(&limit.to_string());
+            if self.sql_source().is_some() {
+                self.confirm(
+                    "Export only the rows that were kept?".into(),
+                    format!(
+                        "Only the first {rows} rows of the SQL source were kept, so the export leaves the rest out. To export all of them, raise Limit above the source's row count, then export again."
+                    ),
+                    format!("Export from {rows} rows"),
+                    false,
+                    super::dialogs::ConfirmAction::ExportCut,
+                    cx,
+                );
+                return;
+            }
             let read = if self.read_in_file_order() {
                 format!("Only the first {rows} rows of this file were read")
             } else {

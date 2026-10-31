@@ -35,6 +35,13 @@ pub(super) fn file_cut_at(limit: usize, in_file_order: bool) -> String {
     format!("{read} · Raise Limit, or scan it in place with Read mode")
 }
 
+/// Shown with the red limit input when a SQL source returned more rows than
+/// the limit, which keeps the first of them.
+pub(super) fn sql_source_cut_at(limit: usize) -> String {
+    let rows = group_numeric_text(&limit.to_string());
+    format!("Kept the first {rows} rows of the SQL source · Raise Limit to keep more")
+}
+
 fn number(value: f64) -> Option<String> {
     if !value.is_finite() {
         return None;
@@ -126,6 +133,7 @@ mod tests {
         assert_eq!(limited_rows(1_000_000), "Limited to 1,000,000 rows");
         assert!(file_cut_at(100_000, true).starts_with("Read the first 100,000 rows of the file"));
         assert!(file_cut_at(100_000, false).starts_with("Read 100,000 rows of the file, not in file order"));
+        assert!(sql_source_cut_at(100_000).starts_with("Kept the first 100,000 rows of the SQL source"));
     }
 
     #[test]

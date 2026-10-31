@@ -124,17 +124,21 @@ fn collect(frame: LazyFrame, limit: u64, stop: &Arc<AtomicBool>) -> Result<(Data
 }
 
 /// The rows a SQL source's script returns, in a context of its own. Like a
-/// DuckDB source, its last statement has to return them.
-pub fn source_rows(text: &str) -> Result<PolarsStore, String> {
+/// DuckDB source, its last statement has to return them, and it keeps at
+/// most `limit` of them.
+pub fn source_rows(text: &str, limit: u64) -> Result<PolarsStore, String> {
     let planned = plan(&mut SQLContext::new(), text);
     if planned.error.is_none() && !planned.last_returns_rows {
         return Err("The SQL source's last statement returns no rows".to_owned());
     }
-    let run = planned.collect(u64::MAX, &Arc::new(AtomicBool::new(false)));
+    let run = planned.collect(limit, &Arc::new(AtomicBool::new(false)));
     if let Some(error) = run.error {
         return Err(error);
     }
-    run.result.ok_or_else(|| "The SQL source's last statement returns no rows".to_owned())
+    let cut_at = run.truncated.then(|| usize::try_from(limit).unwrap_or(usize::MAX));
+    run.result
+        .map(|store| store.with_cut_at(cut_at))
+        .ok_or_else(|| "The SQL source's last statement returns no rows".to_owned())
 }
 
 #[cfg(test)]
@@ -150,17 +154,22 @@ mod tests {
         let store = source_rows(
             "CREATE TABLE fruit AS SELECT * FROM (VALUES ('red', 12), ('gold', 15)) AS t(color, quantity);\n\
              SELECT color, quantity * 2 AS doubled FROM fruit ORDER BY quantity",
+            u64::MAX,
         )
         .unwrap();
-        assert_eq!(store.row_count(), 2);
+        assert_eq!((store.row_count(), store.cut_at()), (2, None));
         assert_eq!(store.schema()[1].name, "doubled");
-        assert!(source_rows("CREATE TABLE empty AS SELECT 1 AS n").err().unwrap().contains("returns no rows"));
-        assert!(source_rows("SELECT * FROM missing").err().unwrap().starts_with("Statement 1:"));
+        assert!(source_rows("CREATE TABLE empty AS SELECT 1 AS n", u64::MAX).err().unwrap().contains("returns no rows"));
+        assert!(source_rows("SELECT * FROM missing", u64::MAX).err().unwrap().starts_with("Statement 1:"));
+        let cut = source_rows("SELECT * FROM (VALUES (3), (2), (1)) AS t(n) ORDER BY n", 2).unwrap();
+        assert_eq!((cut.row_count(), cut.cut_at()), (2, Some(2)));
+        let whole = source_rows("SELECT * FROM (VALUES (3), (2)) AS t(n)", 2).unwrap();
+        assert_eq!((whole.row_count(), whole.cut_at()), (2, None));
     }
 
     #[test]
     fn a_source_needs_its_last_statement_to_return_rows() {
-        let error = source_rows("SELECT 1 AS n; CREATE TABLE later AS SELECT 2 AS n").err().unwrap();
+        let error = source_rows("SELECT 1 AS n; CREATE TABLE later AS SELECT 2 AS n", u64::MAX).err().unwrap();
         assert!(error.contains("last statement returns no rows"), "{error}");
         // A script in the editor still shows the earlier rows.
         let run = run(&mut SQLContext::new(), "SELECT 1 AS n; CREATE TABLE later AS SELECT 2 AS n", u64::MAX);

@@ -22,10 +22,6 @@ where it starts.
 
 ## Performance
 
-- [ ] **SQL sources have no row cap.** `source_rows` keeps every row of
-  the last statement (`u64::MAX`), while file reads are capped at the
-  Limit. Decide whether the Limit applies to SQL sources too, and show a
-  cut the same way.
 - [ ] **SQL sources run again on every open, and never refresh on their own.**
   Each navigation to a view on a SQL source runs the whole script again
   (`navigation.rs:226`, `navigation.rs:936`), including Back/Forward and

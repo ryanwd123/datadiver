@@ -218,13 +218,14 @@ impl DataFrameView {
         let direct_destination = matches!(entry, FileEntry::Source(_));
         let read_path = path.clone();
         let failed_sql_source = sql_source.clone();
+        let query_limit = self.query_limit;
         cx.spawn(
             move || {
                 let _span = crate::infrastructure::performance::Span::new("source_check");
                 let mut file = Default::default();
                 let mut scanned = false;
                 let source = if let Some(id) = &sql_source {
-                    FrameSnapshot::new(sql_source_rows(&repository, &database, id)?, existing.source_revision + 1)
+                    FrameSnapshot::new(sql_source_rows(&repository, &database, id, query_limit)?, existing.source_revision + 1)
                 } else if let Some(view) = &database_view {
                     FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
                 } else {
@@ -462,6 +463,7 @@ impl DataFrameView {
         let sources = self.sources.clone();
         let repository = self.repository.clone();
         let table_writer = self.table_writer.clone();
+        let query_limit = self.query_limit;
         cx.spawn(
             move || match target {
                 SourceTarget::File(path) => {
@@ -471,7 +473,9 @@ impl DataFrameView {
                 SourceTarget::DatabaseView(view) => database
                     .load_view(&view)
                     .map(|store| (store.into(), Default::default())),
-                SourceTarget::SqlSource(id) => sql_source_rows(&repository, &database, &id).map(|store| (store, Default::default())),
+                SourceTarget::SqlSource(id) => {
+                    sql_source_rows(&repository, &database, &id, query_limit).map(|store| (store, Default::default()))
+                }
             },
             move |view: &mut Self, cx, result| {
                 if !view.session.accepts(token) {
@@ -932,11 +936,13 @@ fn dependents_phrase(dependents: &[DocumentDefinition]) -> String {
     }
 }
 
-/// The rows of the saved SQL source `id`, run on a connection of their own.
+/// The rows of the saved SQL source `id`, run on a connection of their own,
+/// at most `limit` of them.
 pub(crate) fn sql_source_rows(
     repository: &crate::infrastructure::json_store::ViewRepository,
     database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>,
     id: &str,
+    limit: u64,
 ) -> Result<crate::infrastructure::store::Store, String> {
     let source = repository.load_view(id).map_err(|error| match repository.archived(id) {
         _ if error.kind() != std::io::ErrorKind::NotFound => format!("Cannot open the SQL source: {error}"),
@@ -950,6 +956,6 @@ pub(crate) fn sql_source_rows(
         return Err(format!("{} is not a SQL source", source.name));
     };
     database.initialize()?;
-    crate::infrastructure::sql_execution::sql_source_rows(database.clone(), config)
+    crate::infrastructure::sql_execution::sql_source_rows(database.clone(), config, limit)
         .map_err(|error| format!("{}: {error}", source.name))
 }

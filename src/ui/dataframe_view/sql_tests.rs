@@ -1487,6 +1487,57 @@ fn rerun_sql_keeps_search_and_sort_while_the_columns_stay_the_same() {
 }
 
 #[test]
+fn a_sql_source_keeps_rows_up_to_the_limit_in_either_engine() {
+    use crate::domain::documents::Engine;
+    for engine in [Engine::DuckDb, Engine::Polars] {
+        let home = tempfile::tempdir().unwrap();
+        let repository = repository(home.path());
+        let mut source = sql_view(
+            "Numbers",
+            SqlConfig {
+                text: "SELECT * FROM (VALUES (5), (4), (3), (2), (1)) AS t(n) ORDER BY n".into(),
+                engine,
+                ..Default::default()
+            },
+        );
+        repository.save_view(&mut source).unwrap();
+        let viewer = viewer(repository.clone(), None);
+        set_limit(&viewer, 2);
+        open_entry(&viewer, &DocumentDefinition::draft_sql_source(&source));
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.is_table());
+            assert_eq!(view.session.source.row_count(), 2, "{engine:?}");
+            assert_eq!(view.session.source.cut_at, Some(2));
+            assert_eq!(view.session.result.fetch_rows(0, 1).unwrap()[0].values[0].as_deref(), Some("1"));
+            assert!(view.limit_applies());
+            assert!(view.limit_reached());
+        });
+        // Exporting asks first, since the source's other rows were never kept.
+        viewer.update(|view, cx| view.export_result(cx));
+        viewer.update(|view, _| {
+            match &view.dialog {
+                Some(Dialog::Confirm(confirm)) => {
+                    let (title, message, _) = confirm.text();
+                    assert!(title.contains("rows that were kept"), "{title}");
+                    assert!(message.contains("first 2 rows of the SQL source"), "{message}");
+                }
+                other => panic!("expected a confirmation, got {}", other.is_some()),
+            }
+            view.dialog = None;
+        });
+        // Raising the Limit runs the source again and keeps every row.
+        set_limit(&viewer, 10);
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.session.source.row_count(), 5, "{engine:?}");
+            assert_eq!(view.session.source.cut_at, None);
+            assert!(!view.limit_reached());
+        });
+    }
+}
+
+#[test]
 fn a_new_limit_leaves_sql_that_writes_for_run() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

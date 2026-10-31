@@ -483,8 +483,9 @@ impl SqlExecution {
     /// row of its last statement, for the views built on the source. The
     /// rows are kept as a table in the results database, or copied out when
     /// DuckDB can't keep them, so the store outlives the connection and its
-    /// temporary objects.
-    pub fn source_rows(database: Arc<SourceDatabase>, text: &str) -> Result<DuckDbStore, String> {
+    /// temporary objects. Like a file read into memory, it keeps at most
+    /// `limit` rows, and its `cut_at` says when there were more.
+    pub fn source_rows(database: Arc<SourceDatabase>, text: &str, limit: u64) -> Result<DuckDbStore, String> {
         let execution = Self::new(database)?;
         let ranges = statements(text);
         let (last, setup) = ranges.split_last().ok_or("The SQL source has no statement")?;
@@ -496,13 +497,18 @@ impl SqlExecution {
                     .map_err(|error| format!("Statement {}: {error}", index + 1))?;
             }
             let sql = &text[last.clone()];
-            let kept = match execution.keep_all(sql) {
+            // One row past the limit shows whether the query goes on.
+            let fetch = limit.saturating_add(1);
+            let kept = match execution.keep_all(sql, Some(fetch)) {
                 Ok(Some(store)) => Ok(Some((store, false))),
-                Ok(None) => execution.execute(sql, u64::MAX).map(|(result, _)| result),
+                Ok(None) => execution.execute(sql, fetch).map(|(result, _)| result),
                 Err(error) => Err(error),
             };
             match kept {
-                Ok(Some((store, _))) => Ok(store),
+                Ok(Some((mut store, _))) => {
+                    store.cut_to(usize::try_from(limit).unwrap_or(usize::MAX))?;
+                    Ok(store)
+                }
                 Ok(None) => Err("The SQL source's last statement returns no rows".to_owned()),
                 Err(error) => Err(format!("Statement {}: {error}", ranges.len())),
             }
@@ -540,7 +546,7 @@ impl SqlExecution {
             let mut complete = false;
             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if index == last
-                    && let Some(store) = self.keep_all(sql)?
+                    && let Some(store) = self.keep_all(sql, None)?
                 {
                     complete = true;
                     return Ok((Some((store, false)), 0));
@@ -601,12 +607,13 @@ impl SqlExecution {
     /// Keeps every row of a read-only query as a table, or returns `None`
     /// when the rows have to be copied out instead. A query DuckDB cannot
     /// keep this way still shows its first rows; any other error would fail
-    /// the plain run too, after running the query a second time.
-    fn keep_all(&self, sql: &str) -> Result<Option<DuckDbStore>, String> {
+    /// the plain run too, after running the query a second time. With a
+    /// `limit`, only that many of its first rows are kept.
+    fn keep_all(&self, sql: &str, limit: Option<u64>) -> Result<Option<DuckDbStore>, String> {
         if !is_filterable_query(sql) {
             return Ok(None);
         }
-        match self.materialize(sql) {
+        match self.materialize(sql, limit) {
             Err(error) if materialize_only_failure(&error) => Ok(None),
             kept => kept,
         }
@@ -616,7 +623,7 @@ impl SqlExecution {
     /// so filters see every row and DuckDB's types survive exactly. Returns
     /// `None` inside an explicit transaction: a failed write there would abort
     /// the user's transaction, and a transaction may write to one database only.
-    fn materialize(&self, sql: &str) -> Result<Option<DuckDbStore>, String> {
+    fn materialize(&self, sql: &str, limit: Option<u64>) -> Result<Option<DuckDbStore>, String> {
         if !self.connection.is_autocommit() {
             return Ok(None);
         }
@@ -626,8 +633,11 @@ impl SqlExecution {
         );
         // The query goes on its own lines so a trailing comment cannot hide the `)`.
         let body = sql.trim_end().trim_end_matches(';');
+        let limit = limit
+            .map(|limit| format!(" LIMIT {}", limit.min(i64::MAX as u64)))
+            .unwrap_or_default();
         self.database
-            .keeping_order(|| self.connection.execute_batch(&format!("CREATE TABLE {table} AS FROM (\n{body}\n)")))
+            .keeping_order(|| self.connection.execute_batch(&format!("CREATE TABLE {table} AS FROM (\n{body}\n){limit}")))
             .map_err(|error| error.to_string())?;
         // The table lasts as long as a view shows it, even after this editor
         // runs again or closes.
@@ -933,11 +943,12 @@ fn sql_type(data_type: &DataType) -> Result<String, String> {
 pub fn sql_source_rows(
     database: Arc<SourceDatabase>,
     config: &crate::domain::documents::SqlConfig,
+    limit: u64,
 ) -> Result<super::store::Store, String> {
     use crate::domain::documents::Engine;
     match config.engine {
-        Engine::DuckDb => SqlExecution::source_rows(database, &config.text).map(Into::into),
-        Engine::Polars => super::polars::sql::source_rows(&config.text).map(Into::into),
+        Engine::DuckDb => SqlExecution::source_rows(database, &config.text, limit).map(Into::into),
+        Engine::Polars => super::polars::sql::source_rows(&config.text, limit).map(Into::into),
     }
 }
 
@@ -1021,7 +1032,7 @@ mod tests {
                 .unwrap()
         };
         let before = results();
-        let store = SqlExecution::source_rows(database.clone(), text).unwrap();
+        let store = SqlExecution::source_rows(database.clone(), text, u64::MAX).unwrap();
         assert_eq!(store.row_count(), 250_000);
         assert_eq!(store.schema()[1].name, "bucket");
         // The rows stay in DuckDB as one table instead of being copied out.
@@ -1031,15 +1042,31 @@ mod tests {
         // A write's RETURNING rows can't be kept that way and are copied out.
         let store = SqlExecution::source_rows(
             database.clone(),
-            "CREATE TEMP TABLE t (n INTEGER);
-INSERT INTO t SELECT range FROM range(3000) RETURNING n",
+            "CREATE TEMP TABLE t (n INTEGER);\nINSERT INTO t SELECT range FROM range(3000) RETURNING n",
+            u64::MAX,
         )
         .unwrap();
         assert_eq!(store.row_count(), 3000);
-        let error = SqlExecution::source_rows(database.clone(), "CREATE TEMP TABLE t AS SELECT 1").err().unwrap();
+        let error = SqlExecution::source_rows(database.clone(), "CREATE TEMP TABLE t AS SELECT 1", u64::MAX).err().unwrap();
         assert!(error.contains("returns no rows"), "{error}");
-        let error = SqlExecution::source_rows(database, "SELECT 1;\nSELECT * FROM missing").err().unwrap();
+        let error = SqlExecution::source_rows(database.clone(), "SELECT 1;\nSELECT * FROM missing", u64::MAX).err().unwrap();
         assert!(error.starts_with("Statement 2:"), "{error}");
+        // The Limit keeps the first rows in the query's order, kept as a
+        // table or copied out, and notes the cut.
+        let store =
+            SqlExecution::source_rows(database.clone(), "SELECT range AS n FROM range(10) ORDER BY n DESC", 3).unwrap();
+        assert_eq!((store.row_count(), store.cut_at()), (3, Some(3)));
+        let first = store.fetch_row_ids(&[0, 2]).unwrap();
+        assert_eq!((first[0].values[0].as_deref(), first[1].values[0].as_deref()), (Some("9"), Some("7")));
+        let store = SqlExecution::source_rows(
+            database.clone(),
+            "CREATE TEMP TABLE t (n INTEGER);\nINSERT INTO t SELECT range FROM range(5) RETURNING n",
+            3,
+        )
+        .unwrap();
+        assert_eq!((store.row_count(), store.cut_at()), (3, Some(3)));
+        let whole = SqlExecution::source_rows(database, "SELECT range AS n FROM range(3)", 3).unwrap();
+        assert_eq!((whole.row_count(), whole.cut_at()), (3, None));
     }
 
     #[test]
