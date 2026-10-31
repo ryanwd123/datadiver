@@ -47,11 +47,3 @@ where it starts.
   Preserve order off therefore delays SQL runs and pivots in other windows,
   and Stop can't interrupt a statement that's still waiting for the lock.
   Importing into a separate DuckDB instance would remove the wait.
-
-## UI and UX
-
-- [ ] Remote files (`s3://`, `https://`) in the SQL editor are described on
-  a connection that lacks the editor's secrets and settings. When that
-  fails, they're never tried again (`file_schemas.rs`, `stamp` returns
-  `Ok(None)`).
-

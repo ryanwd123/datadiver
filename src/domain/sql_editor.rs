@@ -366,9 +366,9 @@ fn is_remote(path: &str) -> bool {
 fn file_key(source: &RelationSource) -> Option<String> {
     match source {
         RelationSource::File { path } if !path.is_empty() && !is_remote(path) => Some(format!("'{path}'")),
-        RelationSource::TableFunction { name, args, call }
-            if name.last().is_some_and(|n| diver_sql::takes_path(&n.text))
-                && !args.iter().any(|arg| is_remote(arg)) =>
+        // The whole call, since a remote path may sit in a list of paths.
+        RelationSource::TableFunction { name, call, .. }
+            if name.last().is_some_and(|n| diver_sql::takes_path(&n.text)) && !is_remote(call) =>
         {
             Some(call.clone())
         }
@@ -791,5 +791,14 @@ mod tests {
         ));
         assert!(returns_rows("INSERT INTO t VALUES (1) RETURNING *"));
         assert!(!returns_rows("CREATE VIEW v AS SELECT 1"));
+    }
+
+    #[test]
+    fn file_sources_leave_out_remote_files() {
+        let sources = file_sources(
+            "SELECT * FROM 's3://bucket/a.parquet', read_csv('https://example.com/b.csv'),              read_parquet(['local.parquet', 's3://bucket/c.parquet']), 'local.csv'",
+        );
+        let keys = sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, ["'local.csv'"]);
     }
 }
