@@ -504,33 +504,38 @@ FROM apples a";
                         log.push(event);
                     }
                 };
-                // Locked per call so a slow reply never holds up a SQL run.
-                // The editor's connection, since its temp tables live there.
-                let mut relations = with_sql_service(&service, |service| service.ai_schema())
-                    .inspect_err(|error| push(AiEvent::Failed(error.clone())))?;
-                for index in mentioned_relations(&request.prompt, &relations) {
-                    let started = Instant::now();
-                    let relation = &relations[index];
-                    let profile = with_sql_service(&service, |service| service.profile_relation(relation, provider.send_data));
-                    push(AiEvent::Note(match &profile {
-                        Ok(profile) => format!(
-                            "Profiled {} · {} rows in {:.1} s{}",
-                            relation.name,
-                            profile.rows,
-                            started.elapsed().as_secs_f32(),
-                            if provider.send_data { ", with data values" } else { ", counts only" }
-                        ),
-                        Err(error) => format!("Could not profile {}: {error}", relation.name),
-                    }));
-                    relations[index].profile = profile.ok();
-                }
-                request.relations = relations;
-                let result = generate_sql(
-                    &request,
-                    |messages| ai_client::chat(&provider, messages),
-                    |sql| with_sql_service(&service, |service| service.prepare_only(sql)),
-                    push,
-                );
+                // Run as one closure so `done` is set on every exit, early
+                // returns included; otherwise the log poller never stops.
+                let mut ask = || {
+                    // Locked per call so a slow reply never holds up a SQL run.
+                    // The editor's connection, since its temp tables live there.
+                    let mut relations = with_sql_service(&service, |service| service.ai_schema())
+                        .inspect_err(|error| push(AiEvent::Failed(error.clone())))?;
+                    for index in mentioned_relations(&request.prompt, &relations) {
+                        let started = Instant::now();
+                        let relation = &relations[index];
+                        let profile = with_sql_service(&service, |service| service.profile_relation(relation, provider.send_data));
+                        push(AiEvent::Note(match &profile {
+                            Ok(profile) => format!(
+                                "Profiled {} · {} rows in {:.1} s{}",
+                                relation.name,
+                                profile.rows,
+                                started.elapsed().as_secs_f32(),
+                                if provider.send_data { ", with data values" } else { ", counts only" }
+                            ),
+                            Err(error) => format!("Could not profile {}: {error}", relation.name),
+                        }));
+                        relations[index].profile = profile.ok();
+                    }
+                    request.relations = relations;
+                    generate_sql(
+                        &request,
+                        |messages| ai_client::chat(&provider, messages),
+                        |sql| with_sql_service(&service, |service| service.prepare_only(sql)),
+                        push,
+                    )
+                };
+                let result = ask();
                 done.store(true, Ordering::Release);
                 result
             },
