@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::domain::documents::TableConfig;
 
 pub fn resolved_order(available: &[String], config: &TableConfig) -> Vec<String> {
+    let present: HashSet<&str> = available.iter().map(String::as_str).collect();
     let mut seen = HashSet::new();
     let mut order = Vec::with_capacity(available.len());
     for name in config
@@ -11,7 +12,7 @@ pub fn resolved_order(available: &[String], config: &TableConfig) -> Vec<String>
         .map(String::as_str)
         .chain(available.iter().map(String::as_str))
     {
-        if available.iter().any(|column| column == name) && seen.insert(name.to_string()) {
+        if present.contains(name) && seen.insert(name) {
             order.push(name.to_string());
         }
     }
@@ -20,8 +21,9 @@ pub fn resolved_order(available: &[String], config: &TableConfig) -> Vec<String>
 
 /// The columns the grid shows: the resolved order without hidden columns.
 pub fn visible_order(available: &[String], config: &TableConfig) -> Vec<String> {
+    let hidden: HashSet<&str> = config.hidden.iter().map(String::as_str).collect();
     let mut order = resolved_order(available, config);
-    order.retain(|name| !config.hidden.contains(name));
+    order.retain(|name| !hidden.contains(name.as_str()));
     order
 }
 

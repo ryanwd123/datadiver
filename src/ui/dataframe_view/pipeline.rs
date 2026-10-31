@@ -948,9 +948,13 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
                     .map(|column| column.name.clone())
                     .collect::<Vec<_>>();
                 let order = crate::domain::table::visible_order(&available, config);
+                let by_name = all_columns
+                    .iter()
+                    .map(|column| (column.name.as_str(), column))
+                    .collect::<std::collections::HashMap<_, _>>();
                 order
                     .iter()
-                    .filter_map(|name| all_columns.iter().find(|column| &column.name == name).cloned())
+                    .filter_map(|name| by_name.get(name.as_str()).map(|&column| column.clone()))
                     .collect()
             }
             _ => all_columns.to_vec(),
