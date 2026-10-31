@@ -926,19 +926,38 @@ impl DataFrameView {
             .and_then(|d| d.database_view.clone())
         {
             if let Some(path) = database_view.file_path() {
-                // A file read in place reloads when it changes on disk.
+                // A file read in place reloads when it changes on disk. The
+                // probe runs on a worker, since a network share can be slow.
+                let path = path.to_owned();
                 let revision = self.session.source.source_revision;
-                let probe = self.sources.probe(std::path::Path::new(path));
-                let changed = match (&self.source_probe, &probe) {
-                    (Some((seen, seen_revision, last)), probe) if seen == path && *seen_revision == revision => {
-                        !probe.as_ref().is_some_and(|probe| probe.same_file(last))
-                    }
-                    _ => false,
-                };
-                self.source_probe = probe.map(|probe| (path.to_owned(), revision, probe));
-                if changed {
-                    self.check_database_view(database_view, cx);
-                }
+                let sources = self.sources.clone();
+                let read_path = PathBuf::from(&path);
+                self.source_check_pending = true;
+                cx.spawn(
+                    move || sources.probe(&read_path),
+                    move |view: &mut Self, cx, probe| {
+                        view.source_check_pending = false;
+                        if view.loading
+                            || view.session.source.source_revision != revision
+                            || view.session.working.as_ref().and_then(|d| d.database_view.as_ref()) != Some(&database_view)
+                        {
+                            return;
+                        }
+                        let changed = match (&view.source_probe, &probe) {
+                            (Some((seen, seen_revision, last)), probe)
+                                if *seen == path && *seen_revision == revision =>
+                            {
+                                !probe.as_ref().is_some_and(|probe| probe.same_file(last))
+                            }
+                            _ => false,
+                        };
+                        view.source_probe = probe.map(|probe| (path, revision, probe));
+                        if changed {
+                            view.check_database_view(database_view, cx);
+                        }
+                    },
+                )
+                .detach();
                 return;
             }
             if self

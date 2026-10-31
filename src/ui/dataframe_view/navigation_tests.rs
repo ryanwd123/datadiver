@@ -1141,6 +1141,25 @@ North,3
         assert_eq!(view.session.result.row_count(), 3);
     });
     assert!(scanned(&viewer));
+    // The scanned file reloads once it changes on disk.
+    let check = || {
+        viewer.update(|view, cx| view.check_source(cx));
+        viewer.run_until_parked();
+    };
+    check();
+    assert!(viewer.read(|view| view.source_probe.is_some()));
+    check();
+    std::fs::write(&path, "region,n
+North,1
+South,2
+North,3
+East,4
+").unwrap();
+    check();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.session.result.row_count(), 4);
+    });
     // The choice is the file's, so opening it again scans it.
     viewer.update(|view, _| view.table_writer.flush().unwrap());
     assert!(repository.load_table_preferences(&path).unwrap().file.scan);
@@ -1152,7 +1171,7 @@ North,3
     viewer.read(|view| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.query_file().is_none());
-        assert_eq!(view.session.result.row_count(), 3);
+        assert_eq!(view.session.result.row_count(), 4);
     });
     assert!(!scanned(&viewer));
     viewer.update(|view, _| view.table_writer.flush().unwrap());
