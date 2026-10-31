@@ -1407,6 +1407,77 @@ fn polars_sql_stops_at_once_and_keeps_at_most_the_limit() {
     });
 }
 
+fn set_limit(viewer: &Viewer, limit: u64) {
+    viewer.update(|view, cx| {
+        view.limit_input.set_text(limit.to_string());
+        view.commit_query_limit(cx);
+    });
+    viewer.run_until_parked();
+}
+
+#[test]
+fn a_new_limit_runs_read_only_sql_again_and_keeps_its_search() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut saved = sql_view("Limited", SqlConfig::default());
+    repository.save_view(&mut saved).unwrap();
+    let viewer = viewer(repository.clone(), Some(saved));
+    switch(&viewer, ViewOption::Engine);
+    set_limit(&viewer, 2);
+    run_all_sql(&viewer, "SELECT * FROM (VALUES (1), (2), (3), (4), (5)) AS t(n)");
+    assert!(viewer.read(|view| view.sql_result_truncated));
+    viewer.update(|view, cx| view.set_search_text("4".into(), cx));
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 0);
+    // Raising the Limit reads the rows it cut, and the search finds one there.
+    set_limit(&viewer, 10);
+    viewer.read(|view| {
+        assert!(!view.sql_result_truncated);
+        assert_eq!(view.session.source.row_count(), 5);
+        assert_eq!(view.session.search_text, "4");
+        assert_eq!(view.session.result.row_count(), 1);
+    });
+    // Lowering it below the rows shown cuts them again.
+    set_limit(&viewer, 3);
+    viewer.read(|view| {
+        assert!(view.sql_result_truncated);
+        assert_eq!(view.session.source.row_count(), 3);
+    });
+}
+
+#[test]
+fn a_new_limit_leaves_sql_that_writes_for_run() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer(repository, None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    set_limit(&viewer, 2);
+    run_all_sql(
+        &viewer,
+        "CREATE OR REPLACE TABLE limit_log (n INTEGER);\nINSERT INTO limit_log SELECT range FROM range(5) RETURNING n",
+    );
+    assert!(viewer.read(|view| view.sql_result_truncated));
+    let logged = || {
+        viewer.read(|view| {
+            view.database
+                .connect()
+                .unwrap()
+                .query_row("SELECT count(*) FROM limit_log", [], |row| row.get::<_, i64>(0))
+                .unwrap()
+        })
+    };
+    assert_eq!(logged(), 5);
+    set_limit(&viewer, 10);
+    // Running it again would insert the rows twice.
+    assert_eq!(logged(), 5);
+    viewer.read(|view| {
+        assert_eq!(view.session.source.row_count(), 2);
+        let status = &view.sql_panel.as_ref().unwrap().status;
+        assert!(status.contains("Run again"), "{status}");
+    });
+}
+
 #[test]
 fn open_sql_editor_opens_only_sql_sources_and_scripts() {
     let home = tempfile::tempdir().unwrap();

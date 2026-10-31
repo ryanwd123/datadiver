@@ -731,8 +731,56 @@ FROM apples a";
         if self.sql_running || !self.session.is_sql() {
             return;
         }
+        let Some(panel) = &self.sql_panel else {
+            return;
+        };
+        let text = panel.sql_to_run(all);
+        self.sql_limit_rerun = false;
+        self.run_sql_text(text, cx);
+    }
+
+    /// Runs the SQL behind the shown result again when the new Limit would
+    /// change what it shows. SQL that writes is left for Run, since running
+    /// it again would repeat its writes.
+    pub(crate) fn rerun_sql_for_limit(&mut self, cx: &mut Cx<Self>) {
+        let Some((revision, engine, text)) = &self.sql_result_script else {
+            return;
+        };
+        if *revision != self.sql_revision || *engine != self.sql_engine() {
+            return;
+        }
+        // A DuckDB query kept whole doesn't depend on the Limit.
+        let whole = *engine == Engine::DuckDb && self.sql_result_complete;
+        let cut_differently = self.sql_result_truncated
+            || (!whole && self.session.source.row_count() as u64 > self.query_limit);
+        if !cut_differently {
+            return;
+        }
+        let writes = sql_editor::statements(text)
+            .into_iter()
+            .any(|range| sql_editor::may_mutate(&text[range]));
+        if writes || self.sql_running {
+            if let Some(panel) = &mut self.sql_panel {
+                panel.status = if writes {
+                    "Limit changed · Run again to apply it (the SQL writes, so it doesn't run by itself)".into()
+                } else {
+                    "Limit changed · Run again to apply it".into()
+                };
+            }
+            cx.notify();
+            return;
+        }
+        let text = text.clone();
+        self.sql_limit_rerun = true;
+        self.run_sql_text(text, cx);
+    }
+
+    fn run_sql_text(&mut self, text: String, cx: &mut Cx<Self>) {
+        if text.trim().is_empty() {
+            return;
+        }
         if self.sql_engine() == Engine::Polars {
-            self.run_polars_sql(all, cx);
+            self.run_polars_sql(text, cx);
             return;
         }
         let Some(panel) = &mut self.sql_panel else {
@@ -743,10 +791,7 @@ FROM apples a";
             cx.notify();
             return;
         }
-        let text = panel.sql_to_run(all);
-        if text.trim().is_empty() {
-            return;
-        }
+        let script = text.clone();
         let catalog_handle = panel.catalog.clone();
         let roots_handle = panel.path_roots.clone();
         self.sql_running = true;
@@ -794,6 +839,7 @@ FROM apples a";
                             panel.error = run.error;
                         }
                         if let Some(store) = run.result.take() {
+                            view.sql_result_script = Some((revision, Engine::DuckDb, script));
                             view.show_sql_result(store.into(), cx);
                         }
                     }
@@ -841,17 +887,13 @@ FROM apples a";
         cx.notify();
     }
 
-    /// Runs the selection, the current statement, or with `all` the whole
-    /// script on Polars SQL. Statements share this editor's context, so
+    /// Runs `text` on Polars SQL. Statements share this editor's context, so
     /// tables a run creates are there for the next one.
-    fn run_polars_sql(&mut self, all: bool, cx: &mut Cx<Self>) {
+    fn run_polars_sql(&mut self, text: String, cx: &mut Cx<Self>) {
         let Some(panel) = &mut self.sql_panel else {
             return;
         };
-        let text = panel.sql_to_run(all);
-        if text.trim().is_empty() {
-            return;
-        }
+        let script = text.clone();
         self.sql_running = true;
         panel.busy = true;
         panel.error = None;
@@ -911,6 +953,7 @@ FROM apples a";
                     // filters see them all unless it cut the result.
                     view.sql_result_complete = !truncated;
                     view.sql_result_truncated = truncated;
+                    view.sql_result_script = Some((revision, Engine::Polars, script));
                     view.show_sql_result(store.into(), cx);
                 }
                 cx.notify();
@@ -922,7 +965,9 @@ FROM apples a";
 
     /// Shows a run's rows in the grid, keeping the sort when the view just opened.
     fn show_sql_result(&mut self, store: crate::infrastructure::store::Store, cx: &mut Cx<Self>) {
-        let sort = if self.sql_restore_sort {
+        // The same SQL run again for a new Limit keeps the search and sort.
+        let rerun = std::mem::take(&mut self.sql_limit_rerun);
+        let sort = if self.sql_restore_sort || rerun {
             self.session.sort.clone()
         } else {
             Vec::new()
@@ -937,8 +982,12 @@ FROM apples a";
         self.query_cache = None;
         self.table_query = None;
         self.slicer_stage = None;
-        self.grid.reset_widths();
-        self.set_search_text(String::new(), cx);
+        if rerun {
+            self.schedule_search(self.session.search_text.clone(), cx);
+        } else {
+            self.grid.reset_widths();
+            self.set_search_text(String::new(), cx);
+        }
     }
 }
 

@@ -639,11 +639,13 @@ impl DataFrameView {
     }
 
     /// Applies a changed limit to what is open: reads a file in memory again,
-    /// keeping the view as it is, or runs the query again.
+    /// keeping the view as it is, or runs the query or read-only SQL again.
     pub(crate) fn apply_query_limit(&mut self, cx: &mut Cx<Self>) {
         if let Some(path) = self.file_in_memory() {
             self.load_source(path, false, crate::infrastructure::source_database::LoadMode::Check, cx);
-        } else if !self.is_table() && !self.session.is_sql() {
+        } else if self.session.is_sql() {
+            self.rerun_sql_for_limit(cx);
+        } else if !self.is_table() {
             self.schedule_search(self.session.search_text.clone(), cx);
         }
     }

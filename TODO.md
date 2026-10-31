@@ -80,9 +80,6 @@ where it starts.
 - [ ] Rerunning SQL clears the search and drops the result sort
   (`show_sql_result`, `sql_editor.rs:878`). Consider keeping both when the
   columns are unchanged.
-- [ ] Changing the Limit doesn't rerun an open SQL result. It still shows
-  the old truncation until the next run (`apply_query_limit`,
-  `commands.rs`).
 - [ ] Remote files (`s3://`, `https://`) in the SQL editor are described on
   a connection that lacks the editor's secrets and settings. When that
   fails, they're never tried again (`file_schemas.rs`, `stamp` returns

@@ -515,6 +515,12 @@ pub struct DataFrameView {
     /// Stops the Polars SQL run in progress, if there is one.
     sql_polars_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     sql_restore_sort: bool,
+    /// The SQL whose rows are shown, with the editor revision and the engine
+    /// it ran on, so a changed Limit can run it again.
+    sql_result_script: Option<(u64, crate::domain::documents::Engine, String)>,
+    /// The run under way is that SQL again for a new Limit, so the result
+    /// keeps its search and sort.
+    sql_limit_rerun: bool,
     sql_catalog_revision: u64,
     sql_catalog_refreshing: bool,
     /// Columns of the files SQL reads, kept across editors until a file changes.
@@ -788,6 +794,8 @@ impl DataFrameView {
             sql_stopped: None,
             sql_polars_stop: None,
             sql_restore_sort: false,
+            sql_result_script: None,
+            sql_limit_rerun: false,
             sql_catalog_revision: 0,
             sql_catalog_refreshing: false,
             sql_file_schemas: Default::default(),
