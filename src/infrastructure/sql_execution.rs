@@ -669,7 +669,7 @@ impl SqlExecution {
         let output = Connection::open_in_memory().map_err(|e| e.to_string())?;
         let mut names = std::collections::HashSet::new();
         let mut result_names = Vec::new();
-        let definitions = schema
+        let mut definitions = schema
             .fields()
             .iter()
             .enumerate()
@@ -688,12 +688,6 @@ impl SqlExecution {
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        output
-            .execute_batch(&format!(
-                "CREATE TABLE qp_data ({})",
-                definitions.join(", ")
-            ))
-            .map_err(|e| e.to_string())?;
         let huge_columns = (0..schema.fields().len())
             .filter(|index| {
                 matches!(
@@ -702,106 +696,84 @@ impl SqlExecution {
                 )
             })
             .collect::<Vec<_>>();
-        if !huge_columns.is_empty() {
-            // Arrow represents HUGEINT as decimal(38), which cannot validate its full 39-digit range.
-            // Transfer the other columns in batches and bind the wide integers without decimal conversion.
+        // Arrow represents HUGEINT as decimal(38), which cannot validate its
+        // full 39-digit range. Those columns arrive as text and DuckDB casts
+        // each whole column back once every row is in.
+        for index in &huge_columns {
+            definitions[*index] = format!("{} VARCHAR", quote_identifier(&result_names[*index]));
+        }
+        output
+            .execute_batch(&format!(
+                "CREATE TABLE qp_data ({})",
+                definitions.join(", ")
+            ))
+            .map_err(|e| e.to_string())?;
+        {
             use duckdb::arrow::{
-                array::{Array, ArrayRef, Int32Array},
+                array::{Array, ArrayRef, Decimal128Array, StringArray},
                 datatypes::{Field, Schema},
                 record_batch::RecordBatch,
                 util::display::array_value_to_string,
             };
-            let mut transfer_name = "__dd_transfer".to_string();
-            while names.contains(&transfer_name.to_lowercase()) {
-                transfer_name.push('_');
-            }
-            output
-                .execute_batch(&format!(
-                    "ALTER TABLE qp_data ADD COLUMN {} INTEGER",
-                    quote_identifier(&transfer_name)
-                ))
-                .map_err(|e| e.to_string())?;
-            let other = (0..schema.fields().len())
-                .filter(|i| !huge_columns.contains(i))
-                .collect::<Vec<_>>();
-            let mut fields = other
-                .iter()
-                .map(|i| schema.field(*i).clone())
-                .collect::<Vec<_>>();
-            fields.push(Field::new(&transfer_name, DataType::Int32, false));
-            let transfer_schema = Arc::new(Schema::new(fields));
-            let mut transfer_names = other
-                .iter()
-                .map(|i| result_names[*i].as_str())
-                .collect::<Vec<_>>();
-            transfer_names.push(&transfer_name);
-            let mut position = 0_i64;
-            for batch in retained {
-                let mut arrays = other
+            let transfer_schema = Arc::new(Schema::new(
+                schema
+                    .fields()
                     .iter()
-                    .map(|i| batch.column(*i).clone())
-                    .collect::<Vec<ArrayRef>>();
-                arrays.push(Arc::new(Int32Array::from(vec![0; batch.num_rows()])));
-                let transfer = RecordBatch::try_new(transfer_schema.clone(), arrays)
-                    .map_err(|e| e.to_string())?;
-                {
-                    let mut appender = output
-                        .appender_with_columns("qp_data", &transfer_names)
-                        .map_err(|e| e.to_string())?;
-                    appender
-                        .append_record_batch(transfer)
-                        .map_err(|e| e.to_string())?;
-                    appender.flush().map_err(|e| e.to_string())?;
-                }
-                for index in &huge_columns {
-                    let mut update = output
-                        .prepare(&format!(
-                            "UPDATE qp_data SET {} = ? WHERE rowid = ?",
-                            quote_identifier(&result_names[*index])
-                        ))
-                        .map_err(|e| e.to_string())?;
-                    for row in 0..batch.num_rows() {
-                        let array = batch.column(*index);
-                        let value = if array.is_null(row) {
-                            duckdb::types::Value::Null
+                    .enumerate()
+                    .map(|(index, field)| {
+                        if huge_columns.contains(&index) {
+                            Field::new(field.name(), DataType::Utf8, true)
                         } else {
-                            let text = array_value_to_string(array.as_ref(), row)
-                                .map_err(|e| e.to_string())?;
-                            if statement.column_logical_type(*index).id()
-                                == duckdb::core::LogicalTypeId::Hugeint
-                            {
-                                duckdb::types::Value::HugeInt(
-                                    text.parse::<i128>().map_err(|e| e.to_string())?,
-                                )
-                            } else {
-                                duckdb::types::Value::UHugeInt(
-                                    text.parse::<u128>().map_err(|e| e.to_string())?,
-                                )
-                            }
-                        };
-                        update
-                            .execute(duckdb::params![value, position + row as i64])
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-                position += batch.num_rows() as i64;
-            }
-            output
-                .execute_batch(&format!(
-                    "ALTER TABLE qp_data DROP COLUMN {}",
-                    quote_identifier(&transfer_name)
-                ))
-                .map_err(|e| e.to_string())?;
-            return DuckDbStore::from_connection(output).map(|store| (Some((store, truncated)), 0));
-        }
-        {
+                            field.as_ref().clone()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            ));
             let mut appender = output.appender("qp_data").map_err(|e| e.to_string())?;
             for batch in retained {
+                let batch = if huge_columns.is_empty() {
+                    batch
+                } else {
+                    let mut arrays = batch.columns().to_vec();
+                    for index in &huge_columns {
+                        let array = batch.column(*index);
+                        let unsigned = statement.column_logical_type(*index).id()
+                            == duckdb::core::LogicalTypeId::UHugeint;
+                        let decimal = array.as_any().downcast_ref::<Decimal128Array>();
+                        let text = (0..array.len())
+                            .map(|row| {
+                                if array.is_null(row) {
+                                    return Ok(None);
+                                }
+                                // The decimal holds the integer's raw 128 bits,
+                                // so an unsigned one past i128::MAX reads negative.
+                                Ok(Some(match decimal {
+                                    Some(decimal) if unsigned => (decimal.value(row) as u128).to_string(),
+                                    Some(decimal) => decimal.value(row).to_string(),
+                                    None => array_value_to_string(array.as_ref(), row)?,
+                                }))
+                            })
+                            .collect::<Result<StringArray, duckdb::arrow::error::ArrowError>>()
+                            .map_err(|e| e.to_string())?;
+                        arrays[*index] = Arc::new(text) as ArrayRef;
+                    }
+                    RecordBatch::try_new(transfer_schema.clone(), arrays)
+                        .map_err(|e| e.to_string())?
+                };
                 appender
                     .append_record_batch(batch)
                     .map_err(|e| e.to_string())?;
             }
             appender.flush().map_err(|e| e.to_string())?;
+        }
+        for index in &huge_columns {
+            let column = quote_identifier(&result_names[*index]);
+            let kind = result_sql_type(&statement.column_logical_type(*index), schema.field(*index).data_type())?;
+            output
+                .execute_batch(&format!(
+                    "ALTER TABLE qp_data ALTER COLUMN {column} SET DATA TYPE {kind} USING CAST({column} AS {kind})"
+                ))
+                .map_err(|e| e.to_string())?;
         }
         DuckDbStore::from_connection(output).map(|store| (Some((store, truncated)), 0))
     }
@@ -1379,6 +1351,39 @@ mod tests {
         let run = service.run("SELECT currval('calls') AS n", 100);
         let rows = run.result.unwrap().fetch_row_ids(&[0]).unwrap();
         assert_eq!(rows[0].values, [Some("1".into())]);
+    }
+
+    #[test]
+    fn wide_integers_keep_their_full_range_across_batches() {
+        let (_dir, service) = service();
+        // `execute` is the path that copies rows out through arrow.
+        let (result, _) = service
+            .execute(
+                "SELECT range AS n,                  CASE WHEN range % 3 = 0 THEN NULL ELSE 170141183460469231731687303715884105727::HUGEINT - range END AS big,                  'x' || range AS label,                  340282366920938463463374607431768211455::UHUGEINT - range::UHUGEINT AS ubig                  FROM range(5000)",
+                u64::MAX,
+            )
+            .unwrap();
+        let (store, truncated) = result.unwrap();
+        assert!(!truncated);
+        assert_eq!(store.row_count(), 5000);
+        let schema = store.schema();
+        assert_eq!(
+            schema.iter().map(|c| c.sql_type.as_str()).collect::<Vec<_>>(),
+            ["BIGINT", "HUGEINT", "VARCHAR", "UHUGEINT"]
+        );
+        let rows = store.fetch_row_ids(&[0, 1, 4999]).unwrap();
+        assert_eq!(rows[0].values[1], None);
+        assert_eq!(
+            rows[1].values,
+            [
+                Some("1".into()),
+                Some("170141183460469231731687303715884105726".into()),
+                Some("x1".into()),
+                Some("340282366920938463463374607431768211454".into()),
+            ]
+        );
+        assert_eq!(rows[2].values[0].as_deref(), Some("4999"));
+        assert_eq!(rows[2].values[2].as_deref(), Some("x4999"));
     }
 
     #[test]
