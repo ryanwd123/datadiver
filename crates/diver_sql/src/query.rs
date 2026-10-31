@@ -348,6 +348,64 @@ pub fn pipeline_queries(text: &str, offset: TextSize) -> Vec<(Option<String>, Te
     out
 }
 
+/// What a relation at a position reads: a query of the script (a CTE or a
+/// subquery), or something to select from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelationSql {
+    Query(TextRange),
+    /// A table, file or table function, as written.
+    From(String),
+}
+
+/// The relation named at `offset`: a CTE, a table, a file or a table
+/// function in FROM, or the alias of one in a column reference.
+pub fn relation_at(text: &str, offset: TextSize) -> Option<(String, RelationSql)> {
+    let root = parse(text).syntax();
+    let token = token_near(&root, offset)?;
+    let item = match token.parent_ancestors().find_map(FromItem::cast) {
+        Some(item) if !matches!(item.kind(), SyntaxKind::JOIN_EXPR | SyntaxKind::PAREN_JOIN) => {
+            // The name of the item, not something inside a subquery of it.
+            let inside_query = item.query().is_some_and(|q| q.syntax().text_range().contains_range(token.text_range()));
+            (!inside_query).then_some(item)
+        }
+        _ => None,
+    };
+    let item = match item {
+        Some(item) => item,
+        None => {
+            let def = crate::navigate::definition(text, offset)?;
+            let def_token = root.covering_element(def).into_token()?;
+            if let Some(cte) = def_token.parent_ancestors().take(2).find_map(Cte::cast) {
+                let name = cte.name()?.text;
+                return Some((format!("CTE {name}"), RelationSql::Query(cte.query()?.syntax().text_range())));
+            }
+            def_token.parent_ancestors().find_map(FromItem::cast)?
+        }
+    };
+    match item.kind() {
+        SyntaxKind::TABLE_REF => {
+            if let Some(def) = resolve_cte(item.syntax()) {
+                let query = def.cte.query()?;
+                return Some((format!("CTE {}", def.name.text), RelationSql::Query(query.syntax().text_range())));
+            }
+            let path = item.syntax().children().find(|c| c.kind() == SyntaxKind::PATH)?.to_string();
+            Some((path.trim().to_string(), RelationSql::From(path.trim().to_string())))
+        }
+        SyntaxKind::FILE_REF | SyntaxKind::TABLE_FUNCTION => {
+            let from = item.text_without_alias();
+            Some((from.clone(), RelationSql::From(from)))
+        }
+        SyntaxKind::SUBQUERY_REF => {
+            let label = item
+                .alias()
+                .and_then(|a| a.name())
+                .map_or_else(|| "the subquery".to_string(), |n| format!("subquery {}", n.text));
+            Some((label, RelationSql::Query(item.query()?.syntax().text_range())))
+        }
+        _ => None,
+    }
+}
+
 /// The query of the statement at `offset`.
 fn statement_query(root: &SyntaxNode, offset: TextSize) -> Option<SyntaxNode> {
     let token = token_near(root, offset)?;
@@ -830,6 +888,19 @@ mod tests {
         assert_eq!(added.text, "select * from t limit 100");
         let removed = toggle_limit(&added.text, size(0)).unwrap();
         assert_eq!(removed.text, text);
+    }
+
+    #[test]
+    fn relations_at_names_and_aliases() {
+        let text = "with a as (select 1 x) select * from a join orders o on o.id = a.x join 'f.csv' f on true";
+        let (label, sql) = relation_at(text, at(text, "o.id")).unwrap();
+        assert_eq!((label.as_str(), sql), ("orders", RelationSql::From("orders".into())));
+        let (label, sql) = relation_at(text, at(text, "a.x")).unwrap();
+        assert_eq!(label, "CTE a");
+        assert_eq!(sql, RelationSql::Query(query_nodes_at(text, at(text, "1 x"))[0].range));
+        let (label, _) = relation_at(text, at(text, "'f.csv'")).unwrap();
+        assert_eq!(label, "'f.csv'");
+        assert_eq!(relation_at(text, at(text, "on true")), None);
     }
 
     #[test]

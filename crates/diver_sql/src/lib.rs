@@ -53,7 +53,8 @@ pub use items::{
 pub use lexer::{Token, tokenize};
 pub use navigate::{OutlineItem, OutlineKind, definition, is_renamable, outline, references};
 pub use query::{
-    QueryNode, QueryNodeKind, extract_cte, inline_cte, pipeline_queries, query_nodes_at, runnable_query,
+    QueryNode, QueryNodeKind, RelationSql, extract_cte, inline_cte, pipeline_queries, query_nodes_at, relation_at,
+    runnable_query,
     toggle_limit, wrap_query,
 };
 pub use refactor::{
