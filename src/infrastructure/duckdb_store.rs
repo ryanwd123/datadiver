@@ -255,7 +255,7 @@ impl DuckDbStore {
         input: Option<QueryInput<'_>>,
         trace: &mut SqlTrace,
     ) -> Result<(), String> {
-        let result = (|| {
+        let result = super::cancellation::interruptible(connection, || {
             if let Some(input) = &input {
                 for enumeration in input.enums {
                     let labels = trace.execute(
@@ -304,7 +304,7 @@ impl DuckDbStore {
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             })
-        })();
+        });
         if result.is_err() {
             // Failed pivot binding can leave the implicit transaction aborted.
             // Release it before the source is reused or temporary enums are dropped.
@@ -872,24 +872,26 @@ impl DuckDbStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let sql = format!("SELECT {} FROM {}", sql_columns.join(", "), self.table_sql);
-        let mut statement = self
-            .connection
-            .prepare(&sql)
-            .map_err(|error| error.to_string())?;
-        let mut rows = statement.query([]).map_err(|error| error.to_string())?;
-        let row = rows
-            .next()
-            .map_err(|error| error.to_string())?
-            .ok_or("missing count row")?;
-        columns
-            .iter()
-            .enumerate()
-            .map(|(index, name)| {
-                row.get::<_, i64>(index)
-                    .map(|count| (name.clone(), count as usize))
-                    .map_err(|error| error.to_string())
-            })
-            .collect()
+        super::cancellation::interruptible(&self.connection, || {
+            let mut statement = self
+                .connection
+                .prepare(&sql)
+                .map_err(|error| error.to_string())?;
+            let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+            let row = rows
+                .next()
+                .map_err(|error| error.to_string())?
+                .ok_or("missing count row")?;
+            columns
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    row.get::<_, i64>(index)
+                        .map(|count| (name.clone(), count as usize))
+                        .map_err(|error| error.to_string())
+                })
+                .collect()
+        })
     }
 
     pub fn distinct_values(
@@ -970,29 +972,31 @@ impl DuckDbStore {
             self.query_relation(filters_mention_rowid(filters, value_filters), &[]),
             crate::domain::slicers::MAX_UNIQUE_VALUES + 1
         );
-        let mut statement = self
-            .connection
-            .prepare(&sql)
-            .map_err(|error| error.to_string())?;
-        let mut rows = statement
-            .query(params_from_iter(parameters.iter()))
-            .map_err(|error| error.to_string())?;
-        let mut values = Vec::new();
-        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-            let value = row.get::<_, Value>(0).map_err(|error| error.to_string())?;
-            let key = crate::domain::slicers::scalar_key(value, &column.sql_type)?;
-            let label = match &key {
-                ScalarKey::Null => "(Blank)".into(),
-                ScalarKey::String(value) if value.is_empty() => "(Empty)".into(),
-                _ => row.get::<_, String>(1).map_err(|error| error.to_string())?,
-            };
-            values.push(crate::domain::slicers::SlicerValue {
-                key,
-                label,
-                available: true,
-            });
-        }
-        Ok(values)
+        super::cancellation::interruptible(&self.connection, || {
+            let mut statement = self
+                .connection
+                .prepare(&sql)
+                .map_err(|error| error.to_string())?;
+            let mut rows = statement
+                .query(params_from_iter(parameters.iter()))
+                .map_err(|error| error.to_string())?;
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+                let value = row.get::<_, Value>(0).map_err(|error| error.to_string())?;
+                let key = crate::domain::slicers::scalar_key(value, &column.sql_type)?;
+                let label = match &key {
+                    ScalarKey::Null => "(Blank)".into(),
+                    ScalarKey::String(value) if value.is_empty() => "(Empty)".into(),
+                    _ => row.get::<_, String>(1).map_err(|error| error.to_string())?,
+                };
+                values.push(crate::domain::slicers::SlicerValue {
+                    key,
+                    label,
+                    available: true,
+                });
+            }
+            Ok(values)
+        })
     }
 
     pub fn initial_row_ids(&self) -> Result<Vec<i64>, String> {
@@ -1057,10 +1061,12 @@ impl DuckDbStore {
         );
         let create_start = std::time::Instant::now();
         trace.execute("Result search and sort", &create_sql, &values, || {
-            self.connection
-                .execute(&create_sql, params_from_iter(values.iter()))
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            super::cancellation::interruptible(&self.connection, || {
+                self.connection
+                    .execute(&create_sql, params_from_iter(values.iter()))
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
         })?;
         super::performance::record("row_map_creation", create_start);
         self.collect_view_rows(table_name, row_map)
@@ -1557,20 +1563,22 @@ impl DuckDbStore {
     pub fn column_bounds(&self, column: &str) -> Result<Option<(String, String)>, String> {
         let column = self.filter_column(column)?;
         let identifier = quote_identifier(&column.storage_name);
-        self.connection
-            .query_row(
-                &format!(
-                    "SELECT CAST(min({identifier}) AS VARCHAR), CAST(max({identifier}) AS VARCHAR) FROM {}",
-                    self.table_sql
-                ),
-                [],
-                |row| {
-                    Ok(row
-                        .get::<_, Option<String>>(0)?
-                        .zip(row.get::<_, Option<String>>(1)?))
-                },
-            )
-            .map_err(|error| error.to_string())
+        super::cancellation::interruptible(&self.connection, || {
+            self.connection
+                .query_row(
+                    &format!(
+                        "SELECT CAST(min({identifier}) AS VARCHAR), CAST(max({identifier}) AS VARCHAR) FROM {}",
+                        self.table_sql
+                    ),
+                    [],
+                    |row| {
+                        Ok(row
+                            .get::<_, Option<String>>(0)?
+                            .zip(row.get::<_, Option<String>>(1)?))
+                    },
+                )
+                .map_err(|error| error.to_string())
+        })
     }
 
     fn search_predicate(

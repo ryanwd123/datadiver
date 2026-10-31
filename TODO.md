@@ -27,12 +27,6 @@ where it starts.
   there is no `source_identity` (`src/ui/dataframe_view.rs:944`). Cache the
   rows by (source id, text, engine, database revision), as `Sources` does
   for files, and use that key to detect changes.
-- [ ] **Superseded queries aren't cancelled.** `ComputationController` lets
-  the active pipeline finish even when newer input has replaced it
-  (`src/application/computation.rs`, `pipeline.rs:252`). Typing in the
-  search box over a slow pivot waits for each stale run. Interrupt the
-  store's connection (DuckDB `InterruptHandle`) when `invalidate` replaces
-  an active token.
 - [ ] **SQL statements wait while a file imports with Preserve order off.**
   To keep results ordered, `SqlExecution::execute` and query
   materialization take `SourceDatabase::keeping_order`. A long import with

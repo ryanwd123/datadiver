@@ -253,8 +253,9 @@ impl DataFrameView {
         let slicer_cache = self.slicer_stage.clone();
         let query_candidate = request.query_candidate.take();
         let pending_setup = request.pending_setup.is_some();
+        let cancellation = self.computation.cancellation();
         cx.spawn(
-            move || run_pipeline(token, request, slicer_cache),
+            move || cancellation.scope(|| run_pipeline(token, request, slicer_cache)),
             move |view: &mut Self, cx, result| view.finish_pipeline(token, query_candidate, pending_setup, result, cx),
         )
         .detach();

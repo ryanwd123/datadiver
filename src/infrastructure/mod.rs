@@ -1,4 +1,5 @@
 pub mod ai_client;
+pub mod cancellation;
 pub mod catalog;
 pub mod duckdb_store;
 pub mod file_schemas;

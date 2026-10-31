@@ -128,6 +128,9 @@ impl SlicerStage {
             (None, None) => Arc::new(SlicerCatalog::discover(&store, Some(&value_columns), &|| false)?),
         };
         let cards = catalog.cards(&store, definitions, value_filters, options);
+        // A card keeps its query's error, and the stage outlives a replaced
+        // pipeline, so an interrupted query must not become a card error.
+        crate::infrastructure::cancellation::check()?;
         Ok(Self {
             source: source.clone(),
             catalog,
@@ -607,6 +610,25 @@ mod tests {
                 .unwrap()
                 .available
         );
+    }
+
+    #[test]
+    fn a_cancelled_pipeline_keeps_no_stage_with_interrupted_cards() {
+        use crate::infrastructure::cancellation::{CANCELLED, Cancellation};
+        let source = source();
+        let definitions = [SlicerDefinition {
+            sql: false,
+            column: "sales".into(),
+            selected: Vec::new(),
+            condition: Some("20..30".into()),
+        }];
+        let cancellation = std::sync::Arc::new(Cancellation::default());
+        cancellation.cancel();
+        // The condition card's bounds query fails, which a card would keep as its error.
+        let result = cancellation.scope(|| {
+            SlicerStage::prepare(&source, &definitions, &[], SlicerOptions::default(), None, None)
+        });
+        assert_eq!(result.err().as_deref(), Some(CANCELLED));
     }
 
     #[test]
