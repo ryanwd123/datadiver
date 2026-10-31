@@ -74,8 +74,6 @@ where it starts.
   Preserve order off therefore delays SQL runs and pivots in other windows,
   and Stop can't interrupt a statement that's still waiting for the lock.
   Importing into a separate DuckDB instance would remove the wait.
-- [ ] **Minor:** `FileSchemas` never removes entries (`file_schemas.rs:39`),
-  and `columns()` clones all of them on each refresh.
 
 ## UI and UX
 

@@ -17,6 +17,8 @@ use crate::domain::sql_editor::FileSource;
 
 /// How long one DESCRIBE may run before it is stopped; sniffing a large CSV can be slow.
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How many sources stay described; the ones no script read for longest go first.
+const MAX_ENTRIES: usize = 256;
 
 /// What a file (or a glob's folder) looked like when it was described.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,20 +33,40 @@ struct Entry {
     stamp: Option<Stamp>,
     /// `None` when DESCRIBE failed; it is tried again once the file changes.
     columns: Option<Vec<ColumnInfo>>,
+    /// The refresh that last asked for it.
+    used: u64,
 }
 
 #[derive(Default)]
 pub struct FileSchemas {
     entries: HashMap<String, Entry>,
+    refreshes: u64,
 }
 
 impl FileSchemas {
-    /// Every described source's columns, by [`FileSource::key`].
-    pub fn columns(&self) -> HashMap<String, Vec<ColumnInfo>> {
-        self.entries
+    /// The columns of the described sources among `sources`, by [`FileSource::key`].
+    fn columns(&self, sources: &[FileSource]) -> HashMap<String, Vec<ColumnInfo>> {
+        sources
             .iter()
-            .filter_map(|(key, entry)| Some((key.clone(), entry.columns.clone()?)))
+            .filter_map(|source| Some((source.key.clone(), self.entries.get(&source.key)?.columns.clone()?)))
             .collect()
+    }
+
+    /// Notes that a script reads `sources` and lets go of the sources no
+    /// script read for longest once there are too many.
+    fn touch(&mut self, sources: &[FileSource]) {
+        self.refreshes += 1;
+        for source in sources {
+            if let Some(entry) = self.entries.get_mut(&source.key) {
+                entry.used = self.refreshes;
+            }
+        }
+        if self.entries.len() > MAX_ENTRIES {
+            let mut used = self.entries.values().map(|entry| entry.used).collect::<Vec<_>>();
+            used.sort_unstable();
+            let oldest_kept = used[used.len() - MAX_ENTRIES];
+            self.entries.retain(|_, entry| entry.used >= oldest_kept);
+        }
     }
 
     /// The sources not described since their file last changed, with the
@@ -148,10 +170,12 @@ pub fn refresh(
         let connection = connect()?;
         for (source, stamp) in stale {
             let columns = describe(&connection, &source.describe).ok();
-            lock()?.entries.insert(source.key, Entry { stamp, columns });
+            lock()?.entries.insert(source.key, Entry { stamp, columns, used: 0 });
         }
     }
-    Ok((lock()?.columns(), described))
+    let mut schemas = lock()?;
+    schemas.touch(sources);
+    Ok((schemas.columns(sources), described))
 }
 
 #[cfg(test)]
@@ -209,6 +233,35 @@ mod tests {
         let (columns, described) = refresh(&schemas, &sources, &roots, connect).unwrap();
         assert!(described);
         assert_eq!(names(&columns, "'a.parquet'"), ["id INTEGER", "name VARCHAR", "score DECIMAL(2,1)"]);
+    }
+
+    #[test]
+    fn keeps_the_sources_scripts_read_most_recently() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = PathRoots {
+            home: None,
+            search: vec![dir.path().to_path_buf()],
+            working: None,
+        };
+        let writer = Connection::open_in_memory().unwrap();
+        let file = |n: usize| format!("f{n}.csv");
+        for n in 0..=MAX_ENTRIES {
+            let path = dir.path().join(file(n)).display().to_string().replace('\\', "/");
+            writer.execute_batch(&format!("COPY (SELECT {n} AS id) TO '{path}'")).unwrap();
+        }
+        let schemas = Mutex::new(FileSchemas::default());
+        let connect = || connection_in(dir.path());
+        let first = file_sources(&format!("SELECT * FROM '{}'", file(0)));
+        refresh(&schemas, &first, &roots, connect).unwrap();
+        let rest = file_sources(
+            &(1..=MAX_ENTRIES).map(|n| format!("SELECT * FROM '{}'", file(n))).collect::<Vec<_>>().join(";\n"),
+        );
+        let (columns, _) = refresh(&schemas, &rest, &roots, connect).unwrap();
+        // A script sees only its own files, and the one read longest ago went.
+        assert_eq!(columns.len(), MAX_ENTRIES);
+        assert!(!columns.contains_key(&first[0].key));
+        assert_eq!(schemas.lock().unwrap().entries.len(), MAX_ENTRIES);
+        assert!(refresh(&schemas, &first, &roots, connect).unwrap().1);
     }
 
     #[test]
