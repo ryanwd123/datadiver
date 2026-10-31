@@ -481,7 +481,8 @@ impl SqlExecution {
 
     /// Runs a SQL source's script on a connection of its own and keeps every
     /// row of its last statement, for the views built on the source. The
-    /// rows are copied out, so the store outlives the connection and its
+    /// rows are kept as a table in the results database, or copied out when
+    /// DuckDB can't keep them, so the store outlives the connection and its
     /// temporary objects.
     pub fn source_rows(database: Arc<SourceDatabase>, text: &str) -> Result<DuckDbStore, String> {
         let execution = Self::new(database)?;
@@ -494,9 +495,15 @@ impl SqlExecution {
                     .execute(&text[range.clone()], 0)
                     .map_err(|error| format!("Statement {}: {error}", index + 1))?;
             }
-            match execution.execute(&text[last.clone()], u64::MAX) {
-                Ok((Some((store, _)), _)) => Ok(store),
-                Ok((None, _)) => Err("The SQL source's last statement returns no rows".to_owned()),
+            let sql = &text[last.clone()];
+            let kept = match execution.keep_all(sql) {
+                Ok(Some(store)) => Ok(Some((store, false))),
+                Ok(None) => execution.execute(sql, u64::MAX).map(|(result, _)| result),
+                Err(error) => Err(error),
+            };
+            match kept {
+                Ok(Some((store, _))) => Ok(store),
+                Ok(None) => Err("The SQL source's last statement returns no rows".to_owned()),
                 Err(error) => Err(format!("Statement {}: {error}", ranges.len())),
             }
         })();
@@ -532,19 +539,11 @@ impl SqlExecution {
             // Earlier statements are setup; only the last query keeps every row.
             let mut complete = false;
             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if index == last && is_filterable_query(sql) {
-                    match self.materialize(sql) {
-                        Ok(Some(store)) => {
-                            complete = true;
-                            return Ok((Some((store, false)), 0));
-                        }
-                        Ok(None) => {}
-                        // A query DuckDB cannot keep this way still shows its first rows.
-                        Err(error) if materialize_only_failure(&error) => {}
-                        // Anything else fails the plain run too, after running
-                        // the query a second time.
-                        Err(error) => return Err(error),
-                    }
+                if index == last
+                    && let Some(store) = self.keep_all(sql)?
+                {
+                    complete = true;
+                    return Ok((Some((store, false)), 0));
                 }
                 self.execute(sql, limit)
             }));
@@ -597,6 +596,20 @@ impl SqlExecution {
             run.status = "No SQL statement to run".into();
         }
         run
+    }
+
+    /// Keeps every row of a read-only query as a table, or returns `None`
+    /// when the rows have to be copied out instead. A query DuckDB cannot
+    /// keep this way still shows its first rows; any other error would fail
+    /// the plain run too, after running the query a second time.
+    fn keep_all(&self, sql: &str) -> Result<Option<DuckDbStore>, String> {
+        if !is_filterable_query(sql) {
+            return Ok(None);
+        }
+        match self.materialize(sql) {
+            Err(error) if materialize_only_failure(&error) => Ok(None),
+            kept => kept,
+        }
     }
 
     /// Keeps a query's whole result as a table in the shared results database,
@@ -996,9 +1009,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(dir.path());
         let text = "CREATE TEMP TABLE numbers AS SELECT range AS n FROM range(250000);\nSELECT n, n % 7 AS bucket FROM numbers";
+        let results = || {
+            database
+                .connect()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM duckdb_tables() WHERE database_name = '__dd_results'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        let before = results();
         let store = SqlExecution::source_rows(database.clone(), text).unwrap();
         assert_eq!(store.row_count(), 250_000);
         assert_eq!(store.schema()[1].name, "bucket");
+        // The rows stay in DuckDB as one table instead of being copied out.
+        assert_eq!(results(), before + 1);
+        drop(store);
+        assert_eq!(results(), before);
+        // A write's RETURNING rows can't be kept that way and are copied out.
+        let store = SqlExecution::source_rows(
+            database.clone(),
+            "CREATE TEMP TABLE t (n INTEGER);
+INSERT INTO t SELECT range FROM range(3000) RETURNING n",
+        )
+        .unwrap();
+        assert_eq!(store.row_count(), 3000);
         let error = SqlExecution::source_rows(database.clone(), "CREATE TEMP TABLE t AS SELECT 1").err().unwrap();
         assert!(error.contains("returns no rows"), "{error}");
         let error = SqlExecution::source_rows(database, "SELECT 1;\nSELECT * FROM missing").err().unwrap();
