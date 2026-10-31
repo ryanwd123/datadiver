@@ -22,20 +22,10 @@ where it starts.
 
 ## Performance
 
-- [ ] **HUGEINT results go row by row.** `SqlExecution::execute`
-  (`sql_execution.rs:714`) runs one `UPDATE … WHERE rowid = ?` per row for
-  each HUGEINT or UHUGEINT column. `sum(BIGINT)` returns HUGEINT (checked),
-  so an ordinary grouped SQL source, which always takes this path with no
-  limit (`source_rows`, `sql_execution.rs:508`), can run millions of
-  single-row updates. Cast those columns to VARCHAR in the arrow stream and
-  convert in one `INSERT … SELECT`, or materialize SQL sources with CTAS
-  like `run` does.
-- [ ] **SQL sources copy their rows twice and have no row cap.**
-  `source_rows` holds every arrow batch in memory and then appends them all
-  to a new in-memory database. That's two full copies at peak, with
-  `u64::MAX` as the limit, while file reads are now capped at the Limit. A
-  CTAS into a database the store owns would avoid the copy. Decide whether
-  the Limit applies to SQL sources too, and show a cut the same way.
+- [ ] **SQL sources have no row cap.** `source_rows` keeps every row of
+  the last statement (`u64::MAX`), while file reads are capped at the
+  Limit. Decide whether the Limit applies to SQL sources too, and show a
+  cut the same way.
 - [ ] **SQL sources run again on every open, and never refresh on their own.**
   Each navigation to a view on a SQL source runs the whole script again
   (`navigation.rs:226`, `navigation.rs:936`), including Back/Forward and
@@ -50,12 +40,6 @@ where it starts.
   search box over a slow pivot waits for each stale run. Interrupt the
   store's connection (DuckDB `InterruptHandle`) when `invalidate` replaces
   an active token.
-- [ ] **Search and sort run twice on a truncated query result.** When the
-  limit is reached, `execute_query(..., Some(view))` already applies the
-  search and sort inside the query (`pipeline.rs:850`). Then
-  `query_view_rows_traced(&view)` filters and sorts the narrowed result again
-  and builds a row map for it. Use the natural row order for the narrowed
-  store.
 - [ ] **The full SQL catalog is rebuilt after every run.** `run` calls
   `sql_catalog()` (`sql_execution.rs:593`), which re-reads every function
   (about 17 ms) and DESCRIBEs each metadata table function. `catalog()`
@@ -64,10 +48,6 @@ where it starts.
   large attached databases. Cache functions and metadata columns per
   connection (refresh after `INSTALL`/`LOAD`), rebuild relations only when
   `may_mutate` saw a change, and index relations in a `HashMap`.
-- [ ] **A UI-thread `stat` every second.** `check_source` probes in-place
-  database views on the UI thread (`src/ui/dataframe_view.rs:921`), while
-  the file branch does it on a worker. On a network share this can stall
-  the window. Move it to the worker as well.
 - [ ] **SQL statements wait while a file imports with Preserve order off.**
   To keep results ordered, `SqlExecution::execute` and query
   materialization take `SourceDatabase::keeping_order`. A long import with
@@ -77,9 +57,6 @@ where it starts.
 
 ## UI and UX
 
-- [ ] Rerunning SQL clears the search and drops the result sort
-  (`show_sql_result`, `sql_editor.rs:878`). Consider keeping both when the
-  columns are unchanged.
 - [ ] Remote files (`s3://`, `https://`) in the SQL editor are described on
   a connection that lacks the editor's secrets and settings. When that
   fails, they're never tried again (`file_schemas.rs`, `stamp` returns
