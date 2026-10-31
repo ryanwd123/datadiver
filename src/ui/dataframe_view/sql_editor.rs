@@ -965,9 +965,19 @@ FROM apples a";
 
     /// Shows a run's rows in the grid, keeping the sort when the view just opened.
     fn show_sql_result(&mut self, store: crate::infrastructure::store::Store, cx: &mut Cx<Self>) {
-        // The same SQL run again for a new Limit keeps the search and sort.
+        // The same SQL run again for a new Limit keeps the search and sort,
+        // and so does any result with the columns the last one had, such as
+        // the same query with a changed WHERE.
         let rerun = std::mem::take(&mut self.sql_limit_rerun);
-        let sort = if self.sql_restore_sort || rerun {
+        let shown = self.session.source.schema.as_ref();
+        let same_columns = !shown.is_empty()
+            && shown.len() == store.schema().len()
+            && shown
+                .iter()
+                .zip(store.schema())
+                .all(|(shown, new)| shown.name == new.name && shown.sql_type == new.sql_type);
+        let keep = rerun || same_columns;
+        let sort = if self.sql_restore_sort || keep {
             self.session.sort.clone()
         } else {
             Vec::new()
@@ -982,7 +992,7 @@ FROM apples a";
         self.query_cache = None;
         self.table_query = None;
         self.slicer_stage = None;
-        if rerun {
+        if keep {
             self.schedule_search(self.session.search_text.clone(), cx);
         } else {
             self.grid.reset_widths();

@@ -1446,6 +1446,47 @@ fn a_new_limit_runs_read_only_sql_again_and_keeps_its_search() {
 }
 
 #[test]
+fn rerun_sql_keeps_search_and_sort_while_the_columns_stay_the_same() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    let values = "(VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')) AS t(n, label)";
+    run_all_sql(&viewer, &format!("SELECT n, label FROM {values}"));
+    viewer.update(|view, cx| {
+        view.session.set_sort_direction("n".into(), true);
+        view.set_search_text("-2".into(), cx);
+    });
+    viewer.run_until_parked();
+    let shown = || {
+        viewer.read(|view| {
+            let result = &view.session.result;
+            result
+                .fetch_rows(0, result.row_count())
+                .unwrap()
+                .into_iter()
+                .map(|row| row.values[0].clone().unwrap())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(shown(), ["4", "3", "1"]);
+    // A changed WHERE returns the same columns, so the view stays as it was.
+    run_all_sql(&viewer, &format!("SELECT n, label FROM {values} WHERE n > 1"));
+    viewer.read(|view| {
+        assert_eq!(view.session.search_text, "-2");
+        assert_eq!(view.session.sort.len(), 1);
+    });
+    assert_eq!(shown(), ["4", "3"]);
+    // New columns start over.
+    run_all_sql(&viewer, &format!("SELECT n, label, n * 2 AS twice FROM {values}"));
+    viewer.read(|view| {
+        assert!(view.session.search_text.is_empty());
+        assert!(view.session.sort.is_empty());
+    });
+    assert_eq!(shown(), ["1", "2", "3", "4"]);
+}
+
+#[test]
 fn a_new_limit_leaves_sql_that_writes_for_run() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
