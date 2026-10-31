@@ -58,6 +58,8 @@ pub enum Button {
     ClearFilters,
     RemoveValueFilter(usize),
     SpaceCommand(crate::application::commands::CommandId),
+    /// A command listed in the SQL helper menu.
+    SqlHelperCommand(crate::application::commands::CommandId),
     /// A grid shortcut listed in the Helper menu.
     GridKey(crate::application::keymap::ActionId),
     RunViewAction(usize),
@@ -76,6 +78,7 @@ pub enum Button {
     SqlRun,
     SqlRunAll,
     SqlAsk,
+    SqlHelper,
     SqlStop,
     SqlClose,
     AskInsert,

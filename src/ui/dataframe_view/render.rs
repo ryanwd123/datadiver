@@ -14,6 +14,9 @@ impl DataFrameView {
     pub(crate) fn render(&mut self, canvas: &mut Canvas<Hit>, cx: &mut Cx<Self>) {
         self.frames.set(self.frames.get() + 1);
         self.sync_completion_columns();
+        if self.sql_panel_open {
+            self.update_statement_mark();
+        }
         self.drain_grid_events(cx);
         canvas.clear(colors::BACKGROUND);
         if self.keymap_editor.is_some() {
@@ -137,6 +140,11 @@ impl DataFrameView {
                 has_sort: !self.session.sort.is_empty(),
             }
             .paint(canvas, &fonts, &self.keymap);
+        }
+        if self.sql_helper_open
+            && let Some(panel) = &self.sql_panel
+        {
+            crate::ui::sql_helper_menu::paint(canvas, &fonts, &self.keymap, panel.editor_area);
         }
         if self.action_menu_open {
             let actions = self

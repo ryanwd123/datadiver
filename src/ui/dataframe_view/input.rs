@@ -149,6 +149,10 @@ impl DataFrameView {
             self.handle_space_key(event, cx);
             return true;
         }
+        if self.sql_helper_open {
+            self.handle_sql_helper_key(event, cx);
+            return true;
+        }
         let focus = self.focus;
         let sql_editor = self.sql_panel_open && self.sql_panel.as_ref().is_some_and(|panel| focus == Some(panel.editor.id));
         if sql_editor && self.sql_editor_key(event, cx) {
@@ -358,7 +362,7 @@ impl DataFrameView {
         if self.dialog.is_some() {
             return self.dialog_text(typed, cx);
         }
-        if self.space_menu_open || self.action_menu_open || self.cache_drop_open {
+        if self.space_menu_open || self.action_menu_open || self.cache_drop_open || self.sql_helper_open {
             return false;
         }
         if focus == Some(self.search_input.id) {
@@ -425,6 +429,10 @@ impl DataFrameView {
             }
             self.dialog_mouse_down(hit, pos, clicks, modifiers, cx);
             return;
+        }
+        // A click outside the SQL helper menu closes it.
+        if self.sql_helper_open && !matches!(hit, Hit::Surface | Hit::Button(Button::SqlHelperCommand(_))) {
+            self.sql_helper_open = false;
         }
         match hit {
             Hit::Grid(grid_hit) => {
@@ -509,6 +517,7 @@ impl DataFrameView {
             Button::ClearFilters => self.clear_filters(cx),
             Button::RemoveValueFilter(index) => self.remove_value_filter(index, cx),
             Button::SpaceCommand(command) => self.select_space_command(command, cx),
+            Button::SqlHelperCommand(command) => self.select_sql_helper_command(command, cx),
             Button::GridKey(action) => self.select_grid_key(action, cx),
             Button::RunViewAction(index) => self.run_view_action(index, cx),
             Button::EditViewActions => self.open_actions_editor(cx),

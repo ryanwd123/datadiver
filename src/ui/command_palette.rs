@@ -1,5 +1,5 @@
 use crate::application::commands::Command;
-use crate::application::keymap::{ACTIONS, KeymapFile};
+use crate::application::keymap::{ACTIONS, ActionId, KeyContext, KeymapFile};
 use crate::domain::keystroke::display;
 
 pub(super) const PALETTE_WIDTH: f32 = 896.0;
@@ -30,9 +30,17 @@ pub(super) fn matching_commands(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // Helper menu keys work after the key that opens the menu.
+            let chord = ACTIONS
+                .iter()
+                .any(|spec| spec.command == Some(command.id) && spec.context == KeyContext::SqlHelperMenu)
+                .then(|| keymap.bindings_for(ActionId::SqlHelperMenu, KeyContext::SqlEditor).into_iter().next())
+                .flatten()
+                .map(|(stroke, _)| format!("{} ", display(&stroke)))
+                .unwrap_or_default();
             let shortcut = strokes
                 .iter()
-                .map(|stroke| display(stroke))
+                .map(|stroke| format!("{chord}{}", display(stroke)))
                 .collect::<Vec<_>>()
                 .join(", ");
             // Both spellings match, so `ctrl-shift` and `Ctrl+Shift` find the same row.

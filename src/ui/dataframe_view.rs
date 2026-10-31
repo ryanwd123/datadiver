@@ -64,6 +64,7 @@ pub(crate) mod profiles;
 mod render;
 mod search_completion;
 mod sql_editor;
+mod sql_helper;
 #[cfg(test)]
 mod sql_tests;
 mod startup;
@@ -535,6 +536,21 @@ pub struct DataFrameView {
     /// The SQL result stopped at the row limit and the query had more rows.
     pub(crate) sql_result_truncated: bool,
     pub(crate) sql_editor_height: f32,
+    /// The SQL helper menu (Ctrl+K) is open over the editor.
+    pub(crate) sql_helper_open: bool,
+    /// Names what the run under way runs, before its status.
+    sql_run_label: Option<String>,
+    /// Where the SQL being run starts in the editor, to place its errors.
+    sql_run_start: Option<usize>,
+    /// When the run under way started.
+    sql_run_started: Option<std::time::Instant>,
+    /// The last helper command that chose a query, to take the query around
+    /// it when run again at the same place: (command, text, caret, level).
+    sql_node_repeat: Option<(CommandId, String, usize, usize)>,
+    sql_flash_revision: u64,
+    /// What the tint on the statement Ctrl+Enter runs was computed for:
+    /// (text version, caret, nothing selected).
+    sql_statement_key: Option<(u64, usize, bool)>,
     pub(crate) database_tree: DatabaseTree,
     pub(crate) database_tree_open: bool,
     pub(crate) database_tree_width: f32,
@@ -805,6 +821,13 @@ impl DataFrameView {
             sql_result_complete: false,
             sql_result_truncated: false,
             sql_editor_height: settings.sql_editor_height.unwrap_or(280.),
+            sql_helper_open: false,
+            sql_run_label: None,
+            sql_run_start: None,
+            sql_run_started: None,
+            sql_node_repeat: None,
+            sql_flash_revision: 0,
+            sql_statement_key: None,
             database_tree: DatabaseTree::new(),
             database_tree_open: settings.database_tree_open,
             database_tree_width: settings.database_tree_width.unwrap_or(280.),

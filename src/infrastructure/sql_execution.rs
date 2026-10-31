@@ -524,6 +524,16 @@ impl SqlExecution {
         Ok(RelationProfile { rows, columns })
     }
 
+    /// The number of rows a query returns, counted by DuckDB.
+    pub fn count_rows(&self, sql: &str) -> Result<u64, String> {
+        // The query goes on its own lines so a trailing comment cannot hide the `)`.
+        let body = sql.trim_end().trim_end_matches(';');
+        self.connection
+            .query_row(&format!("SELECT count(*) FROM (\n{body}\n)"), [], |row| row.get::<_, i64>(0))
+            .map(|n| n.max(0) as u64)
+            .map_err(|e| e.to_string())
+    }
+
     /// Prepares `sql` without running it, so binder errors such as a missing
     /// column surface.
     pub fn prepare_only(&self, sql: &str) -> Result<(), String> {

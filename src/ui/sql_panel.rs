@@ -24,6 +24,8 @@ pub enum SqlPanelEvent {
     Ask(SqlAsk),
     /// The ask strip opened; the view says which provider it will use.
     AskOpened,
+    /// The Helper button: open the SQL helper menu.
+    Helper,
 }
 
 /// The provider a request will go to, shown in the ask strip.
@@ -66,6 +68,8 @@ struct AskTarget {
 
 pub struct SqlPanel {
     pub editor: HostedEditor,
+    /// Where the editor was last painted; the helper menu opens over it.
+    pub editor_area: Rect,
     /// Whether the window is the active one; the caret blinks only then.
     pub window_active: bool,
     pub catalog: Arc<RwLock<SqlCatalog>>,
@@ -111,6 +115,7 @@ impl SqlPanel {
         editor.set_selection(0..0);
         Self {
             editor,
+            editor_area: Rect::default(),
             window_active: true,
             catalog,
             path_roots,
@@ -316,16 +321,21 @@ impl SqlPanel {
 
     pub fn sql_to_run(&self, all: bool) -> String {
         let text = self.editor.text();
+        text[self.sql_to_run_range(all)].to_string()
+    }
+
+    /// Where the SQL Run runs is in the text: all of it, the selection, or
+    /// the statement at the caret.
+    pub fn sql_to_run_range(&self, all: bool) -> Range<usize> {
+        let text = self.editor.text();
         if all {
-            return text;
+            return 0..text.len();
         }
         let selection = self.editor.selected_range();
         if !selection.is_empty() {
-            return text[selection].to_string();
+            return selection;
         }
-        current_statement(&text, self.editor.cursor())
-            .map(|range| text[range].to_string())
-            .unwrap_or_default()
+        current_statement(&text, self.editor.cursor()).unwrap_or(0..0)
     }
 
     /// Replaces the SQL as if the user had typed it.
@@ -420,6 +430,7 @@ impl SqlPanel {
                 Button::SqlRun => self.events.push(SqlPanelEvent::Run(false)),
                 Button::SqlRunAll => self.events.push(SqlPanelEvent::Run(true)),
                 Button::SqlAsk => self.open_ask(focus),
+                Button::SqlHelper => self.events.push(SqlPanelEvent::Helper),
                 Button::SqlStop => self.events.push(SqlPanelEvent::Stop),
                 Button::SqlClose => self.events.push(SqlPanelEvent::Close),
                 Button::AskInsert => {
@@ -546,7 +557,8 @@ impl SqlPanel {
         for (label, hit, enabled) in [
             ("Run · Ctrl+Enter", Button::SqlRun, !self.busy),
             ("Run All", Button::SqlRunAll, !self.busy),
-            ("Ask AI · Ctrl+K", Button::SqlAsk, true),
+            ("Helper · Ctrl+K", Button::SqlHelper, true),
+            ("Ask AI · Ctrl+I", Button::SqlAsk, true),
             ("Stop", Button::SqlStop, self.busy),
         ] {
             let button_rect = items.left(button_width(label, font));
@@ -567,6 +579,7 @@ impl SqlPanel {
             self.paint_ask(canvas, &mut column, fonts, focus);
         }
         let editor = column.rest();
+        self.editor_area = editor;
         let id = self.editor.id;
         let focused = focus == Some(id) && self.window_active;
         self.editor.paint(canvas, editor, &fonts.mono, focused, Hit::CodeEditor(id));

@@ -75,6 +75,10 @@ pub enum PaletteKind {
     EditorSettings,
     EditorChoice(super::editor_settings::EditorOption, Vec<Option<u8>>),
     ViewOptions,
+    /// Where each statement and CTE of the SQL editor is.
+    SqlOutline(Vec<std::ops::Range<usize>>),
+    /// Past SQL runs, newest first.
+    SqlHistory(Vec<String>),
 }
 
 pub struct PaletteDialog {
@@ -1161,6 +1165,18 @@ impl DataFrameView {
                     } else {
                         self.set_file_engine(engine, cx);
                     }
+                }
+            }
+            PaletteKind::SqlOutline(ranges) => {
+                if let Some(range) = ranges.get(index).cloned() {
+                    self.close_dialog(cx);
+                    self.go_to_sql_range(range, cx);
+                }
+            }
+            PaletteKind::SqlHistory(runs) => {
+                if let Some(sql) = runs.get(index).cloned() {
+                    self.close_dialog(cx);
+                    self.insert_sql_from_history(&sql, cx);
                 }
             }
             PaletteKind::Settings => self.confirm_setting(index, cx),

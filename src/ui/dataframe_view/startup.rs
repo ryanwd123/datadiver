@@ -334,7 +334,7 @@ impl DataFrameView {
     pub(crate) fn show_target(&mut self, target: &str, cx: &mut Cx<Self>) {
         match target {
             "editor:startup-sql" => self.navigate_to_file(FileEntry::StartupSql, false, false, false, cx),
-            "editor:sql" | "editor:sql-results" | "editor:sql-completion" | "editor:sql-hints" | "editor:sql-error" | "editor:sql-ask"
+            "editor:sql" | "editor:sql-results" | "editor:sql-completion" | "editor:sql-hints" | "editor:sql-error" | "editor:sql-helper" | "editor:sql-ask"
             | "editor:sql-ask-log" | "editor:sql-ask-mention" => self.capture_sql_editor(target, cx),
             "info" => self.open_information(cx),
             "help" => self.open_help(cx),

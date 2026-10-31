@@ -1367,6 +1367,28 @@ impl Editor {
         })
     }
 
+    /// Like [`Editor::delta_decorations`], with byte ranges of `text()`.
+    pub fn decorate(&self, old: &[DecorationId], new: Vec<(std::ops::Range<usize>, DecorationOptions)>) -> Vec<DecorationId> {
+        self.with(|s| {
+            let len = s.doc.buffer.len();
+            let new = new
+                .into_iter()
+                .map(|(r, options)| (r.start.min(len), r.end.min(len), options))
+                .collect();
+            let ids = s.decorations.delta(old, new);
+            s.invalidate();
+            ids
+        })
+    }
+
+    /// A decoration where it is now, with its options.
+    pub fn decoration(&self, id: DecorationId) -> Option<(Pos, Pos, DecorationOptions)> {
+        self.read(|s| {
+            let t = s.decorations.get(id)?;
+            Some((s.doc.buffer.pos(t.start), s.doc.buffer.pos(t.end), t.options.clone()))
+        })
+    }
+
     /// Where a decoration is now, if it still exists.
     pub fn decoration_range(&self, id: DecorationId) -> Option<(Pos, Pos)> {
         self.read(|s| {

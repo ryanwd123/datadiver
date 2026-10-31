@@ -31,10 +31,11 @@ pub enum KeyContext {
     Aggregations,
     KeymapEditor,
     SqlEditor,
+    SqlHelperMenu,
 }
 
 impl KeyContext {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Application,
         Self::Window,
         Self::Grid,
@@ -50,6 +51,7 @@ impl KeyContext {
         Self::Aggregations,
         Self::KeymapEditor,
         Self::SqlEditor,
+        Self::SqlHelperMenu,
     ];
 
     pub fn id(self) -> &'static str {
@@ -69,6 +71,7 @@ impl KeyContext {
             Self::Aggregations => "aggregations",
             Self::KeymapEditor => "keymap_editor",
             Self::SqlEditor => "sql_editor",
+            Self::SqlHelperMenu => "sql_helper_menu",
         }
     }
 
@@ -89,6 +92,7 @@ impl KeyContext {
             Self::Aggregations => "Aggregations Panel",
             Self::KeymapEditor => "Keymap Editor",
             Self::SqlEditor => "SQL Editor",
+            Self::SqlHelperMenu => "SQL Helper Menu",
         }
     }
 
@@ -104,6 +108,8 @@ impl KeyContext {
             | Self::Aggregations
             | Self::KeymapEditor
             | Self::SqlEditor => Some(Self::Application),
+            // Only its own keys work while the menu is open.
+            Self::SqlHelperMenu => None,
             Self::TableSpaceMenu | Self::QuerySpaceMenu => Some(Self::SpaceMenu),
             Self::Application => Some(Self::Window),
             Self::Window => None,
@@ -277,6 +283,33 @@ pub enum ActionId {
     SqlToggleWordWrap,
     SqlInsertLineBelow,
     SqlInsertLineAbove,
+    SqlHelperMenu,
+    SqlGoToDefinition,
+    SqlFindReferences,
+    SqlRename,
+    SqlHelperAskAi,
+    SqlHelperExtractCte,
+    SqlHelperRunQuery,
+    SqlHelperFormat,
+    SqlHelperInlineCte,
+    SqlHelperWrapQuery,
+    SqlHelperExpandStar,
+    SqlHelperCollapseStar,
+    SqlHelperCountRows,
+    SqlHelperPeek,
+    SqlHelperDescribe,
+    SqlHelperExplain,
+    SqlHelperExplainAnalyze,
+    SqlHelperGroupBy,
+    SqlHelperJoinOn,
+    SqlHelperToggleLimit,
+    SqlHelperPasteInList,
+    SqlHelperPasteValues,
+    SqlHelperOutline,
+    SqlHelperHistory,
+    SqlHelperKeywordCase,
+    SqlHelperCopyOneLine,
+    SqlHelperPipelineCounts,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -290,10 +323,11 @@ pub enum ActionCategory {
     Application,
     SpaceMenu,
     SqlEditor,
+    SqlHelperMenu,
 }
 
 impl ActionCategory {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Navigation,
         Self::Selection,
         Self::DataExploration,
@@ -303,6 +337,7 @@ impl ActionCategory {
         Self::Application,
         Self::SpaceMenu,
         Self::SqlEditor,
+        Self::SqlHelperMenu,
     ];
 
     pub fn label(self) -> &'static str {
@@ -316,6 +351,7 @@ impl ActionCategory {
             Self::Application => "Application",
             Self::SpaceMenu => "Helper menu",
             Self::SqlEditor => "SQL editor",
+            Self::SqlHelperMenu => "SQL helper menu: Ctrl+K, then",
         }
     }
 }
@@ -337,7 +373,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Ask AI for SQL",
         context: KeyContext::SqlEditor,
         command: Some(CommandId::AskSql),
-        default_bindings: &["ctrl-k", "ctrl-i"],
+        default_bindings: &["ctrl-i"],
     },
     ActionSpec {
         id: ActionId::RunSql,
@@ -570,6 +606,222 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::SqlEditor,
         command: Some(CommandId::SqlInsertLineAbove),
         default_bindings: &[],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperMenu,
+        category: ActionCategory::SqlEditor,
+        name: "SQL helper menu",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlHelperMenu),
+        default_bindings: &["ctrl-k"],
+    },
+    ActionSpec {
+        id: ActionId::SqlGoToDefinition,
+        category: ActionCategory::SqlEditor,
+        name: "Go to definition",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlGoToDefinition),
+        default_bindings: &["f12"],
+    },
+    ActionSpec {
+        id: ActionId::SqlFindReferences,
+        category: ActionCategory::SqlEditor,
+        name: "Find uses",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlFindReferences),
+        default_bindings: &["shift-f12"],
+    },
+    ActionSpec {
+        id: ActionId::SqlRename,
+        category: ActionCategory::SqlEditor,
+        name: "Rename",
+        context: KeyContext::SqlEditor,
+        command: Some(CommandId::SqlRename),
+        default_bindings: &["f2"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperAskAi,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Ask AI for SQL",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::AskSql),
+        default_bindings: &["a"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperExtractCte,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Move query to a CTE",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlExtractCte),
+        default_bindings: &["c"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperRunQuery,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Run the query at the caret",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlRunQuery),
+        default_bindings: &["t"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperFormat,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Format SQL",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlFormat),
+        default_bindings: &["f"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperInlineCte,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Inline CTE",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlInlineCte),
+        default_bindings: &["i"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperWrapQuery,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Wrap in SELECT * FROM (…)",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlWrapQuery),
+        default_bindings: &["w"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperExpandStar,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Expand * into columns",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlExpandStar),
+        default_bindings: &["e"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperCollapseStar,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Collapse columns into *",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlCollapseStar),
+        default_bindings: &["shift-e"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperCountRows,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Count rows",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlCountRows),
+        default_bindings: &["n"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperPeek,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Peek at table or CTE",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlPeek),
+        default_bindings: &["p"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperDescribe,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Describe table or CTE",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlDescribe),
+        default_bindings: &["d"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperExplain,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Explain",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlExplain),
+        default_bindings: &["x"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperExplainAnalyze,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Explain analyze",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlExplainAnalyze),
+        default_bindings: &["shift-x"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperGroupBy,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Add or switch GROUP BY",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlGroupBy),
+        default_bindings: &["g"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperJoinOn,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Fill in JOIN … ON",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlJoinOn),
+        default_bindings: &["j"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperToggleLimit,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Add or remove LIMIT",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlToggleLimit),
+        default_bindings: &["l"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperPasteInList,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Paste as IN list",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlPasteInList),
+        default_bindings: &["v"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperPasteValues,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Paste as VALUES table",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlPasteValues),
+        default_bindings: &["shift-v"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperOutline,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Go to CTE or statement",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlOutline),
+        default_bindings: &["o"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperHistory,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Query history",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlHistory),
+        default_bindings: &["h"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperKeywordCase,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Change keyword case",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlKeywordCase),
+        default_bindings: &["u"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperCopyOneLine,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Copy as one-line string",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlCopyOneLine),
+        default_bindings: &["y"],
+    },
+    ActionSpec {
+        id: ActionId::SqlHelperPipelineCounts,
+        category: ActionCategory::SqlHelperMenu,
+        name: "Row counts of each CTE",
+        context: KeyContext::SqlHelperMenu,
+        command: Some(CommandId::SqlPipelineCounts),
+        default_bindings: &["r"],
     },
     ActionSpec {
         id: ActionId::Back,

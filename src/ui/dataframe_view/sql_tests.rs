@@ -998,7 +998,7 @@ fn ask_ai_writes_checked_sql_and_tab_inserts_it() {
     // Without a provider, the strip says where to add one.
     let end = sql_text(&viewer).len();
     place(&viewer, &sql_text(&viewer), end..end);
-    viewer.press("ctrl-k");
+    viewer.press("ctrl-i");
     assert!(panel(&viewer, |panel| panel.ask_open));
     assert!(ask_focused(&viewer));
     viewer.render();
@@ -1064,7 +1064,7 @@ fn ask_ai_writes_checked_sql_and_tab_inserts_it() {
     });
 
     // Escape closes the strip and returns to the editor.
-    viewer.press("ctrl-k");
+    viewer.press("ctrl-i");
     viewer.render();
     viewer.press("escape");
     assert!(!panel(&viewer, |panel| panel.ask_open));
@@ -1844,4 +1844,126 @@ fn deleting_sql_permanently_asks_first_from_the_command_tree_and_archive() {
     confirm(&viewer);
     assert!(repository.load_archives().0.is_empty());
     viewer.read(|view| assert!(matches!(&view.dialog, Some(Dialog::Palette(dialog)) if matches!(dialog.kind, PaletteKind::Recovery(_)))));
+}
+
+fn status(viewer: &Viewer) -> String {
+    panel(viewer, |panel| panel.status.clone())
+}
+
+fn marks(viewer: &Viewer, kind: crate::ui::widgets::hosted_editor::MarkKind) -> Vec<(std::ops::Range<usize>, Option<String>, Option<String>)> {
+    panel(viewer, |panel| panel.editor.marks(kind))
+}
+
+#[test]
+fn ctrl_k_opens_the_helper_menu_and_c_moves_the_query_to_a_named_cte() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    place(&viewer, "select *\nfrom range(3)", 0..0);
+    press(&viewer, "ctrl-k");
+    assert!(viewer.read(|view| view.sql_helper_open));
+    viewer.render();
+    assert!(viewer.find(|hit| *hit == Hit::Button(Button::SqlHelperCommand(CommandId::SqlExtractCte))).is_some());
+    assert!(viewer.find(|hit| *hit == Hit::Button(Button::SqlHelperCommand(CommandId::AskSql))).is_some());
+    press(&viewer, "c");
+    assert!(!viewer.read(|view| view.sql_helper_open));
+    assert_eq!(
+        sql_text(&viewer),
+        "with cte_name as (\n    select *\n    from range(3)\n)\nselect\n    *\nfrom cte_name"
+    );
+    // The placeholder name is typed once and changes in both places.
+    assert!(panel(&viewer, |panel| panel.editor.in_tab_stops()));
+    viewer.input("numbers");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert!(!panel(&viewer, |panel| panel.editor.in_tab_stops()));
+    assert_eq!(
+        sql_text(&viewer),
+        "with numbers as (\n    select *\n    from range(3)\n)\nselect\n    *\nfrom numbers"
+    );
+    assert_eq!(sql_config(&viewer).text, sql_text(&viewer));
+    // Escape closes the menu without running anything.
+    press(&viewer, "ctrl-k");
+    press(&viewer, "escape");
+    assert!(!viewer.read(|view| view.sql_helper_open));
+    assert!(editor_focused(&viewer));
+}
+
+#[test]
+fn helper_runs_a_cte_with_what_it_reads_and_counts_rows() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    let sql = "with a as (select range as x from range(4)),\nb as (select x * 2 as y from a where x > 0)\nselect count(*) from b";
+    let caret = sql.find("x * 2").unwrap();
+    place(&viewer, sql, caret..caret);
+    press(&viewer, "ctrl-k");
+    press(&viewer, "t");
+    viewer.read(|view| {
+        assert_eq!(view.session.result.columns[0].0, "y");
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    assert!(status(&viewer).starts_with("CTE b · "), "{}", status(&viewer));
+    // The editor's SQL is unchanged.
+    assert_eq!(sql_text(&viewer), sql);
+
+    press(&viewer, "ctrl-k");
+    press(&viewer, "n");
+    assert_eq!(status(&viewer), "CTE b has 3 rows");
+
+    // Row counts after each CTE and the query, until the SQL changes.
+    press(&viewer, "ctrl-k");
+    press(&viewer, "r");
+    let after: Vec<Option<String>> = marks(&viewer, crate::ui::widgets::hosted_editor::MarkKind::Counts)
+        .into_iter()
+        .map(|(_, _, after)| after)
+        .collect();
+    assert_eq!(after, [Some("→ 4 rows".into()), Some("→ 3 rows".into()), Some("→ 1 row".into())]);
+    viewer.input(" ");
+    viewer.run_until_parked();
+    assert!(marks(&viewer, crate::ui::widgets::hosted_editor::MarkKind::Counts).is_empty());
+
+    // Every run is in the history, newest first.
+    press(&viewer, "ctrl-k");
+    press(&viewer, "h");
+    viewer.read(|view| match &view.dialog {
+        Some(Dialog::Palette(dialog)) => match &dialog.kind {
+            PaletteKind::SqlHistory(runs) => assert!(runs[0].contains("x * 2 as y"), "{runs:?}"),
+            _ => panic!("not the history"),
+        },
+        _ => panic!("no history"),
+    });
+}
+
+#[test]
+fn a_failed_run_underlines_where_duckdb_says() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    let sql = "select 1;\nselect nope\nfrom range(2)";
+    place(&viewer, sql, 0..0);
+    press(&viewer, "ctrl-shift-enter");
+    let marks = marks(&viewer, crate::ui::widgets::hosted_editor::MarkKind::RunError);
+    let at = sql.find("nope").unwrap();
+    assert_eq!(marks.len(), 1, "{:?}", panel(&viewer, |panel| panel.error.clone()));
+    assert_eq!(marks[0].0, at..at + 4);
+    assert!(marks[0].1.as_deref().is_some_and(|hover| hover.contains("nope")));
+    assert_eq!(panel(&viewer, |panel| panel.editor.cursor()), at);
+}
+
+#[test]
+fn f12_goes_to_a_cte_and_f2_renames_it_everywhere() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    let sql = "with a as (select 1 x) select a.x from a";
+    let caret = sql.rfind('a').unwrap();
+    place(&viewer, sql, caret..caret);
+    press(&viewer, "f12");
+    assert_eq!(panel(&viewer, |panel| panel.editor.selected_range()), 5..6);
+    press(&viewer, "f2");
+    assert!(panel(&viewer, |panel| panel.editor.in_tab_stops()));
+    viewer.input("totals");
+    viewer.run_until_parked();
+    assert_eq!(sql_text(&viewer), "with totals as (select 1 x) select totals.x from totals");
 }

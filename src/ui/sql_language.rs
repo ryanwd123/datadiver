@@ -205,6 +205,25 @@ impl LanguageService for SqlLanguage {
                 .collect(),
         )
     }
+
+    fn definition(&self, text: &str, at: usize) -> Option<Range<usize>> {
+        diver_sql::definition(text, offset(at)).map(range)
+    }
+
+    fn references(&self, text: &str, at: usize) -> Vec<Range<usize>> {
+        diver_sql::references(text, offset(at)).into_iter().map(range).collect()
+    }
+
+    fn rename(&self, text: &str, at: usize) -> Result<Vec<Range<usize>>, String> {
+        let uses = diver_sql::references(text, offset(at));
+        let Some(definition) = diver_sql::definition(text, offset(at)) else {
+            return Err("Nothing to rename here: tables and their columns come from the database".into());
+        };
+        if !diver_sql::is_renamable(text, definition) {
+            return Err("This column comes from a table: give it an alias to rename it".into());
+        }
+        Ok(uses.into_iter().map(range).collect())
+    }
 }
 
 #[cfg(test)]

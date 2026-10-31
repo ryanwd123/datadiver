@@ -169,6 +169,29 @@ impl DataFrameView {
             CommandId::RunAction => self.open_action_menu(cx),
             CommandId::EditActions => self.open_actions_editor(cx),
             CommandId::AiProviders => self.open_ai_settings(cx),
+            CommandId::SqlHelperMenu => self.open_sql_helper(cx),
+            CommandId::SqlExtractCte
+            | CommandId::SqlRunQuery
+            | CommandId::SqlFormat
+            | CommandId::SqlInlineCte
+            | CommandId::SqlWrapQuery
+            | CommandId::SqlExpandStar
+            | CommandId::SqlCollapseStar
+            | CommandId::SqlCountRows
+            | CommandId::SqlPeek
+            | CommandId::SqlDescribe
+            | CommandId::SqlExplain
+            | CommandId::SqlExplainAnalyze
+            | CommandId::SqlGroupBy
+            | CommandId::SqlJoinOn
+            | CommandId::SqlToggleLimit
+            | CommandId::SqlPasteInList
+            | CommandId::SqlPasteValues
+            | CommandId::SqlOutline
+            | CommandId::SqlHistory
+            | CommandId::SqlKeywordCase
+            | CommandId::SqlCopyOneLine
+            | CommandId::SqlPipelineCounts => self.sql_helper_command(id, cx),
             CommandId::RunSql => self.run_sql(false, cx),
             CommandId::RunAllSql => self.run_sql(true, cx),
             CommandId::SqlToggleLineComment
@@ -197,7 +220,10 @@ impl DataFrameView {
             | CommandId::SqlUnfoldAll
             | CommandId::SqlToggleWordWrap
             | CommandId::SqlInsertLineBelow
-            | CommandId::SqlInsertLineAbove => {}
+            | CommandId::SqlInsertLineAbove
+            | CommandId::SqlGoToDefinition
+            | CommandId::SqlFindReferences
+            | CommandId::SqlRename => {}
             CommandId::AskSql => {
                 // Asking needs an editor; without SQL to edit it starts a source.
                 if self.session.is_sql() || self.session.working.as_ref().is_some_and(|d| d.sql_source.is_some()) {

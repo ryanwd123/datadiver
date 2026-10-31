@@ -40,6 +40,9 @@ pub(crate) fn sql_editor_action(id: CommandId) -> Option<code_editor::Action> {
         CommandId::SqlToggleWordWrap => Action::ToggleWordWrap,
         CommandId::SqlInsertLineBelow => Action::InsertLineBelow,
         CommandId::SqlInsertLineAbove => Action::InsertLineAbove,
+        CommandId::SqlGoToDefinition => Action::GoToDefinition,
+        CommandId::SqlFindReferences => Action::FindReferences,
+        CommandId::SqlRename => Action::Rename,
         _ => return None,
     })
 }
@@ -169,6 +172,22 @@ FROM apples a";
             panel.editor.type_text(",");
             panel.editor.diagnostics();
             focus = Some(panel.editor.id);
+        }
+        if target == "editor:sql-helper"
+            && let Some(panel) = &mut self.sql_panel
+        {
+            let text = "WITH ranked AS (
+    SELECT color, quantity, rank() OVER (ORDER BY quantity DESC) AS place
+    FROM apples
+)
+SELECT *
+FROM ranked
+WHERE place <= 2";
+            let offset = text.find("quantity,").unwrap();
+            panel.editor.set_text(text);
+            panel.editor.set_selection(offset..offset);
+            focus = Some(panel.editor.id);
+            self.sql_helper_open = true;
         }
         self.set_focus(focus, cx);
         self.handle_sql_panel_events(cx);
@@ -416,6 +435,10 @@ FROM apples a";
     fn handle_sql_panel_event(&mut self, event: SqlPanelEvent, cx: &mut Cx<Self>) {
         match event {
             SqlPanelEvent::Changed(text) => {
+                // Row counts were for the SQL as it was.
+                if let Some(panel) = &mut self.sql_panel {
+                    panel.editor.set_marks(crate::ui::widgets::hosted_editor::MarkKind::Counts, Vec::new());
+                }
                 self.session.set_sql_text(text);
                 self.schedule_auto_save(cx);
                 self.schedule_file_schemas(cx);
@@ -436,6 +459,7 @@ FROM apples a";
                 cx.notify();
             }
             SqlPanelEvent::GridFocus => self.focus_grid(cx),
+            SqlPanelEvent::Helper => self.open_sql_helper(cx),
             SqlPanelEvent::Ask(ask) => self.ask_sql(&ask, cx),
             SqlPanelEvent::AskOpened => {
                 let provider = self.repository.load_settings().ok().and_then(|settings| {
@@ -735,6 +759,8 @@ FROM apples a";
             return;
         };
         let text = panel.sql_to_run(all);
+        self.sql_run_start = Some(panel.sql_to_run_range(all).start);
+        self.sql_run_label = None;
         self.sql_limit_rerun = false;
         self.run_sql_text(text, cx);
     }
@@ -772,13 +798,17 @@ FROM apples a";
         }
         let text = text.clone();
         self.sql_limit_rerun = true;
+        self.sql_run_start = None;
+        self.sql_run_label = None;
         self.run_sql_text(text, cx);
     }
 
-    fn run_sql_text(&mut self, text: String, cx: &mut Cx<Self>) {
+    pub(crate) fn run_sql_text(&mut self, text: String, cx: &mut Cx<Self>) {
         if text.trim().is_empty() {
             return;
         }
+        self.clear_sql_run_marks();
+        self.sql_run_started = Some(Instant::now());
         if self.sql_engine() == Engine::Polars {
             self.run_polars_sql(text, cx);
             return;
@@ -832,15 +862,28 @@ FROM apples a";
                                 );
                             }
                         }
+                        let label = view.sql_run_label.take();
                         if let Some(panel) = &mut view.sql_panel {
                             panel.editor.refresh_language();
                             panel.busy = false;
-                            panel.status = run.status;
-                            panel.error = run.error;
+                            panel.status = match &label {
+                                Some(label) => format!("{label} · {}", run.status),
+                                None => run.status,
+                            };
+                            panel.error = run.error.clone();
                         }
+                        if let (Some(error), Some(start)) = (&run.error, view.sql_run_start.take()) {
+                            view.mark_sql_error(&script, start, error);
+                        }
+                        let shown = run.result.is_some();
                         if let Some(store) = run.result.take() {
-                            view.sql_result_script = Some((revision, Engine::DuckDb, script));
+                            view.sql_result_script = Some((revision, Engine::DuckDb, script.clone()));
                             view.show_sql_result(store.into(), cx);
+                        }
+                        let rows = shown.then(|| view.session.source.row_count() as u64);
+                        let elapsed = view.sql_run_started.take().map(|t| t.elapsed()).unwrap_or_default();
+                        if !view.sql_limit_rerun {
+                            view.record_sql_run(script, Engine::DuckDb, elapsed, rows, run.error, cx);
                         }
                     }
                     Err(error) => {
@@ -941,19 +984,29 @@ FROM apples a";
                     }
                     Err(error) => (None, false, String::new(), Some(error)),
                 };
+                let label = view.sql_run_label.take();
+                view.sql_run_start = None;
                 if let Some(panel) = &mut view.sql_panel {
                     panel.busy = false;
                     if !status.is_empty() {
-                        panel.status = status;
+                        panel.status = match label {
+                            Some(label) => format!("{label} · {status}"),
+                            None => status,
+                        };
                     }
-                    panel.error = error;
+                    panel.error = error.clone();
+                }
+                let elapsed = view.sql_run_started.take().map(|t| t.elapsed()).unwrap_or_default();
+                let rows = result.as_ref().map(|store| store.row_count() as u64);
+                if !view.sql_limit_rerun {
+                    view.record_sql_run(script.clone(), Engine::Polars, elapsed, rows, error, cx);
                 }
                 if let Some(store) = result {
                     // Polars keeps every row up to the limit, so slicers and
                     // filters see them all unless it cut the result.
                     view.sql_result_complete = !truncated;
                     view.sql_result_truncated = truncated;
-                    view.sql_result_script = Some((revision, Engine::Polars, script));
+                    view.sql_result_script = Some((revision, Engine::Polars, script.clone()));
                     view.show_sql_result(store.into(), cx);
                 }
                 cx.notify();

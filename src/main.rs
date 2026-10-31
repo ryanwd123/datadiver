@@ -94,6 +94,7 @@ fn main() {
                             | "editor:sql-completion"
                             | "editor:sql-hints"
                             | "editor:sql-error"
+                            | "editor:sql-helper"
                             | "editor:sql-ask"
                             | "editor:sql-ask-log"
                             | "editor:sql-ask-mention"

@@ -3,10 +3,14 @@
 //! editor the keys, text, and mouse input that fall to it.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use code_editor::{Action, Chord, CompletionProvider, Editor, Event, LanguageService, Mods, Options, Theme};
+use code_editor::{
+    Action, Chord, CompletionProvider, DecorationId, DecorationOptions, Editor, Event, LanguageService, Mods, Options,
+    Theme,
+};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
@@ -16,9 +20,24 @@ use crate::infrastructure::json_store::EditorSettings;
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
 use crate::ui::platform::{Canvas, Cursor, Font, Point, Rect, rect};
 
+/// Kinds of marks the host puts on the text; setting a kind replaces its
+/// earlier marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MarkKind {
+    /// Where the last run failed.
+    RunError,
+    /// The statement Ctrl+Enter runs.
+    Statement,
+    /// Row counts after CTEs.
+    Counts,
+    /// The query a helper command acts on, shown for a moment.
+    Flash,
+}
+
 pub struct HostedEditor {
     pub id: WidgetId,
     editor: Editor,
+    marks: HashMap<MarkKind, Vec<DecorationId>>,
     /// Set by the editor when its text changes; read with [`Self::take_changed`].
     changed: Rc<Cell<bool>>,
     /// Where the editor was last painted, in window DIPs.
@@ -57,6 +76,7 @@ impl HostedEditor {
         Self {
             id: WidgetId::new(),
             editor,
+            marks: HashMap::new(),
             changed,
             bounds: Rect::default(),
             font: None,
@@ -97,6 +117,61 @@ impl HostedEditor {
     /// Replaces `range` as one undo step, as an edit by the user.
     pub fn replace(&mut self, range: Range<usize>, text: &str) {
         self.editor.replace_range(range, text);
+    }
+
+    /// Applies a rewrite as one undo step and selects its tab stops.
+    pub fn apply_rewrite(&mut self, rewrite: &diver_sql::Rewrite) {
+        let old = self.text();
+        let (range, text) = rewrite.edit(&old);
+        let span = |r: diver_sql::TextRange| usize::from(r.start())..usize::from(r.end());
+        let stops = rewrite.stops.iter().map(|group| group.iter().map(|r| span(*r)).collect()).collect();
+        self.editor.replace_with_stops(span(range), &text, stops);
+    }
+
+    /// Counts edits, for noticing that the text changed.
+    pub fn version(&self) -> u64 {
+        self.editor.version()
+    }
+
+    /// Whether linked tab stops (a new name, a rename) are being typed.
+    pub fn in_tab_stops(&self) -> bool {
+        self.editor.in_tab_stops()
+    }
+
+    /// The tooltip showing now, such as Go to Definition's message.
+    pub fn tooltip(&self) -> Option<String> {
+        self.editor.tooltip()
+    }
+
+    /// One level of indentation, as the user's settings indent.
+    pub fn indent_unit(&self) -> String {
+        if self.settings.insert_spaces {
+            " ".repeat(usize::from(self.settings.tab_size.clamp(1, 16)))
+        } else {
+            "\t".into()
+        }
+    }
+
+    /// Replaces the marks of `kind` with `marks`, byte ranges of the text.
+    pub fn set_marks(&mut self, kind: MarkKind, marks: Vec<(Range<usize>, DecorationOptions)>) {
+        let old = self.marks.remove(&kind).unwrap_or_default();
+        let ids = self.editor.decorate(&old, marks);
+        self.marks.insert(kind, ids);
+    }
+
+    /// The marks of `kind` where they are now, as byte ranges with their hover text.
+    pub fn marks(&self, kind: MarkKind) -> Vec<(Range<usize>, Option<String>, Option<String>)> {
+        let text = self.text();
+        let offset = |p: code_editor::Pos| {
+            text.split_inclusive('\n').take(p.line).map(str::len).sum::<usize>() + p.col
+        };
+        self.marks
+            .get(&kind)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.editor.decoration(*id))
+            .map(|(start, end, options)| (offset(start)..offset(end), options.hover, options.after))
+            .collect()
     }
 
     /// Whether the text changed since the last call.

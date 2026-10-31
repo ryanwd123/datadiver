@@ -7,6 +7,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 type HistoryLocks = std::collections::HashMap<PathBuf, Weak<Mutex<()>>>;
 static HISTORY_LOCKS: OnceLock<Mutex<HistoryLocks>> = OnceLock::new();
+/// Serializes appends to the SQL history, which every window writes.
+static SQL_HISTORY_LOCK: Mutex<()> = Mutex::new(());
+
+/// How many runs the SQL history keeps.
+const SQL_HISTORY_LIMIT: usize = 500;
+
+/// One run of SQL from an editor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SqlHistoryEntry {
+    pub sql: String,
+    pub engine: String,
+    pub ran_at_unix_ms: u128,
+    pub elapsed_ms: u64,
+    /// Rows of the result, when the run showed one.
+    pub rows: Option<u64>,
+    pub error: Option<String>,
+}
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -410,6 +427,23 @@ impl ViewRepository {
             ));
         }
         atomic_json(&self.paths.config.join("theme.json"), theme)
+    }
+
+    /// Past SQL runs, oldest first.
+    pub fn load_sql_history(&self) -> io::Result<Vec<SqlHistoryEntry>> {
+        read_json_or_default(&self.paths.data.join("sql_history.json"))
+    }
+
+    /// Adds a run to the SQL history, dropping the oldest past the limit. The
+    /// same SQL run again moves to the end instead of appearing twice.
+    pub fn append_sql_history(&self, entry: SqlHistoryEntry) -> io::Result<()> {
+        let _guard = SQL_HISTORY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut history = self.load_sql_history().unwrap_or_default();
+        history.retain(|old| old.sql.trim() != entry.sql.trim());
+        history.push(entry);
+        let excess = history.len().saturating_sub(SQL_HISTORY_LIMIT);
+        history.drain(..excess);
+        atomic_json(&self.paths.data.join("sql_history.json"), &history)
     }
 
     pub fn load_history(&self) -> io::Result<ApplicationHistory> {
