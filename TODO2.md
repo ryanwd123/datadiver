@@ -1,10 +1,3 @@
-### Updates to "space" menu
-I want to change the name of the space menu to be called Helper Menu, and the idea with that menu is that it provides you with the shortcut keys that are available to use on the data grid, as well as some additional shortcut keys that you can use quickly from the space menu that are not available from the data grid.
-
-So can you update the space menu to call it Helper Menu? And also in the Helper Menu, can you have one section at the top that has the shortcut keys that are available on the data grid, and then that'll make it easy to learn those keys, even though the Helper Menu doesn't need to be visible for those keys to work.
-
-Then in the bottom section of the Helper Menu, show the different commands that are available when the Helper Menu is showing. 
-
 ### Text editor features
 - show helper menu with ctrl-k
     - Currently, Control-K brings up the Ask AI panel. We will change that to be corded. So when you press Ctrl K, then in the helper menu that shows up, we will put A with Ask AI. 

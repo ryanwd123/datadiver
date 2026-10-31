@@ -1,4 +1,4 @@
-//! Commands from the keymap, the palette, and the Space menu.
+//! Commands from the keymap, the palette, and the Helper menu.
 
 use super::*;
 use crate::application::keymap::{ACTIONS as KEYMAP_ACTIONS, ActionId, canonical_keystroke};
@@ -244,6 +244,8 @@ impl DataFrameView {
             ActionId::ToggleThousandsGrouping | ActionId::IncreaseDecimalPrecision | ActionId::DecreaseDecimalPrecision => {
                 self.grid.change_numeric_format(action)
             }
+            ActionId::IncreaseColumnWidth => self.grid.change_width(true),
+            ActionId::DecreaseColumnWidth => self.grid.change_width(false),
             ActionId::MoveColumnLeft => self.change_table_column(Some(-1), cx),
             ActionId::MoveColumnRight => self.change_table_column(Some(1), cx),
             ActionId::RemoveActiveGroupColumn => self.remove_active_group_column(cx),
@@ -265,6 +267,12 @@ impl DataFrameView {
         self.space_menu_open = false;
         self.dispatch_command(id, cx);
         cx.notify();
+    }
+
+    /// Runs a grid shortcut clicked in the Helper menu, as if its key were pressed.
+    pub(crate) fn select_grid_key(&mut self, action: ActionId, cx: &mut Cx<Self>) {
+        self.space_menu_open = false;
+        self.dispatch_keymap_action(action, cx);
     }
 
     pub(crate) fn handle_space_key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) {

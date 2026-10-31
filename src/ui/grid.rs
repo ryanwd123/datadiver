@@ -514,7 +514,7 @@ impl GridView {
     }
 
     /// Widens or narrows every column in the selection.
-    fn change_width(&mut self, increase: bool) {
+    pub(crate) fn change_width(&mut self, increase: bool) {
         let Some(selection) = self.selection else {
             return;
         };

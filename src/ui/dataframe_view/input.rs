@@ -509,6 +509,7 @@ impl DataFrameView {
             Button::ClearFilters => self.clear_filters(cx),
             Button::RemoveValueFilter(index) => self.remove_value_filter(index, cx),
             Button::SpaceCommand(command) => self.select_space_command(command, cx),
+            Button::GridKey(action) => self.select_grid_key(action, cx),
             Button::RunViewAction(index) => self.run_view_action(index, cx),
             Button::EditViewActions => self.open_actions_editor(cx),
             Button::CacheDropBrowse => {

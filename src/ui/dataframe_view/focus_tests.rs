@@ -1918,6 +1918,28 @@ fn space_menu_is_scoped_to_grid_and_unknown_keys_leave_it_open() {
     assert!(!viewer.read(|view| view.space_menu_open));
 }
 
+#[test]
+fn helper_menu_lists_grid_keys_that_run_when_clicked() {
+    use crate::application::keymap::ActionId;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "right space");
+    // Grid keys are listed, but not cursor movement or the menu's own key.
+    assert!(has_button(&viewer, Button::GridKey(ActionId::ToggleThousandsGrouping)));
+    assert!(has_button(&viewer, Button::GridKey(ActionId::MoveColumnRight)));
+    assert!(!has_button(&viewer, Button::GridKey(ActionId::MoveDown)));
+    assert!(!has_button(&viewer, Button::GridKey(ActionId::Space)));
+    assert!(has_button(&viewer, Button::SpaceCommand(CommandId::Copy)));
+    let grouping = numeric_format(&viewer, "sales").unwrap().grouping;
+    click_button(&viewer, Button::GridKey(ActionId::ToggleThousandsGrouping));
+    assert!(!viewer.read(|view| view.space_menu_open));
+    assert_eq!(numeric_format(&viewer, "sales").unwrap().grouping, !grouping);
+    let width = column_width(&viewer, "sales");
+    press(&viewer, "space");
+    click_button(&viewer, Button::GridKey(ActionId::IncreaseColumnWidth));
+    assert_eq!(column_width(&viewer, "sales"), width + 10.);
+}
+
 fn frozen_count(viewer: &Viewer) -> usize {
     viewer.read(|view| view.session.effective_table_config().frozen_count)
 }

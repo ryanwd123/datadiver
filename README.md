@@ -45,7 +45,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Reuse your work:** save views, open favorites with **Ctrl+1–9**, go back and forward through history, undo view changes, and restore the previous session.
 - **Copy and export:** copy cells as TSV, CSV, JSON, or Python lists, or export the displayed result to CSV, Parquet, JSON, or Excel.
 - **Look things up:** view actions open a web page, internal site, or program for the active row.
-- **Work from the keyboard:** a searchable command palette, a Space menu, and a Keymap Editor for custom shortcuts.
+- **Work from the keyboard:** a searchable command palette, a Helper menu (**Space**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
 - **Make it comfortable:** themes, grid and editor fonts, font size, and independent windows.
 
 ## Install
@@ -115,7 +115,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Shortcut | Action |
 | --- | --- |
 | / | Search |
-| Space | Open the Space menu |
+| Space | Open the Helper menu |
 | G / A / P / O | Group By / Aggregations / Pivot By / Order By |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
@@ -137,7 +137,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Ctrl+Shift+C | Copy as… |
 | Ctrl+V | Open table from clipboard |
 
-**Space menu** (press **Space**, then the key)
+**Helper menu** (press **Space**, then the key). The menu also lists the grid keys above, so it doubles as a reminder of them; click any entry to run it.
 
 | Key | Action |
 | --- | --- |

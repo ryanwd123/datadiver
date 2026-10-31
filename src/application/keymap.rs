@@ -80,9 +80,9 @@ impl KeyContext {
             Self::TableGrid => "Table Grid",
             Self::QueryGrid => "Query Grid",
             Self::Search => "Search",
-            Self::SpaceMenu => "Space Menu",
-            Self::TableSpaceMenu => "Table Space Menu",
-            Self::QuerySpaceMenu => "Query Space Menu",
+            Self::SpaceMenu => "Helper Menu",
+            Self::TableSpaceMenu => "Table Helper Menu",
+            Self::QuerySpaceMenu => "Query Helper Menu",
             Self::FilePicker => "File Picker",
             Self::GroupBy => "Group By Panel",
             Self::PivotBy => "Pivot By Panel",
@@ -235,6 +235,7 @@ pub enum ActionId {
     SpaceToggleTotals,
     SpaceToggleHeatmap,
     SpaceRunAction,
+    SpaceReload,
     FilterToValue,
     ExcludeValue,
     DrillDown,
@@ -313,7 +314,7 @@ impl ActionCategory {
             Self::CopyExport => "Copy & export",
             Self::FilesViews => "Files & views",
             Self::Application => "Application",
-            Self::SpaceMenu => "Space menu",
+            Self::SpaceMenu => "Helper menu",
             Self::SqlEditor => "SQL editor",
         }
     }
@@ -838,7 +839,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         id: ActionId::Space,
         category: ActionCategory::Application,
-        name: "Open Space menu",
+        name: "Open Helper menu",
         context: KeyContext::Grid,
         command: Some(CommandId::Space),
         default_bindings: &["space"],
@@ -1468,6 +1469,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         command: Some(CommandId::RunAction),
         default_bindings: &["x"],
     },
+    ActionSpec {
+        id: ActionId::SpaceReload,
+        category: ActionCategory::SpaceMenu,
+        name: "Reload",
+        context: KeyContext::TableSpaceMenu,
+        command: Some(CommandId::Reload),
+        default_bindings: &["r"],
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1804,6 +1813,13 @@ mod tests {
                 assert_eq!(map.binding_for(stroke, context), None);
             }
         }
+    }
+
+    #[test]
+    fn helper_menu_reloads_tables_with_r() {
+        let map = KeymapFile::default();
+        assert_eq!(map.binding_for("r", KeyContext::TableSpaceMenu), Some(ActionId::SpaceReload));
+        assert_eq!(map.binding_for("r", KeyContext::QuerySpaceMenu), None);
     }
 
     #[test]

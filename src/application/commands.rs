@@ -369,7 +369,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::Space,
         key: "space",
-        label: "Space menu",
+        label: "Helper menu",
         default_binding: Some("space"),
     },
     Command {
