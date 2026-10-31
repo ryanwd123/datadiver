@@ -19,6 +19,7 @@ pub enum CompletionKind {
     Class,
     Module,
     Constant,
+    Snippet,
 }
 
 impl CompletionKind {
@@ -33,6 +34,7 @@ impl CompletionKind {
             CompletionKind::Class => "T",
             CompletionKind::Module => "m",
             CompletionKind::Constant => "#",
+            CompletionKind::Snippet => "s",
         }
     }
 }
@@ -56,6 +58,8 @@ pub struct CompletionItem {
     /// Orders items that match equally well, and the whole list before
     /// anything is typed (lower first; items without one go last).
     pub sort_text: Option<String>,
+    /// `insert_text` is a snippet: `${1:name}` placeholders become linked tab stops.
+    pub snippet: bool,
 }
 
 impl CompletionItem {

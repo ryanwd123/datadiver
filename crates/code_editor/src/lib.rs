@@ -56,6 +56,7 @@ pub mod search;
 pub mod selection;
 pub mod service;
 pub mod syntax;
+pub mod tabstops;
 pub mod text;
 pub mod theme;
 pub mod view;
@@ -115,6 +116,9 @@ pub struct Options {
     pub hover: bool,
     /// Underline the language service's problems.
     pub diagnostics: bool,
+    /// Pin the first lines of the folds the top line is in, such as a CTE's
+    /// `name AS (`, while scrolled through them.
+    pub sticky_scroll: bool,
 }
 
 impl Default for Options {
@@ -145,6 +149,7 @@ impl Default for Options {
             parameter_hints: true,
             hover: true,
             diagnostics: true,
+            sticky_scroll: true,
         }
     }
 }

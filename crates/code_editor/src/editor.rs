@@ -196,6 +196,12 @@ pub(crate) struct State {
     diagnostics: Vec<DecorationId>,
     /// The signature popup, while it is open.
     pub signature: Option<SignatureHelp>,
+    /// Linked tab stops, while a snippet or rename is being filled in.
+    pub tab_stops: Option<crate::tabstops::TabStops>,
+    /// Uses of a name Find References highlights, until the next edit.
+    pub references: Vec<(usize, usize)>,
+    /// The lines pinned at the top at the last paint.
+    pub sticky: Vec<usize>,
 }
 
 impl State {
@@ -253,6 +259,9 @@ impl State {
             host_folds: None,
             diagnostics: Vec::new(),
             signature: None,
+            tab_stops: None,
+            references: Vec::new(),
+            sticky: Vec::new(),
         })
     }
 
@@ -628,6 +637,30 @@ impl State {
         }
     }
 
+    /// The first lines of the folds the top rows are in, outermost first and
+    /// at most three, to pin over those rows.
+    pub fn sticky_lines(&mut self) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        if !self.opts.sticky_scroll || self.view.scroll_y <= 0.0 || self.view.line_h <= 0.0 {
+            return out;
+        }
+        let lh = self.view.line_h;
+        let top = self.rows.line_of_row(self.view.line_at(0.0)).0;
+        let regions = self.fold_regions(0, top);
+        while out.len() < 3 {
+            let probe = self.rows.line_of_row(self.view.line_at(out.len() as f32 * lh)).0;
+            let next = regions
+                .iter()
+                .filter(|(h, e)| *h < probe && *e >= probe && out.last().is_none_or(|l| h > l))
+                .min_by_key(|(h, _)| *h);
+            match next {
+                Some(&(h, _)) => out.push(h),
+                None => break,
+            }
+        }
+        out
+    }
+
     /// The service's fold ranges for the current text, asked once per version.
     fn host_fold_ranges(&mut self) -> Option<Rc<[std::ops::Range<usize>]>> {
         let service = self.service.clone()?;
@@ -794,6 +827,7 @@ impl State {
     }
 
     fn caret_moved(&mut self) {
+        self.check_tab_stops();
         self.fx.reset_blink = true;
         self.fx.ime = true;
         self.caret_on = true;
@@ -851,6 +885,7 @@ impl State {
         }
         self.decorations.apply(&changes);
         self.tooltip = None;
+        self.references.clear();
         if self.service.is_some() && !changes.is_empty() {
             self.fx.diagnose = true;
         }
@@ -1135,6 +1170,9 @@ impl State {
             let len = self.doc.buffer.len();
             let start = range.start.min(len);
             let end = range.end.max(head).min(len);
+            if item.snippet {
+                return self.insert_snippet(start..end, &insert);
+            }
             let tx = Transaction::new(vec![Edit::new(start, end, insert.clone())]);
             let caret = start + insert.len();
             let sels = Selections::single(Selection::cursor(caret));
@@ -1151,6 +1189,10 @@ impl State {
         let prefix = self.doc.buffer.slice(self.suggest.word_start, head);
         let insert = item.insert_text.unwrap_or(item.label);
         self.close_suggest();
+        if item.snippet {
+            let start = if self.doc.buffer.slice(head.saturating_sub(n), head) == prefix { head - n } else { head };
+            return self.insert_snippet(start..head, &insert);
+        }
         let b = &self.doc.buffer;
         let o = commands::per_selection(&self.doc.sels, |s| {
             let h = s.head;
@@ -1933,6 +1975,20 @@ impl State {
         {
             return r;
         }
+        if self.tab_stops.is_some() && self.focus == Focus::Text && !chord.ctrl && !chord.alt {
+            use windows::Win32::UI::Input::KeyboardAndMouse::*;
+            match VIRTUAL_KEY(chord.key) {
+                VK_TAB => {
+                    self.next_stop(!chord.shift);
+                    return KeyResult::Handled;
+                }
+                VK_RETURN | VK_ESCAPE if !chord.shift => {
+                    self.finish_stops();
+                    return KeyResult::Handled;
+                }
+                _ => {}
+            }
+        }
         match self.keymap.lookup(chord) {
             Some(Binding::Action(Action::ContextMenu)) => KeyResult::ContextMenu,
             // Escape with nothing to close or collapse is the host's.
@@ -1952,7 +2008,8 @@ impl State {
 
     /// Whether Escape has something to do: an overlay, extra carets, a selection.
     fn can_cancel(&self) -> bool {
-        self.goto.is_some()
+        !self.references.is_empty()
+            || self.goto.is_some()
             || self.find.open
             || self.signature.is_some()
             || self.doc.sels.len() > 1
@@ -2013,6 +2070,7 @@ impl State {
                 self.edit(o, EditKind::Other);
             }
             Action::Undo => {
+                self.end_tab_stops();
                 if !self.opts.read_only
                     && let Some(ch) = self.doc.undo()
                 {
@@ -2020,6 +2078,7 @@ impl State {
                 }
             }
             Action::Redo => {
+                self.end_tab_stops();
                 if !self.opts.read_only
                     && let Some(ch) = self.doc.redo()
                 {
@@ -2042,6 +2101,10 @@ impl State {
             Action::FindNext => self.find_next(true),
             Action::FindPrevious => self.find_next(false),
             Action::GoToLine => self.open_goto(),
+            Action::Cancel if !self.references.is_empty() => {
+                self.references.clear();
+                self.invalidate();
+            }
             Action::Cancel if self.goto.is_some() => self.goto_close(false),
             Action::Cancel if self.signature.is_some() => self.close_signature(),
             Action::Cancel if self.find.open => self.close_find(),
@@ -2101,6 +2164,9 @@ impl State {
                 self.edit(o, EditKind::Other);
             }
             Action::ExpandSelection => self.expand_selection(),
+            Action::GoToDefinition => self.go_to_definition(),
+            Action::FindReferences => self.find_references(),
+            Action::Rename => self.rename(),
             Action::ShrinkSelection => {
                 if let Some(prev) = self.select_stack.pop() {
                     self.doc.set_selections(prev);
@@ -2310,6 +2376,20 @@ impl State {
                 self.drag = Some(Drag::Gutter { anchor: r });
                 self.set_sels(Selections::single(sel));
             }
+            Region::Text if y < self.sticky.len() as f32 * self.view.line_h => {
+                // A pinned line: go to it.
+                let line = self.sticky[(y / self.view.line_h) as usize];
+                let b = &self.doc.buffer;
+                let text = b.line(line);
+                let off = b.line_start(line) + (text.len() - text.trim_start().len());
+                self.set_sels(Selections::single(Selection::cursor(off)));
+                self.reveal(true);
+            }
+            Region::Text if mods.ctrl && !mods.shift && !mods.alt && clicks == 1 => {
+                let off = self.hit(x, y);
+                self.set_sels(Selections::single(Selection::cursor(off)));
+                self.go_to_definition();
+            }
             Region::Text => {
                 let off = self.hit(x, y);
                 let unit = match clicks {
@@ -2346,6 +2426,54 @@ impl State {
                 }
                 self.set_sels(sels);
             }
+        }
+    }
+
+    /// Shows `msg` in a tooltip under the caret.
+    fn caret_message(&mut self, msg: &str) {
+        let (x, y, _) = self.caret_point();
+        self.tooltip = Some((x, y, msg.to_string()));
+        self.invalidate();
+    }
+
+    fn go_to_definition(&mut self) {
+        let Some(service) = self.service.clone() else { return };
+        let text = self.snapshot();
+        match service.definition(&text, self.doc.sels.primary().head) {
+            Some(r) => {
+                self.set_sels(Selections::single(Selection::new(r.start, r.end)));
+                self.reveal(true);
+            }
+            None => self.caret_message("No definition here: tables and their columns come from the database"),
+        }
+    }
+
+    fn find_references(&mut self) {
+        let Some(service) = self.service.clone() else { return };
+        let text = self.snapshot();
+        let refs = service.references(&text, self.doc.sels.primary().head);
+        if refs.is_empty() {
+            return self.caret_message("No uses found here");
+        }
+        let n = refs.len();
+        self.references = refs.into_iter().map(|r| (r.start, r.end)).collect();
+        self.caret_message(&format!("{n} {} · Esc clears", if n == 1 { "place" } else { "places" }));
+    }
+
+    fn rename(&mut self) {
+        let Some(service) = self.service.clone() else { return };
+        let text = self.snapshot();
+        let head = self.doc.sels.primary().head;
+        match service.rename(&text, head) {
+            Ok(mut ranges) if !ranges.is_empty() => {
+                // The caret's own range is the primary selection.
+                if let Some(i) = ranges.iter().position(|r| r.start <= head && head <= r.end) {
+                    ranges.swap(0, i);
+                }
+                self.start_tab_stops(vec![ranges]);
+            }
+            Ok(_) => self.caret_message("Nothing to rename here"),
+            Err(message) => self.caret_message(&message),
         }
     }
 
@@ -2831,7 +2959,7 @@ fn ranged_start(items: &[CompletionItem]) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::commands::tests::{parse, show};
 

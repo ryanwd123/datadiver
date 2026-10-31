@@ -697,6 +697,7 @@ impl crate::editor::State {
                 CompletionKind::Class | CompletionKind::Module => Ink::Type,
                 CompletionKind::Constant => Ink::Constant,
                 CompletionKind::Text => Ink::WidgetDim,
+                CompletionKind::Snippet => Ink::Control,
             };
             r.text(rt, it.kind.icon(), &f.suggest_center, fr.l + 4.0, y, fr.l + icon_w, y + row_h, icon);
             // The label comes first; the detail gets the room left after it,
@@ -927,6 +928,10 @@ impl crate::editor::State {
         } else {
             Vec::new()
         };
+        let sticky = self.sticky_lines();
+        let sticky_layouts: Vec<Rc<LineLayout>> = sticky.iter().map(|&l| self.layout_of(l)).collect();
+        self.sticky = sticky.clone();
+        let stops = self.tab_stop_marks();
         let segs: Vec<Seg> = spans
             .iter()
             .map(|&(row, line, a, b)| {
@@ -1020,6 +1025,22 @@ impl crate::editor::State {
                     r.fill(rt, x0, y, x1, y + lh, Ink::WordHighlight);
                 }
             }
+            for &(a, e) in &self.references {
+                for (x0, x1, y) in range_rects(a, e) {
+                    r.fill(rt, x0, y, x1, y + lh, Ink::FindMatch);
+                }
+            }
+            // Tab stops: the current group filled, the others outlined.
+            for &(a, e, current) in &stops {
+                for (x0, x1, y) in range_rects(a, e) {
+                    let x1 = x1.max(x0 + 1.0);
+                    if current {
+                        r.fill(rt, x0, y, x1, y + lh, Ink::Placeholder);
+                    } else {
+                        r.stroke(rt, x0 + 0.5, y + 0.5, x1 - 0.5, y + lh - 0.5, 1.0, Ink::Placeholder);
+                    }
+                }
+            }
             // Selections; a selection running past a line end shows a sliver.
             let sel_ink = if self.focused { Ink::Selection } else { Ink::SelectionInactive };
             for s in sels.iter().filter(|s| !s.is_empty()) {
@@ -1052,6 +1073,17 @@ impl crate::editor::State {
                 r.fill(rt, x0, s.y + 3.0, x1, s.y + lh - 3.0, Ink::FoldedBg);
                 if let Some(f) = &r.fonts {
                     r.text(rt, "\u{22EF}", &f.ui_center, x0, s.y, x1, s.y + lh, Ink::FoldIcon);
+                }
+            }
+            // Text a decoration shows after its line.
+            if let Some(f) = &r.fonts {
+                for d in &decos {
+                    let Some(after) = &d.options.after else { continue };
+                    let line = buf.line_of(d.end);
+                    if let Some(s) = segs.iter().find(|s| s.line == line && s.last) {
+                        let x = text_x + s.lay.width + char_w * 2.0;
+                        r.text(rt, after, &f.ui, x, s.y, w, s.y + lh, Ink::Hint);
+                    }
                 }
             }
             // Squiggles under decorated ranges.
@@ -1138,6 +1170,25 @@ impl crate::editor::State {
                         r.fill_argb(rt, 2.0, s.y + 2.0, 5.0, s.y + lh - 2.0, c);
                     }
                 }
+            }
+
+            // Pinned lines over the top rows, with a rule under them.
+            if !sticky.is_empty() {
+                let bottom = sticky.len() as f32 * lh;
+                r.fill(rt, 0.0, 0.0, w, bottom, Ink::Bg);
+                for (i, (&line, lay)) in sticky.iter().zip(&sticky_layouts).enumerate() {
+                    let y = i as f32 * lh;
+                    if let Some(f) = &r.fonts
+                        && v.line_numbers
+                    {
+                        r.text(rt, &(line + 1).to_string(), &f.numbers, 0.0, y, v.numbers_w(), y + lh, Ink::LineNumber);
+                    }
+                    rt.PushAxisAlignedClip(&rect(gutter_w, 0.0, w, h), D2D1_ANTIALIAS_MODE_ALIASED);
+                    r.draw_line(rt, lay, text_x, y);
+                    rt.PopAxisAlignedClip();
+                }
+                r.fill(rt, 0.0, bottom, w, bottom + 3.0, Ink::Shadow);
+                r.line(rt, 0.0, bottom + 0.5, w, bottom + 0.5, 1.0, Ink::WidgetBorder);
             }
 
             // Overlay scrollbars.

@@ -1463,6 +1463,34 @@ impl Editor {
         self.with(|s| s.set_zoom(z));
     }
 
+    /// Replaces a byte range as one undo step, then selects `stops`, byte
+    /// ranges of the new text: each group is selected together and edited
+    /// as one, and Tab moves to the next group.
+    pub fn replace_with_stops(&self, range: std::ops::Range<usize>, text: &str, stops: Vec<Vec<std::ops::Range<usize>>>) {
+        self.with(|s| s.replace_with_stops(range, text, stops));
+    }
+
+    /// Inserts a snippet (`${1:name}` tab stops, `$0` for the end) in place
+    /// of a byte range.
+    pub fn insert_snippet(&self, range: std::ops::Range<usize>, snippet: &str) {
+        self.with(|s| s.insert_snippet(range, snippet));
+    }
+
+    /// Whether linked tab stops are being filled in.
+    pub fn in_tab_stops(&self) -> bool {
+        self.read(|s| s.tab_stops.is_some())
+    }
+
+    /// The text in the tooltip under the caret or mouse, if one shows.
+    pub fn tooltip(&self) -> Option<String> {
+        self.read(|s| s.tooltip.as_ref().map(|t| t.2.clone()))
+    }
+
+    /// The lines pinned over the top rows at the last paint.
+    pub fn sticky_lines(&self) -> Vec<usize> {
+        self.read(|s| s.sticky.clone())
+    }
+
     /// Scrolls so `line` (0-based) is visible, centered when it is far away.
     pub fn reveal_line(&self, line: usize) {
         self.with(|s| {

@@ -42,6 +42,8 @@ pub struct DecorationOptions {
     pub gutter_marker: Option<u32>,
     /// Shown when the mouse rests on the range.
     pub hover: Option<String>,
+    /// Dimmed text after the end of the range's last line.
+    pub after: Option<String>,
     pub stickiness: Stickiness,
 }
 

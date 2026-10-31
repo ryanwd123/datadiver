@@ -39,6 +39,10 @@ pub enum Ink {
     Error,
     Warning,
     Info,
+    /// Tab stops being filled in.
+    Placeholder,
+    /// Text the editor shows after a line, such as a host's result for it.
+    Hint,
     // Syntax tokens.
     Keyword,
     Control,
@@ -95,6 +99,8 @@ impl Ink {
         Ink::Error,
         Ink::Warning,
         Ink::Info,
+        Ink::Placeholder,
+        Ink::Hint,
         Ink::Keyword,
         Ink::Control,
         Ink::String,
@@ -145,13 +151,15 @@ impl Ink {
             "error" => Ink::Error,
             "warning" => Ink::Warning,
             "info" => Ink::Info,
+            "placeholder" => Ink::Placeholder,
+            "hint" => Ink::Hint,
             _ => return name.rsplit_once('.').and_then(|(p, _)| Ink::from_name(p)),
         };
         Some(ink)
     }
 }
 
-pub const INK_COUNT: usize = 51;
+pub const INK_COUNT: usize = 53;
 
 /// A color to paint text or a background with: a theme ink, or a host color
 /// (ARGB) from a decoration.
@@ -232,6 +240,8 @@ fn dark(ink: Ink) -> u32 {
         Ink::Error => 0xFFF14C4C,
         Ink::Warning => 0xFFCCA700,
         Ink::Info => 0xFF3794FF,
+        Ink::Placeholder => 0x40569CD6,
+        Ink::Hint => 0xFF8C8C8C,
         Ink::Keyword => 0xFF569CD6,
         Ink::Control => 0xFFC586C0,
         Ink::String => 0xFFCE9178,
@@ -288,6 +298,8 @@ fn light(ink: Ink) -> u32 {
         Ink::Error => 0xFFE51400,
         Ink::Warning => 0xFFBF8803,
         Ink::Info => 0xFF1A85FF,
+        Ink::Placeholder => 0x334A90E2,
+        Ink::Hint => 0xFF8A8A8A,
         Ink::Keyword => 0xFF0000FF,
         Ink::Control => 0xFFAF00DB,
         Ink::String => 0xFFA31515,

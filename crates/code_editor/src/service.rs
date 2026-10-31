@@ -62,4 +62,20 @@ pub trait LanguageService {
     fn selection_ranges(&self, _text: &str, _offset: usize) -> Option<Vec<Range<usize>>> {
         None
     }
+
+    /// Where the name at `offset` is defined, for Go to Definition.
+    fn definition(&self, _text: &str, _offset: usize) -> Option<Range<usize>> {
+        None
+    }
+
+    /// Every use of what the name at `offset` refers to, its definition included.
+    fn references(&self, _text: &str, _offset: usize) -> Vec<Range<usize>> {
+        Vec::new()
+    }
+
+    /// The ranges Rename edits together for the name at `offset`, or why it
+    /// can't be renamed.
+    fn rename(&self, _text: &str, _offset: usize) -> Result<Vec<Range<usize>>, String> {
+        Err("Nothing to rename here".into())
+    }
 }

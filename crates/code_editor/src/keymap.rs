@@ -79,6 +79,12 @@ pub enum Action {
     FoldAll,
     UnfoldAll,
     ToggleWordWrap,
+    /// Selects where the name at the caret is defined.
+    GoToDefinition,
+    /// Highlights every use of the name at the caret.
+    FindReferences,
+    /// Selects every use of the name at the caret, to type a new name.
+    Rename,
 }
 
 /// A key with modifiers.
@@ -284,6 +290,9 @@ const DEFAULTS: &[(u16, bool, bool, bool, Action)] = {
         (k(VK_OEM_4), true, true, false, Fold),
         (k(VK_OEM_6), true, true, false, Unfold),
         (ch(b'Z'), false, false, true, ToggleWordWrap),
+        (k(VK_F12), false, false, false, GoToDefinition),
+        (k(VK_F12), false, true, false, FindReferences),
+        (k(VK_F2), false, false, false, Rename),
     ]
 };
 
