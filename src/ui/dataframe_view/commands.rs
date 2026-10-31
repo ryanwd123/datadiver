@@ -14,7 +14,7 @@ impl DataFrameView {
     /// Why slicers and value filters are off for this SQL result, if they are.
     pub(crate) fn sql_filters_unavailable(&self) -> Option<&'static str> {
         (self.session.is_sql() && !self.sql_result_complete).then_some(
-            "Slicers and = / - filters need the script's last statement to be a query              (SELECT, WITH, FROM, VALUES, PIVOT, DESCRIBE), run outside a transaction",
+            "Slicers and = / - filters need the script's last statement to be a query (SELECT, WITH, FROM, VALUES, PIVOT, DESCRIBE), run outside a transaction",
         )
     }
 
