@@ -111,6 +111,7 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                     kind: CompletionKind::Text,
                     range: Some(item.range),
                     sort_text: None,
+                    snippet: false,
                 })
                 .collect();
         }
@@ -137,7 +138,7 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 cx.text[start..cx.offset].trim_start_matches('"').to_lowercase()
             })
             .unwrap_or_default();
-        items
+        let mut out: Vec<CompletionItem> = items
             .into_iter()
             .filter(|item| !quoted || item.label.trim_matches('"').to_lowercase().contains(&typed))
             .enumerate()
@@ -150,8 +151,22 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 insert_text: Some(item.insert_text),
                 label: item.label,
                 retrigger: false,
+                snippet: false,
             })
-            .collect()
+            .collect();
+        // Snippets follow what was typed, after everything else.
+        if !quoted && !cx.prefix.is_empty() {
+            out.extend(SNIPPETS.iter().map(|(label, detail, body)| CompletionItem {
+                label: (*label).to_owned(),
+                insert_text: Some((*body).to_owned()),
+                detail: Some((*detail).to_owned()),
+                kind: CompletionKind::Snippet,
+                sort_text: Some(format!("9999{label}")),
+                snippet: true,
+                ..Default::default()
+            }));
+        }
+        out
     }
 
     fn trigger_characters(&self) -> Vec<char> {
@@ -170,6 +185,25 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
         false
     }
 }
+
+/// Snippets the SQL editor offers: (label, description, body). Tab moves
+/// through the `${n:…}` fields; the same number is one field typed in twice.
+const SNIPPETS: &[(&str, &str, &str)] = &[
+    ("sel", "select … from …", "select\n    ${1:*}\nfrom ${2:table}$0"),
+    ("join", "join … on …", "join ${1:table} ${2:alias} on $0"),
+    (
+        "case",
+        "case when … end",
+        "case\n    when ${1:condition} then ${2:value}\n    else ${3:other}\nend$0",
+    ),
+    (
+        "window",
+        "… over (partition by … order by …)",
+        "${1:sum}(${2:column}) over (partition by ${3:group} order by ${4:sort})$0",
+    ),
+    ("pivot", "pivot … on … using …", "pivot ${1:table}\non ${2:column}\nusing ${3:sum}(${4:value})$0"),
+    ("cte", "with … as (…) select", "with ${1:name} as (\n    $0\n)\nselect * from $1"),
+];
 
 fn completion_kind(kind: diver_sql::ItemKind) -> code_editor::CompletionKind {
     use code_editor::CompletionKind;
