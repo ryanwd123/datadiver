@@ -640,7 +640,27 @@ fn export_reruns_a_truncated_query_without_the_limit() {
     });
     open(&viewer, FileEntry::View(query));
     assert_eq!(column_values(&viewer).len(), 2);
+    let years = || {
+        column_values(&viewer)
+            .into_iter()
+            .map(|year| year.unwrap())
+            .collect::<Vec<_>>()
+    };
+    // Search and sort run inside the query, so they reach rows past the limit.
     search(&viewer, "-2004");
+    assert_eq!(years(), ["2000", "2008"]);
+    viewer.update(|view, cx| {
+        view.session.set_sort_direction("year".into(), true);
+        view.schedule_search(view.session.search_text.clone(), cx);
+    });
+    viewer.run_until_parked();
+    assert_eq!(years(), ["2012", "2008"]);
+    viewer.update(|view, cx| {
+        view.session.set_sort_direction("year".into(), false);
+        view.schedule_search(view.session.search_text.clone(), cx);
+    });
+    viewer.run_until_parked();
+    assert_eq!(years(), ["2000", "2008"]);
 
     let target = home.path().join("years.json");
     assert_eq!(export_to(&viewer, &target).as_deref(), Some("Exported 3 rows to years.json"));

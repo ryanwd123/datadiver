@@ -883,12 +883,17 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
                 None
             };
             drop(pivot_store);
-            let shown = narrowed.as_ref().unwrap_or(&pivot_source);
+            // The narrowed result is already searched and sorted, so its own
+            // row order is the display order.
+            let (shown, shown_view) = match &narrowed {
+                Some(narrowed) => (narrowed, ViewQuery::default()),
+                None => (&pivot_source, view),
+            };
             let rows = shown
                 .store
                 .lock()
                 .map_err(|_| "DuckDB query store lock poisoned".to_owned())?
-                .query_view_rows_traced(&view, &mut trace)?;
+                .query_view_rows_traced(&shown_view, &mut trace)?;
             let snapshot = ResultSnapshot::from_view(shown, rows, schema, 0, token.request_revision);
             snapshot.prefetch_page(0)?;
             return Ok::<_, String>((snapshot, Some(pivot_source), Some(sort), None));
