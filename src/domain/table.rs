@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ops::RangeInclusive;
 
 use crate::domain::documents::TableConfig;
 
@@ -65,26 +66,38 @@ fn visible_positions(config: &TableConfig, order: &[String]) -> Vec<usize> {
         .collect()
 }
 
-/// Moves visible column `active` past its visible neighbour. `order` is the full
-/// resolved order, so hidden columns keep their places. Returns the new visible index.
-pub fn move_column(
+/// Moves the visible columns in `columns` one place left or right as a block,
+/// past their visible neighbour. `order` is the full resolved order, so hidden
+/// columns keep their places. Returns the block's new visible indices.
+pub fn move_columns(
     config: &mut TableConfig,
     order: &[String],
-    active: usize,
+    columns: RangeInclusive<usize>,
     direction: isize,
-) -> Option<usize> {
+) -> Option<RangeInclusive<usize>> {
     let visible = visible_positions(config, order);
-    let from = *visible.get(active)?;
-    let destination = active.checked_add_signed(direction)?;
-    let to = *visible.get(destination)?;
+    let (start, end) = (*columns.start(), *columns.end());
+    let first = start.checked_add_signed(direction.min(0))?;
+    let last = end.checked_add_signed(direction.max(0))?;
+    let positions = visible.get(first..=last)?;
     let frozen = config.frozen_count.min(order.len());
-    if (from < frozen) != (to < frozen) {
+    if positions.iter().any(|position| (*position < frozen) != (positions[0] < frozen)) {
         return None;
     }
+    // The neighbour trades sides with the block; every name stays on one of
+    // the same positions.
+    let mut names: Vec<String> = positions.iter().map(|position| order[*position].clone()).collect();
+    if direction < 0 {
+        names.rotate_left(1);
+    } else {
+        names.rotate_right(1);
+    }
     let mut order = order.to_vec();
-    order.swap(from, to);
+    for (position, name) in positions.iter().zip(names) {
+        order[*position] = name;
+    }
     config.column_order = order;
-    Some(destination)
+    Some(start.checked_add_signed(direction)?..=end.checked_add_signed(direction)?)
 }
 
 /// Freezes or unfreezes visible column `active`; `order` is the full resolved order.
@@ -176,8 +189,8 @@ mod tests {
             ..Default::default()
         };
         let columns = vec!["a".into(), "b".into(), "c".into()];
-        assert_eq!(move_column(&mut config, &columns, 1, -1), None);
-        assert_eq!(move_column(&mut config, &columns, 1, 1), Some(2));
+        assert_eq!(move_columns(&mut config, &columns, 1..=1, -1), None);
+        assert_eq!(move_columns(&mut config, &columns, 1..=1, 1), Some(2..=2));
         assert_eq!(config.column_order, vec!["a", "c", "b"]);
     }
 
@@ -191,9 +204,28 @@ mod tests {
         assert_eq!(visible_order(&available, &config), vec!["a", "c", "d"]);
         let order = resolved_order(&available, &config);
         // Visible "a" swaps with its visible neighbour "c"; hidden "b" stays put.
-        assert_eq!(move_column(&mut config, &order, 0, 1), Some(1));
+        assert_eq!(move_columns(&mut config, &order, 0..=0, 1), Some(1..=1));
         assert_eq!(config.column_order, vec!["c", "b", "a", "d"]);
-        assert_eq!(move_column(&mut config, &order, 2, 1), None);
+        assert_eq!(move_columns(&mut config, &order, 2..=2, 1), None);
+    }
+
+    #[test]
+    fn selected_columns_move_as_a_block() {
+        let mut config = TableConfig {
+            hidden: vec!["c".into()],
+            ..Default::default()
+        };
+        let order: Vec<String> = ["a", "b", "c", "d", "e"].map(String::from).to_vec();
+        // Visible a, b, d, e; "b" and "d" move right past "e", hidden "c" stays put.
+        assert_eq!(move_columns(&mut config, &order, 1..=2, 1), Some(2..=3));
+        assert_eq!(config.column_order, vec!["a", "e", "c", "b", "d"]);
+        let order = config.column_order.clone();
+        assert_eq!(move_columns(&mut config, &order, 2..=3, 1), None);
+        assert_eq!(move_columns(&mut config, &order, 2..=3, -1), Some(1..=2));
+        assert_eq!(config.column_order, vec!["a", "b", "c", "d", "e"]);
+        let order = config.column_order.clone();
+        config.frozen_count = 1;
+        assert_eq!(move_columns(&mut config, &order, 1..=2, -1), None);
     }
 
     #[test]

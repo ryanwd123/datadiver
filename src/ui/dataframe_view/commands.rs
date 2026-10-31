@@ -919,11 +919,13 @@ impl DataFrameView {
         };
         let mut config = self.session.effective_table_config();
         let order = config.column_order.clone();
-        let destination = match direction {
-            Some(direction) => crate::domain::table::move_column(&mut config, &order, selection.active.column, direction),
-            None => crate::domain::table::toggle_frozen(&mut config, &order, selection.active.column),
+        let changed = match direction {
+            Some(direction) => {
+                crate::domain::table::move_columns(&mut config, &order, selection.rectangle().1, direction).is_some()
+            }
+            None => crate::domain::table::toggle_frozen(&mut config, &order, selection.active.column).is_some(),
         };
-        if destination.is_none() {
+        if !changed {
             return;
         }
         if self.session.working.is_none() {
@@ -958,8 +960,10 @@ impl DataFrameView {
             self.session.token().request_revision,
         );
         self.session.result = result.clone();
+        let (scroll_x, row_offset) = (self.grid.scroll_x, self.grid.row_offset());
         self.grid.replace_result(result);
         self.sync_frozen_count();
+        self.grid.restore_view_centering_selection(scroll_x, row_offset);
         self.autosave_table_preferences(cx);
         self.sync_grid_widths(cx);
         if had_pending {

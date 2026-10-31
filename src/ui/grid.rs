@@ -234,31 +234,43 @@ impl GridView {
             .collect();
     }
 
+    /// Changes the format of every numeric column in the selection.
     pub fn change_numeric_format(&mut self, action: ActionId) {
         let Some(selection) = self.selection else {
             return;
         };
-        let column = selection.active.column;
-        let Some(mut format) = self.formats.get(column).copied().flatten() else {
-            return;
-        };
-        let previous = format;
-        match action {
-            ActionId::ToggleThousandsGrouping => format.grouping = !format.grouping,
-            ActionId::IncreaseDecimalPrecision => {
-                format.precision = format.precision.saturating_add(1).min(38)
+        let (_, columns) = selection.rectangle();
+        // Grouping toggles to one shared state, led by the active column when
+        // it has a format, so a mixed selection ends up consistent.
+        let grouping = !self
+            .formats
+            .get(selection.active.column)
+            .copied()
+            .flatten()
+            .or_else(|| columns.clone().find_map(|column| self.formats.get(column).copied().flatten()))
+            .is_some_and(|format| format.grouping);
+        for column in columns {
+            let Some(mut format) = self.formats.get(column).copied().flatten() else {
+                continue;
+            };
+            let previous = format;
+            match action {
+                ActionId::ToggleThousandsGrouping => format.grouping = grouping,
+                ActionId::IncreaseDecimalPrecision => {
+                    format.precision = format.precision.saturating_add(1).min(38)
+                }
+                ActionId::DecreaseDecimalPrecision => {
+                    format.precision = format.precision.saturating_sub(1)
+                }
+                _ => return,
             }
-            ActionId::DecreaseDecimalPrecision => {
-                format.precision = format.precision.saturating_sub(1)
+            if format != previous {
+                self.formats[column] = Some(format);
+                self.events.push(GridEvent::NumericFormatChanged {
+                    column: self.result.columns[column].0.clone(),
+                    format,
+                });
             }
-            _ => return,
-        }
-        if format != previous {
-            self.formats[column] = Some(format);
-            self.events.push(GridEvent::NumericFormatChanged {
-                column: self.result.columns[column].0.clone(),
-                format,
-            });
         }
     }
 
@@ -501,30 +513,36 @@ impl GridView {
         cx.notify();
     }
 
+    /// Widens or narrows every column in the selection.
     fn change_width(&mut self, increase: bool) {
         let Some(selection) = self.selection else {
             return;
         };
-        let column = selection.active.column;
-        let width = (self.widths[column] + if increase { 10.0 } else { -10.0 }).clamp(40.0, 1200.0);
-        if width == self.widths[column] {
-            return;
+        let mut changed = false;
+        for column in selection.rectangle().1 {
+            let width = (self.widths[column] + if increase { 10.0 } else { -10.0 }).clamp(40.0, 1200.0);
+            if width == self.widths[column] {
+                continue;
+            }
+            let name = self.result.columns[column].0.clone();
+            *self.width_revisions.entry(name.clone()).or_default() += 1;
+            self.pending_widths.remove(&name);
+            self.known_widths.insert(name.clone(), width);
+            self.widths[column] = width;
+            changed = true;
+            self.events.push(GridEvent::WidthChanged {
+                owner: self.width_owner.clone(),
+                column: name,
+                width,
+            });
         }
-        let name = self.result.columns[column].0.clone();
-        *self.width_revisions.entry(name.clone()).or_default() += 1;
-        self.pending_widths.remove(&name);
-        self.known_widths.insert(name.clone(), width);
-        self.widths[column] = width;
-        self.header_cache = None;
-        self.keep_active_column_visible(self.viewport_width());
-        self.events.push(GridEvent::WidthChanged {
-            owner: self.width_owner.clone(),
-            column: name,
-            width,
-        });
+        if changed {
+            self.header_cache = None;
+            self.keep_active_column_visible(self.viewport_width());
+        }
     }
 
-    fn viewport_width(&self) -> f32 {
+    pub(crate) fn viewport_width(&self) -> f32 {
         let width = self.layout.rows.w;
         if width > 0.0 { width } else { 1400.0 }
     }
@@ -551,6 +569,36 @@ impl GridView {
             }
         }
         self.scroll_x = self.scroll_x.clamp(0.0, geometry.max_scroll_x());
+    }
+
+    pub(crate) fn row_offset(&self) -> f32 {
+        self.v_scroll.offset
+    }
+
+    /// After the columns were reordered, returns to the earlier scroll position
+    /// and centers the selected scrollable columns, so a moved block stays in view.
+    pub(crate) fn restore_view_centering_selection(&mut self, scroll_x: f32, row_offset: f32) {
+        self.v_scroll.offset = row_offset;
+        self.scroll_x = scroll_x;
+        let viewport_width = self.viewport_width();
+        let geometry = GridGeometry::new(self.widths.clone(), self.frozen_count, viewport_width, 0.0);
+        if let Some(selection) = self.selection {
+            let columns = selection.rectangle().1;
+            let start = (*columns.start()).max(self.frozen_count);
+            let end = *columns.end();
+            if start <= end && end < self.widths.len() {
+                let left: f32 = self.widths[self.frozen_count..start].iter().sum();
+                let span: f32 = self.widths[start..=end].iter().sum();
+                let visible = geometry.scrollable_width();
+                self.scroll_x = if span >= visible {
+                    left
+                } else {
+                    left + span / 2.0 - visible / 2.0
+                };
+            }
+        }
+        self.scroll_x = self.scroll_x.clamp(0.0, geometry.max_scroll_x());
+        self.header_cache = None;
     }
 
     pub fn set_theme(&mut self, theme: ThemeSettings) {

@@ -1,14 +1,3 @@
-## Change Multiple columns
-For some commands that we set up to manipulate the column of the active cell, I want to change them to manipulate each column in the selection. For example, the comma key currently toggles thousands groupings, and I want to change that to. Right now, it will just change the active cell or the column of the active cell. I want to change it so it will change each column that's in the selection. 
-Apply to:
-- "," toogle thousands groupings
-- "<"and ">" change decimal precision
-- "(" and ")" change col widths
-- Alt + Left/Right change column order
-
-## Handle view when changing column order
-When you change column order using the Alt plus left or right keys, and you're on a table that has more columns than fit on the screen, when you press the keys to move the column order, the table gets redrawn and snaps to the view all the way back to the left. So you can't really see what you've done as far as changing the column order. So can you update that to kind of center the view on the column or columns that are being moved? 
-
 ### Updates to "space" menu
 I want to change the name of the space menu to be called Helper Menu, and the idea with that menu is that it provides you with the shortcut keys that are available to use on the data grid, as well as some additional shortcut keys that you can use quickly from the space menu that are not available from the data grid.
 

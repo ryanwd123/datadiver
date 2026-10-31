@@ -125,11 +125,11 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | [ / ] | Sort ascending / descending |
 | Shift+X | Clear sort (tables) |
 | F / Shift+F | Freeze or unfreeze column / unfreeze all |
-| Alt+← / Alt+→ | Move column left / right (tables) |
+| Alt+← / Alt+→ | Move the selected columns left / right (tables) |
 | Delete | Remove the active group-by column (queries) |
-| ( / ) | Decrease / increase column width |
-| < / > | Decrease / increase decimal places |
-| , | Toggle thousands grouping |
+| ( / ) | Decrease / increase the selected columns' widths |
+| < / > | Decrease / increase decimal places of the selected columns |
+| , | Toggle thousands grouping of the selected columns |
 | D | Show or hide cell detail |
 | N | Drop files to watch |
 | I | Information and column profiles |
@@ -226,8 +226,8 @@ Views store the source path and the exploration configuration. They reference th
 ## Working with the grid
 
 - **Selection statistics:** the status bar summarizes the selected cells. With several columns selected, **Unique rows** counts distinct combinations and turns green when every selected row is distinct, a quick check that the columns form a unique key.
-- **Columns:** freeze with **F** (**Shift+F** unfreezes all), reorder tables with **Alt+←/→**, hide the selected columns with **Space H**, and choose visible columns with **Space Shift+H**. Hidden columns keep their place in the column order, and a `column:` search term still searches them. **Recalculate column widths** in the command palette refits every column to its contents, headers, and totals.
-- **Number formatting:** **,** toggles thousands grouping and **<** / **>** change decimal places for the active column.
+- **Columns:** freeze with **F** (**Shift+F** unfreezes all), reorder tables with **Alt+←/→** (the selected columns move together and stay centered in view), hide the selected columns with **Space H**, and choose visible columns with **Space Shift+H**. Hidden columns keep their place in the column order, and a `column:` search term still searches them. **Recalculate column widths** in the command palette refits every column to its contents, headers, and totals.
+- **Number formatting:** **,** toggles thousands grouping and **<** / **>** change decimal places for every selected column; **(** / **)** narrow or widen them.
 - **Cell detail:** **D** opens a pane beside the grid with the active cell's whole value, following the cursor. JSON objects and arrays are pretty-printed.
 - **Information:** **I** opens the Info dialog with column profiles: nulls, unique count, minimum, maximum, and the five most frequent values for every column, plus the SQL behind the view.
 

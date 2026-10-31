@@ -1,6 +1,6 @@
 use super::FileEntry;
 use super::dialogs::Dialog;
-use super::test_support::{Viewer, clipboard_text, repository, sales_frame};
+use super::test_support::{Viewer, clipboard_text, frame, repository, sales_frame};
 use crate::application::commands::CommandId;
 use crate::domain::documents::{DocumentDefinition, ViewKind};
 use crate::domain::formatting::NumericFormat;
@@ -108,6 +108,49 @@ fn numeric_shortcuts_follow_active_columns_and_restore_from_settings() {
     let reopened = viewer_with_document(repository, Some(source), None);
     reopened.render();
     assert_eq!(numeric_format(&reopened, "sales"), Some(ONE_DECIMAL));
+}
+
+#[test]
+fn column_shortcuts_change_every_selected_column_and_keep_moves_in_view() {
+    let home = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..30).map(|index| format!("c{index}")).collect();
+    let columns: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "DOUBLE")).collect();
+    let rows = vec![(0..30).map(|index| Value::Double(index as f64 * 1000.5)).collect()];
+    let viewer = Viewer::open(frame(&columns, rows), None, None, repository(home.path()));
+    press_in_grid(&viewer, &["right"; 20].join(" "));
+    viewer.press("shift-right");
+    let before = (column_width(&viewer, "c20"), column_width(&viewer, "c21"));
+    let untouched = column_width(&viewer, "c22");
+    let format = numeric_format(&viewer, "c20").unwrap();
+    viewer.press(") , >");
+    assert_eq!(column_width(&viewer, "c20"), before.0 + 10.);
+    assert_eq!(column_width(&viewer, "c21"), before.1 + 10.);
+    assert_eq!(column_width(&viewer, "c22"), untouched);
+    for column in ["c20", "c21"] {
+        assert_eq!(
+            numeric_format(&viewer, column),
+            Some(NumericFormat {
+                precision: format.precision + 1,
+                grouping: !format.grouping
+            })
+        );
+    }
+    assert_eq!(numeric_format(&viewer, "c22"), Some(format));
+    assert!(viewer.read(|view| view.grid.scroll_x) > 0.);
+    for _ in 0..3 {
+        press(&viewer, "alt-right");
+    }
+    viewer.read(|view| {
+        let order: Vec<&str> = view.session.result.columns.iter().map(|column| column.0.as_str()).collect();
+        assert_eq!(&order[20..25], ["c22", "c23", "c24", "c20", "c21"]);
+        assert_eq!(view.grid.selection().unwrap().rectangle().1, 23..=24);
+        // The moved block stays centered instead of snapping back to the first column.
+        let left: f32 = (0..23).map(|index| view.grid.column_width(order[index])).sum();
+        let span = view.grid.column_width("c20") + view.grid.column_width("c21");
+        let center = left + span / 2. - view.grid.scroll_x;
+        assert!(view.grid.scroll_x > 0.);
+        assert!((center - view.grid.viewport_width() / 2.).abs() < 1., "{center}");
+    });
 }
 
 #[test]
