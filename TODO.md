@@ -6,16 +6,16 @@ where it starts.
 
 ## Bugs
 
-- [ ] **Converting a Polars percentile to custom SQL changes its value.**
-  `lazy::structured_sql` (`src/domain/pivot/lazy.rs`) still writes Lower,
-  Higher and Nearest as `quantile_disc`, and Midpoint as `quantile_cont`.
-  The structured aggregation picks ranks the Polars way, so the custom SQL
-  in the editor gives different values. DuckDB's editor SQL now matches.
 - [ ] **A non-linear DuckDB percentile in custom SQL fails in a pivot.**
   The editor SQL for Lower, Higher, Nearest and Midpoint uses both `list`
   and `count` (`aggregate_expression` in `src/domain/pivot/sql.rs`), and
   PIVOT allows one aggregate per value. Structured percentiles still pivot,
-  because they rank rows with windows instead.
+  because they rank rows with windows instead. No one-aggregate form exists:
+  PIVOT also rejects lambdas (a lambda's parameter binds as a column), and
+  `quantile_disc` reads rank `ceil(n * q) - 1`, which can't be turned into
+  Polars' ranks without `n`. Grouping by the group and pivot columns first,
+  then pivoting with `first(…)`, would take any expression, but it has to
+  keep DuckDB's headers for unaliased expressions (`F_count_star()`).
 - [ ] **Archiving or deleting a SQL source while another window edits it.**
   `remove_view` resets only this window's editor ("Its editor would save it
   again"). Another window with Auto-save on will write the source back.

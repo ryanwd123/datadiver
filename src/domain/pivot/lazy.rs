@@ -660,56 +660,77 @@ fn structured_sql(
 ) -> Result<String, String> {
     let column = quote_identifier(&schema_column(schema, &aggregation.source_column)?.name);
     let sample = aggregation.ddof.unwrap_or(1) != 0;
-    let expression = match aggregation.operation {
-        AggregationOp::Sum => format!("sum({column})"),
-        AggregationOp::Mean => format!("avg({column})"),
-        AggregationOp::Median => format!("median({column})"),
-        AggregationOp::Minimum => format!("min({column})"),
-        AggregationOp::Maximum => format!("max({column})"),
-        AggregationOp::RowCount => "count(*)".to_owned(),
-        AggregationOp::NonNullCount => format!("count({column})"),
-        AggregationOp::DistinctNonNullCount => format!("count(DISTINCT {column})"),
-        AggregationOp::First => format!("first({column})"),
-        AggregationOp::Last => format!("last({column})"),
-        AggregationOp::StandardDeviation if sample => format!("stddev_samp({column})"),
-        // Polars SQL has only the sample statistics, so scale them to the population.
+    let conditions = aggregation
+        .conditions
+        .iter()
+        .map(|condition| condition_sql(schema, condition, clock))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Every aggregate call in the expression takes the conditions.
+    let filter = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" FILTER (WHERE {})", conditions.join(" AND "))
+    };
+    let call = |function: &str| format!("{function}({column}){filter}");
+    Ok(match aggregation.operation {
+        AggregationOp::Sum => call("sum"),
+        AggregationOp::Mean => call("avg"),
+        AggregationOp::Median => call("median"),
+        AggregationOp::Minimum => call("min"),
+        AggregationOp::Maximum => call("max"),
+        AggregationOp::RowCount => format!("count(*){filter}"),
+        AggregationOp::NonNullCount => call("count"),
+        AggregationOp::DistinctNonNullCount => format!("count(DISTINCT {column}){filter}"),
+        AggregationOp::First => call("first"),
+        AggregationOp::Last => call("last"),
+        AggregationOp::StandardDeviation if sample => call("stddev_samp"),
+        // Polars SQL has only the sample statistics, so scale them to the
+        // population. One value has no sample statistic but varies by 0.
         AggregationOp::StandardDeviation => format!(
-            "stddev_samp({column}) * sqrt((CAST(count({column}) AS DOUBLE) - 1) / count({column}))"
+            "CASE WHEN {count} = 1 THEN 0.0 ELSE {} * sqrt((CAST({count} AS DOUBLE) - 1) / {count}) END",
+            call("stddev_samp"),
+            count = call("count"),
         ),
-        AggregationOp::Variance if sample => format!("var_samp({column})"),
+        AggregationOp::Variance if sample => call("var_samp"),
         AggregationOp::Variance => format!(
-            "var_samp({column}) * (CAST(count({column}) AS DOUBLE) - 1) / count({column})"
+            "CASE WHEN {count} = 1 THEN 0.0 ELSE {} * (CAST({count} AS DOUBLE) - 1) / {count} END",
+            call("var_samp"),
+            count = call("count"),
         ),
         AggregationOp::Percentile => {
             let percentile = aggregation.percentile.unwrap_or(50.0);
             if !(0.0..=100.0).contains(&percentile) {
                 return Err("percentile must be between 0 and 100".into());
             }
-            let function = match aggregation
-                .interpolation
-                .as_ref()
-                .unwrap_or(&Interpolation::Linear)
-            {
-                Interpolation::Linear | Interpolation::Midpoint => "quantile_cont",
-                Interpolation::Nearest | Interpolation::Lower | Interpolation::Higher => {
-                    "quantile_disc"
-                }
+            // Debug writes 0 and 1 as `0.0` and `1.0`, which Polars SQL takes as quantiles.
+            let quantile = format!("{:?}", percentile / 100.0);
+            // Polars SQL's `quantile_disc` picks ranks another way, so the
+            // other methods read the sorted values at the ranks Polars does:
+            // `(n - 1) * quantile` rounded down, up, or half away from zero.
+            let sorted = format!("array_agg({column} ORDER BY {column} NULLS LAST){filter}");
+            let value = |round: &str, offset: &str| {
+                format!(
+                    "CAST(array_get({sorted}, CAST({round}((CAST({} AS DOUBLE) - 1) * {quantile}{offset}) AS BIGINT) + 1) AS DOUBLE)",
+                    call("count")
+                )
             };
-            format!("{function}({column}, {})", percentile / 100.0)
+            match aggregation.interpolation.as_ref().unwrap_or(&Interpolation::Linear) {
+                // Polars SQL would filter the quantile argument as well, so
+                // the conditions null out the values instead, which it skips.
+                Interpolation::Linear if conditions.is_empty() => format!("quantile_cont({column}, {quantile})"),
+                Interpolation::Linear => format!(
+                    "quantile_cont(CASE WHEN {} THEN {column} END, {quantile})",
+                    conditions.join(" AND ")
+                ),
+                Interpolation::Lower => value("floor", ""),
+                Interpolation::Higher => value("ceil", ""),
+                Interpolation::Nearest => value("floor", " + 0.5"),
+                Interpolation::Midpoint => format!("({} + {}) / 2", value("floor", ""), value("ceil", "")),
+            }
         }
-        AggregationOp::ValuesList => format!("array_agg({column})"),
-        AggregationOp::UniqueValuesList => format!("array_unique(array_agg({column}))"),
+        AggregationOp::ValuesList => call("array_agg"),
+        AggregationOp::UniqueValuesList => format!("array_unique({})", call("array_agg")),
         AggregationOp::SqlExpression => return Err("SQL expression is missing".into()),
-    };
-    let conditions = aggregation
-        .conditions
-        .iter()
-        .map(|condition| condition_sql(schema, condition, clock))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(if conditions.is_empty() {
-        expression
-    } else {
-        format!("{expression} FILTER (WHERE {})", conditions.join(" AND "))
     })
 }
 
@@ -1318,6 +1339,31 @@ mod tests {
             conditions: vec![winter()],
             ..structured("Score", AggregationOp::Sum)
         });
+        for conditions in [vec![], vec![winter()]] {
+            for interpolation in [
+                Interpolation::Linear,
+                Interpolation::Lower,
+                Interpolation::Higher,
+                Interpolation::Nearest,
+                Interpolation::Midpoint,
+            ] {
+                for percentile in [0.0, 30.0, 75.0, 100.0] {
+                    cases.push(Aggregation {
+                        percentile: Some(percentile),
+                        interpolation: Some(interpolation.clone()),
+                        conditions: conditions.clone(),
+                        ..structured("Score", AggregationOp::Percentile)
+                    });
+                }
+            }
+            for operation in [AggregationOp::Variance, AggregationOp::StandardDeviation] {
+                cases.push(Aggregation {
+                    ddof: Some(0),
+                    conditions: conditions.clone(),
+                    ..structured("Score", operation)
+                });
+            }
+        }
         cases.push(Aggregation {
             conditions: vec![Condition {
                 column: "Name".into(),
