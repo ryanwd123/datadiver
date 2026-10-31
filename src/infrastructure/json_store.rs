@@ -667,6 +667,11 @@ impl ViewRepository {
             .collect()
     }
 
+    /// Whether the view `id` is still saved, rather than archived or deleted.
+    pub fn contains(&self, id: &str) -> io::Result<bool> {
+        Ok(self.find_by_id(id)?.is_some())
+    }
+
     /// Removes the saved view `id` for good, without archiving it.
     pub fn delete(&self, id: &str) -> io::Result<()> {
         let path = self

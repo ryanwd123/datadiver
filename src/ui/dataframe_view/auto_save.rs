@@ -87,6 +87,17 @@ impl DataFrameView {
             }
             return;
         }
+        // Another window may have archived or deleted it; saving would
+        // bring it back.
+        if let Ok(false) = self.repository.contains(&definition.id) {
+            self.auto_save_task = None;
+            self.session.detach_from_saved();
+            self.error = Some(format!(
+                "{} was archived or deleted in another window, so it is no longer saved; Save view keeps these edits as a new view",
+                definition.name
+            ));
+            return;
+        }
         match self.repository.save_view(&mut definition) {
             Ok(_) => {
                 self.session.saved(definition);

@@ -16,9 +16,6 @@ where it starts.
   Polars' ranks without `n`. Grouping by the group and pivot columns first,
   then pivoting with `first(…)`, would take any expression, but it has to
   keep DuckDB's headers for unaliased expressions (`F_count_star()`).
-- [ ] **Archiving or deleting a SQL source while another window edits it.**
-  `remove_view` resets only this window's editor ("Its editor would save it
-  again"). Another window with Auto-save on will write the source back.
 
 ## Performance
 

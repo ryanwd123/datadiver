@@ -821,6 +821,21 @@ impl WindowSession {
         Ok(())
     }
 
+    /// Keeps the working view as an unsaved draft once its saved copy is
+    /// gone, so nothing writes it back under the old id.
+    pub fn detach_from_saved(&mut self) {
+        self.identity = match self.identity {
+            SessionIdentity::SavedTable(_) => SessionIdentity::DraftTable,
+            SessionIdentity::SavedQuery(_) => SessionIdentity::DraftQuery,
+            SessionIdentity::SavedSql(_) => SessionIdentity::DraftSql,
+            _ => return,
+        };
+        if let Some(definition) = &mut self.working {
+            definition.id.clear();
+        }
+        self.dirty = true;
+    }
+
     pub fn rename_working(&mut self, name: String) -> Result<(), String> {
         let definition = self.working.as_mut().ok_or("no working view")?;
         if name.trim().is_empty() {

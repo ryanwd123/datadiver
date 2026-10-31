@@ -305,6 +305,42 @@ fn sql_auto_save_flushes_before_navigation_and_cancels_old_timer() {
 }
 
 #[test]
+fn sql_auto_save_never_brings_back_a_source_another_window_removed() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut saved = sql_view(
+        "Auto SQL",
+        SqlConfig {
+            text: "SELECT 1".into(),
+            ..Default::default()
+        },
+    );
+    saved.auto_save = true;
+    repository.save_view(&mut saved).unwrap();
+    let editing = viewer(repository.clone(), Some(saved.clone()));
+    let other = viewer(repository.clone(), Some(saved.clone()));
+    other.update(|view, cx| view.remove_view(&saved, false, cx));
+    assert!(repository.load_views().0.is_empty());
+
+    edit_sql(&editing, "SELECT 2");
+    editing.advance_clock(Duration::from_secs(3));
+    assert!(repository.load_views().0.is_empty());
+    editing.read(|view| {
+        assert!(matches!(view.session.identity, SessionIdentity::DraftSql));
+        assert!(view.session.dirty);
+        let error = view.error.clone().unwrap_or_default();
+        assert!(error.contains("Auto SQL was archived or deleted in another window"), "{error}");
+    });
+    assert_eq!(sql_text(&editing), "SELECT 2");
+
+    // Later edits stay unsaved, and the archive still recovers the source.
+    edit_sql(&editing, "SELECT 3");
+    editing.advance_clock(Duration::from_secs(3));
+    assert!(repository.load_views().0.is_empty());
+    assert_eq!(repository.archived(&saved.id).map(|archive| archive.view.name), Some("Auto SQL".into()));
+}
+
+#[test]
 fn enabling_sql_auto_save_on_a_draft_names_and_saves_it_once() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
@@ -337,9 +373,11 @@ fn sql_auto_save_failure_keeps_dirty_text_and_recovers_on_next_edit() {
     );
     saved.auto_save = true;
     let saved_path = repository.save_view(&mut saved).unwrap();
-    let viewer = viewer(repository.clone(), Some(saved));
-    std::fs::remove_file(&saved_path).unwrap();
-    std::fs::create_dir(&saved_path).unwrap();
+    let viewer = viewer(repository.clone(), Some(saved.clone()));
+    // A folder where the renamed view would be written stops the save.
+    let blocked = saved_path.with_file_name(format!("Blocked-{}.json", saved.id));
+    std::fs::create_dir(&blocked).unwrap();
+    viewer.update(|view, _| view.session.rename_working("Blocked".into()).unwrap());
     edit_sql(&viewer, "SELECT 9");
     viewer.advance_clock(Duration::from_secs(2));
     viewer.read(|view| {
@@ -347,7 +385,7 @@ fn sql_auto_save_failure_keeps_dirty_text_and_recovers_on_next_edit() {
         assert!(view.error.as_ref().unwrap().contains("Auto-save failed"));
     });
     assert_eq!(sql_config(&viewer).text, "SELECT 9");
-    std::fs::remove_dir(&saved_path).unwrap();
+    std::fs::remove_dir(&blocked).unwrap();
     edit_sql(&viewer, "SELECT 10");
     viewer.advance_clock(Duration::from_secs(2));
     assert_eq!(saved_sql(&repository).text, "SELECT 10");
