@@ -98,6 +98,9 @@ pub struct SourceDatabase {
     path: PathBuf,
     state: Mutex<Option<DatabaseState>>,
     revision: std::sync::atomic::AtomicU64,
+    /// Bumped when a statement may make or drop a macro, so SQL editors
+    /// list functions again rather than reuse the list they keep.
+    functions_revision: std::sync::atomic::AtomicU64,
     /// Tables of files no store reads any more, dropped on the next load.
     retired_tables: Arc<Mutex<Vec<String>>>,
     /// Held to write while an import has `preserve_insertion_order` off,
@@ -159,6 +162,7 @@ impl SourceDatabase {
             path: profile.join("datadiver.duckdb"),
             state: Mutex::new(None),
             revision: std::sync::atomic::AtomicU64::new(0),
+            functions_revision: std::sync::atomic::AtomicU64::new(0),
             retired_tables: Arc::default(),
             insertion_order: RwLock::new(()),
         });
@@ -184,6 +188,15 @@ impl SourceDatabase {
 
     pub fn invalidate(&self) {
         self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    pub fn functions_revision(&self) -> u64 {
+        self.functions_revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn invalidate_functions(&self) {
+        self.functions_revision
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
@@ -691,6 +704,8 @@ impl SourceDatabase {
         let error = current.startup_error.clone();
         drop(state);
         self.invalidate();
+        // The script may make macros.
+        self.invalidate_functions();
         Ok(error)
     }
 

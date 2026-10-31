@@ -33,14 +33,6 @@ where it starts.
   search box over a slow pivot waits for each stale run. Interrupt the
   store's connection (DuckDB `InterruptHandle`) when `invalidate` replaces
   an active token.
-- [ ] **The full SQL catalog is rebuilt after every run.** `run` calls
-  `sql_catalog()` (`sql_execution.rs:593`), which re-reads every function
-  (about 17 ms) and DESCRIBEs each metadata table function. `catalog()`
-  also matches columns to relations with a linear `find` for each column
-  row (`sql_execution.rs:115`), which is quadratic in tables × columns for
-  large attached databases. Cache functions and metadata columns per
-  connection (refresh after `INSTALL`/`LOAD`), rebuild relations only when
-  `may_mutate` saw a change, and index relations in a `HashMap`.
 - [ ] **SQL statements wait while a file imports with Preserve order off.**
   To keep results ordered, `SqlExecution::execute` and query
   materialization take `SourceDatabase::keeping_order`. A long import with

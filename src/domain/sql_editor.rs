@@ -127,6 +127,21 @@ pub fn may_mutate(sql: &str) -> bool {
         })
 }
 
+/// Whether `sql` may make or drop a macro or function, which the editor's
+/// catalog lists with the built-in functions. Extensions and attached
+/// databases bring their own too, but the catalog checks those itself.
+pub fn may_change_functions(sql: &str) -> bool {
+    let tokens = tokens(sql);
+    let Some(first) = first_word(&tokens) else {
+        return false;
+    };
+    is_word(sql, first, "import")
+        || ["create", "drop"].iter().any(|word| is_word(sql, first, word))
+            && tokens.iter().any(|t| {
+                t.depth == 0 && ["macro", "function", "schema"].iter().any(|word| is_word(sql, t, word))
+            })
+}
+
 /// A query whose whole result can be kept and filtered: it returns rows,
 /// writes nothing, and can be wrapped in `FROM (…)`, which EXPLAIN cannot.
 pub fn is_filterable_query(sql: &str) -> bool {
@@ -800,5 +815,22 @@ mod tests {
         );
         let keys = sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>();
         assert_eq!(keys, ["'local.csv'"]);
+    }
+
+    #[test]
+    fn only_making_or_dropping_macros_and_schemas_changes_functions() {
+        for sql in [
+            "CREATE MACRO twice(x) AS x * 2",
+            "create or replace temp macro t() as table select 1",
+            "CREATE FUNCTION f(x) AS x",
+            "DROP MACRO TABLE t",
+            "DROP SCHEMA s CASCADE",
+            "IMPORT DATABASE 'dump'",
+        ] {
+            assert!(may_change_functions(sql), "{sql}");
+        }
+        for sql in ["SELECT 1", "CREATE TABLE t AS SELECT 1", "DROP TABLE t", "SELECT macro FROM t", "INSERT INTO t VALUES (1)"] {
+            assert!(!may_change_functions(sql), "{sql}");
+        }
     }
 }

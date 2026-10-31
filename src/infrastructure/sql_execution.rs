@@ -22,7 +22,7 @@ use crate::domain::ai::{
     relation_name,
 };
 use crate::domain::sql_editor::{
-    Relation, SqlCatalog, is_filterable_query, may_mutate, returns_rows, statements,
+    Relation, SqlCatalog, is_filterable_query, may_change_functions, may_mutate, returns_rows, statements,
 };
 
 /// An in-memory database attached to the profile for complete SQL results.
@@ -37,6 +37,17 @@ pub struct SqlExecution {
     database: Arc<SourceDatabase>,
     pub interrupt: Arc<InterruptHandle>,
     pub stopped: Arc<AtomicBool>,
+    /// The catalog last listed, reused while nothing it lists has changed.
+    catalog_cache: std::sync::Mutex<Option<CachedCatalog>>,
+}
+
+struct CachedCatalog {
+    /// The database revision its relations were listed at.
+    revision: u64,
+    /// What its functions, settings and extensions were listed at; see
+    /// [`SqlExecution::functions_key`].
+    functions_key: (u64, String),
+    catalog: SqlCatalog,
 }
 
 pub struct SqlRun {
@@ -65,6 +76,7 @@ impl SqlExecution {
             database,
             interrupt,
             stopped: Arc::new(AtomicBool::new(false)),
+            catalog_cache: Default::default(),
         })
     }
 
@@ -87,6 +99,11 @@ impl SqlExecution {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         relations.retain(|r| !r.name.starts_with("__qp_") && !r.name.starts_with("__dd_"));
+        let index = relations
+            .iter()
+            .enumerate()
+            .map(|(at, r)| ((r.catalog.clone(), r.schema.clone(), r.name.clone()), at))
+            .collect::<HashMap<_, _>>();
         let mut columns = self.connection.prepare("SELECT database_name, schema_name, table_name, column_name, data_type FROM duckdb_columns() WHERE NOT internal ORDER BY column_index").map_err(|e| e.to_string())?;
         let rows = columns
             .query_map([], |row| {
@@ -101,10 +118,8 @@ impl SqlExecution {
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (catalog, schema, table, column, data_type) = row.map_err(|e| e.to_string())?;
-            if let Some(r) = relations
-                .iter_mut()
-                .find(|r| r.catalog == catalog && r.schema == schema && r.name == table)
-            {
+            if let Some(&at) = index.get(&(catalog, schema, table)) {
+                let r = &mut relations[at];
                 r.columns.push(column);
                 r.column_types.push(data_type);
             }
@@ -114,35 +129,94 @@ impl SqlExecution {
 
     /// Everything the SQL editor completes and checks against: relations,
     /// databases and schemas, functions with their signatures, settings and
-    /// extensions.
+    /// extensions. Listing functions takes most of the time, so they are
+    /// kept until an extension loads, a database is attached or detached,
+    /// or a macro is made or dropped; the rest until the database changes.
     pub fn sql_catalog(&self) -> Result<SqlCatalog, String> {
-        let strings = |sql: &str| -> Result<Vec<String>, String> {
-            let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
-            stmt.query_map([], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())
-        };
-        let mut schemas = self
+        // Read before listing, so a change made meanwhile lists again next time.
+        let revision = self.database.revision();
+        let functions_key = self.functions_key()?;
+        let mut cache = self.catalog_cache.lock().map_err(|_| "SQL catalog lock poisoned")?;
+        if let Some(cached) = cache.as_ref()
+            && cached.revision == revision
+            && cached.functions_key == functions_key
+        {
+            return Ok(cached.catalog.clone());
+        }
+        let mut catalog = self.relations_catalog()?;
+        match cache.take().filter(|cached| cached.functions_key == functions_key) {
+            Some(cached) => {
+                catalog.functions = cached.catalog.functions;
+                catalog.settings = cached.catalog.settings;
+                catalog.extensions = cached.catalog.extensions;
+                catalog.table_functions = cached.catalog.table_functions;
+            }
+            None => {
+                catalog.functions = self.functions()?;
+                catalog.settings = self.settings()?;
+                catalog.extensions = self.strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?;
+                catalog.table_functions = self.metadata_function_columns().unwrap_or_default();
+            }
+        }
+        *cache = Some(CachedCatalog {
+            revision,
+            functions_key,
+            catalog: catalog.clone(),
+        });
+        Ok(catalog)
+    }
+
+    /// What the functions, settings and extensions DuckDB lists depend on:
+    /// the macros made ([`SourceDatabase::functions_revision`]), the
+    /// extensions loaded or installed (loading one adds functions and
+    /// settings, and DuckDB loads some by itself), and the databases
+    /// attached, which bring their macros.
+    fn functions_key(&self) -> Result<(u64, String), String> {
+        let state: Option<String> = self
             .connection
-            .prepare("SELECT database_name, schema_name FROM duckdb_schemas() WHERE schema_name NOT IN ('information_schema', 'pg_catalog') AND database_name NOT IN ('system', 'temp') ORDER BY 1, 2")
+            .query_row(
+                "SELECT coalesce((SELECT string_agg(extension_name || ':' || loaded, ',' ORDER BY extension_name) FROM duckdb_extensions() WHERE loaded OR installed), '') || '|' || coalesce((SELECT string_agg(database_name, ',' ORDER BY database_name) FROM duckdb_databases()), '')",
+                [],
+                |row| row.get(0),
+            )
             .map_err(|e| e.to_string())?;
-        let schemas = schemas
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        Ok((self.database.functions_revision(), state.unwrap_or_default()))
+    }
+
+    fn strings(&self, sql: &str) -> Result<Vec<String>, String> {
+        let mut stmt = self.connection.prepare(sql).map_err(|e| e.to_string())?;
+        stmt.query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
+
+    fn settings(&self) -> Result<Vec<diver_sql::SettingInfo>, String> {
         let mut settings = self
             .connection
             .prepare("SELECT name, description FROM duckdb_settings() ORDER BY name")
             .map_err(|e| e.to_string())?;
-        let settings = settings
+        settings
             .query_map([], |row| {
                 Ok(diver_sql::SettingInfo {
                     name: row.get(0)?,
                     description: row.get(1)?,
                 })
             })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// The part of [`Self::sql_catalog`] that changes with the database:
+    /// relations, databases, schemas, variables and sequences.
+    fn relations_catalog(&self) -> Result<SqlCatalog, String> {
+        let mut schemas = self
+            .connection
+            .prepare("SELECT database_name, schema_name FROM duckdb_schemas() WHERE schema_name NOT IN ('information_schema', 'pg_catalog') AND database_name NOT IN ('system', 'temp') ORDER BY 1, 2")
+            .map_err(|e| e.to_string())?;
+        let schemas = schemas
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -173,18 +247,14 @@ impl SqlExecution {
         Ok(SqlCatalog {
             relations: self.catalog()?,
             current_database: self.default_catalog()?,
-            databases: strings("SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY 1")?
+            databases: self.strings("SELECT database_name FROM duckdb_databases() WHERE NOT internal ORDER BY 1")?
                 .into_iter()
                 .filter(|name| !hidden(name))
                 .collect(),
             schemas: schemas.into_iter().filter(|(d, _)| !hidden(d)).collect(),
-            functions: self.functions()?,
-            settings,
             variables,
             sequences: sequences.into_iter().filter(|(d, _, _)| !hidden(d)).collect(),
-            extensions: strings("SELECT extension_name FROM duckdb_extensions() ORDER BY 1")?,
-            files: Default::default(),
-            table_functions: self.metadata_function_columns().unwrap_or_default(),
+            ..Default::default()
         })
     }
 
@@ -490,6 +560,9 @@ impl SqlExecution {
         let ranges = statements(text);
         let (last, setup) = ranges.split_last().ok_or("The SQL source has no statement")?;
         let mutated = ranges.iter().any(|range| may_mutate(&text[range.clone()]));
+        if ranges.iter().any(|range| may_change_functions(&text[range.clone()])) {
+            execution.database.invalidate_functions();
+        }
         let result = (|| {
             for (index, range) in setup.iter().enumerate() {
                 execution
@@ -542,6 +615,9 @@ impl SqlExecution {
             }
             let sql = &text[range];
             mutated |= may_mutate(sql);
+            if may_change_functions(sql) {
+                self.database.invalidate_functions();
+            }
             // Earlier statements are setup; only the last query keeps every row.
             let mut complete = false;
             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1278,6 +1354,39 @@ mod tests {
         assert!(catalog.iter().any(|r| r.name == "fruit" && r.is_view));
         assert!(!catalog.iter().any(|r| r.name.starts_with("__qp_")));
     }
+    #[test]
+    fn a_kept_catalog_lists_new_tables_macros_and_databases() {
+        let (dir, service) = service();
+        let other = SqlExecution::new(SourceDatabase::for_profile(dir.path())).unwrap();
+        let has_function = |service: &SqlExecution, name: &str| {
+            service.sql_catalog().unwrap().functions.iter().any(|f| f.name == name)
+        };
+        let has_relation = |service: &SqlExecution, name: &str| {
+            service.sql_catalog().unwrap().relations.iter().any(|r| r.name == name)
+        };
+        assert!(!has_function(&service, "twice") && !has_function(&other, "twice"));
+        assert!(!has_relation(&service, "apples"));
+
+        assert!(service.run("SELECT 1", 10).error.is_none());
+        assert!(service.run("CREATE TABLE apples AS SELECT 1 AS id", 10).error.is_none());
+        assert!(has_relation(&service, "apples") && has_relation(&other, "apples"));
+
+        // A macro made in one editor completes in another.
+        assert!(service.run("CREATE MACRO twice(x) AS x * 2", 10).error.is_none());
+        assert!(has_function(&service, "twice") && has_function(&other, "twice"));
+        assert!(other.run("DROP MACRO twice", 10).error.is_none());
+        assert!(!has_function(&service, "twice") && !has_function(&other, "twice"));
+
+        // An attached database's macros come with it.
+        let attached = dir.path().join("other.duckdb").display().to_string().replace('\\', "/");
+        let setup = Connection::open(&attached).unwrap();
+        setup.execute_batch("CREATE MACRO thrice(x) AS x * 3").unwrap();
+        drop(setup);
+        assert!(service.run(&format!("ATTACH '{attached}' AS extra"), 10).error.is_none());
+        assert!(has_function(&other, "thrice"));
+        assert!(service.sql_catalog().unwrap().databases.contains(&"extra".to_owned()));
+    }
+
     #[test]
     fn metadata_functions_complete_their_columns() {
         use crate::domain::sql_editor::completions;
