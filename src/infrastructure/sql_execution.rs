@@ -538,14 +538,11 @@ impl SqlExecution {
                             return Ok((Some((store, false)), 0));
                         }
                         Ok(None) => {}
-                        Err(error)
-                            if self.stopped.load(Ordering::Acquire)
-                                || error.to_ascii_lowercase().contains("interrupt") =>
-                        {
-                            return Err(error);
-                        }
                         // A query DuckDB cannot keep this way still shows its first rows.
-                        Err(_) => {}
+                        Err(error) if materialize_only_failure(&error) => {}
+                        // Anything else fails the plain run too, after running
+                        // the query a second time.
+                        Err(error) => return Err(error),
                     }
                 }
                 self.execute(sql, limit)
@@ -807,6 +804,15 @@ impl SqlExecution {
         }
         DuckDbStore::from_connection(output).map(|store| (Some((store, truncated)), 0))
     }
+}
+
+/// Whether keeping a query as a table failed for the keeping alone, so running
+/// it plainly can still work: the query doesn't parse wrapped in
+/// `CREATE TABLE … AS FROM (…)`, or the results database couldn't take it.
+/// Other errors, such as a conversion error or an interrupt, come from the query
+/// itself, and running it again would only repeat them.
+fn materialize_only_failure(error: &str) -> bool {
+    error.starts_with("Parser Error") || error.contains(RESULTS)
 }
 
 fn result_sql_type(
@@ -1361,6 +1367,16 @@ mod tests {
                     |r| r.name == "amazon_book_parquet" && r.columns == ["asin", "ISBN10", "title"]
                 )
         );
+    }
+
+    #[test]
+    fn a_failing_query_runs_once() {
+        let (_dir, service) = service();
+        let run = service.run("CREATE SEQUENCE calls; SELECT (nextval('calls') || 'x')::INT AS n", 100);
+        assert!(run.error.as_deref().is_some_and(|e| e.starts_with("Statement 2: Conversion Error")), "{:?}", run.error);
+        let run = service.run("SELECT currval('calls') AS n", 100);
+        let rows = run.result.unwrap().fetch_row_ids(&[0]).unwrap();
+        assert_eq!(rows[0].values, [Some("1".into())]);
     }
 
     #[test]
