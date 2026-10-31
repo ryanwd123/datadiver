@@ -249,7 +249,9 @@ impl Sources {
     fn cached(&self, key: &str, stamp: (i128, u64), row_limit: usize) -> Option<(u64, Arc<DataFrame>, bool)> {
         let frames = self.frames.lock().ok()?;
         let entry = frames.get(key)?;
-        (entry.stamp == stamp && entry.row_limit == row_limit)
+        // A read that wasn't cut holds the whole file, enough for any larger limit.
+        let covers = entry.row_limit == row_limit || (!entry.cut && row_limit > entry.row_limit);
+        (entry.stamp == stamp && covers)
             .then(|| entry.frame.upgrade().map(|frame| (entry.version, frame, entry.cut)))
             .flatten()
     }
@@ -431,6 +433,13 @@ mod tests {
                 // A different limit reads the file again rather than reuse the cut read.
                 let whole = read(4);
                 assert_eq!((whole.row_count(), whole.cut_at()), (4, None), "{engine:?} {}", path.display());
+                // A larger limit reuses a read that wasn't cut.
+                let identity = whole.source_identity().unwrap();
+                let options = ReadOptions { engine, row_limit: 10, ..ReadOptions::default() };
+                assert!(matches!(
+                    sources.load_reusing(path, options, LoadMode::Check, Some(&identity)).unwrap(),
+                    SourceLoad::Reused
+                ));
                 let again = read(3);
                 assert_eq!((again.row_count(), again.cut_at()), (3, Some(3)));
             }

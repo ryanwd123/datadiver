@@ -61,6 +61,15 @@ struct LoadedFile {
     table: Weak<LoadedTable>,
 }
 
+impl LoadedFile {
+    /// Whether this read holds what a read of at most `row_limit` rows would:
+    /// the same limit, or a larger one when this read wasn't cut.
+    fn covers(&self, row_limit: Option<usize>) -> bool {
+        self.row_limit == row_limit
+            || (!self.cut && row_limit.is_none_or(|limit| self.row_limit.is_some_and(|read| limit >= read)))
+    }
+}
+
 /// Keeps a file's table while stores read it; the last one to go drops it.
 pub(crate) struct LoadedTable {
     name: String,
@@ -446,7 +455,7 @@ impl SourceDatabase {
             && let Some(entry) = &previous
             && entry.stamp == stamp
             && entry.preserve_order == preserve_order
-            && entry.row_limit == row_limit
+            && entry.covers(row_limit)
             && let Some(table) = entry.table.upgrade()
         {
             let table_sql = files_table_sql(&entry.table_name);
