@@ -35,8 +35,9 @@ pub struct Position {
 /// were compiled with.
 pub trait Stats {
     fn aggregate(&self, column: usize, aggregate: Aggregate) -> Option<f64>;
-    /// How many of the column's cells hold `value`.
-    fn frequency(&self, column: usize, value: &Value) -> usize;
+    /// How many of the column's cells hold `value`; `None` when it isn't
+    /// known (yet), which leaves tests on it blank.
+    fn frequency(&self, column: usize, value: &Value) -> Option<usize>;
     /// Where `value` stands among the column's numbers.
     fn position(&self, column: usize, value: f64) -> Option<Position>;
 }
@@ -49,8 +50,8 @@ impl Stats for NoStats {
         None
     }
 
-    fn frequency(&self, _: usize, _: &Value) -> usize {
-        0
+    fn frequency(&self, _: usize, _: &Value) -> Option<usize> {
+        None
     }
 
     fn position(&self, _: usize, _: f64) -> Option<Position> {
@@ -120,11 +121,9 @@ impl Stats for TableStats<'_> {
         }
     }
 
-    fn frequency(&self, column: usize, value: &Value) -> usize {
-        let (Some(s), Some(key)) = (self.summary(column), value.key()) else {
-            return 0;
-        };
-        s.counts.get(&key).copied().unwrap_or(0)
+    fn frequency(&self, column: usize, value: &Value) -> Option<usize> {
+        let s = self.summary(column)?;
+        Some(value.key().and_then(|key| s.counts.get(&key).copied()).unwrap_or(0))
     }
 
     fn position(&self, column: usize, value: f64) -> Option<Position> {
@@ -164,8 +163,8 @@ mod tests {
         assert_eq!(stats.aggregate(0, Aggregate::Percentile(0.25)), Some(2.5));
         assert_eq!(stats.aggregate(0, Aggregate::Count), Some(4.0));
         assert_eq!(stats.aggregate(0, Aggregate::Distinct), Some(3.0));
-        assert_eq!(stats.frequency(0, &Value::Number(3.0)), 2);
-        assert_eq!(stats.frequency(0, &Value::Null), 0);
+        assert_eq!(stats.frequency(0, &Value::Number(3.0)), Some(2));
+        assert_eq!(stats.frequency(0, &Value::Null), Some(0));
         assert_eq!(stats.position(0, 3.0), Some(Position { above: 1, below: 1, count: 4 }));
     }
 }

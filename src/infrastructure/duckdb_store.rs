@@ -729,6 +729,123 @@ impl DuckDbStore {
         self.row_count
     }
 
+    /// `FROM` the rows `view`'s search and filters leave, with `extra` as one
+    /// more condition, and the parameters to bind.
+    fn filtered_rows(&self, view: &ViewQuery, extra: Option<String>) -> Result<(String, Vec<Value>), String> {
+        let (mut predicates, parameters, _) = self.view_clauses(view)?;
+        predicates.extend(extra);
+        let mut sql = format!("FROM {}", self.table_sql);
+        if !predicates.is_empty() {
+            sql.push_str("\nWHERE ");
+            sql.push_str(&predicates.join("\n    AND "));
+        }
+        Ok((sql, parameters))
+    }
+
+    fn quoted_column(&self, name: &str) -> Result<String, String> {
+        self.column(name)
+            .map(|column| quote_identifier(&column.storage_name))
+            .ok_or_else(|| format!("column not found: {name}"))
+    }
+
+    /// Whole-column numbers for conditional formatting, over the rows `view`
+    /// leaves, in one scan. Values that aren't numbers count as blanks.
+    pub fn column_aggregates(
+        &self,
+        view: &ViewQuery,
+        requests: &[(String, diver_format::Aggregate)],
+    ) -> Result<Vec<Option<f64>>, String> {
+        use diver_format::Aggregate;
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut projection = Vec::new();
+        for (name, aggregate) in requests {
+            let identifier = self.quoted_column(name)?;
+            let number = format!("TRY_CAST({identifier} AS DOUBLE)");
+            let value = match aggregate {
+                Aggregate::Min => format!("min({number})"),
+                Aggregate::Max => format!("max({number})"),
+                Aggregate::Mean => format!("avg({number})"),
+                Aggregate::Median => format!("quantile_cont({number}, 0.5)"),
+                Aggregate::Sum => format!("sum({number})"),
+                Aggregate::Count => format!("count({identifier})"),
+                Aggregate::Distinct => format!("count(DISTINCT {identifier})"),
+                Aggregate::Stdev => format!("stddev_samp({number})"),
+                Aggregate::Percentile(p) => format!("quantile_cont({number}, {})", p.clamp(0.0, 1.0)),
+            };
+            projection.push(format!("CAST({value} AS DOUBLE)"));
+        }
+        let (from, parameters) = self.filtered_rows(view, None)?;
+        let sql = format!("SELECT {}\n{from}", projection.join(", "));
+        let error = |error: duckdb::Error| error.to_string();
+        let mut statement = self.connection.prepare(&sql).map_err(error)?;
+        let mut rows = statement.query(params_from_iter(parameters.iter())).map_err(error)?;
+        let row = rows.next().map_err(error)?.ok_or("missing aggregate row")?;
+        (0..requests.len()).map(|index| row.get::<_, Option<f64>>(index).map_err(error)).collect()
+    }
+
+    /// How many of the rows `view` leaves hold each of `values`, which are
+    /// written as the grid shows them. Values with no rows are left out.
+    pub fn value_counts(&self, view: &ViewQuery, column: &str, values: &[String]) -> Result<Vec<(String, usize)>, String> {
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rendered = format!("CAST({} AS VARCHAR)", self.quoted_column(column)?);
+        let placeholders = vec!["?"; values.len()].join(", ");
+        let (from, mut parameters) = self.filtered_rows(view, Some(format!("{rendered} IN ({placeholders})")))?;
+        parameters.extend(values.iter().map(|value| Value::Text(value.clone())));
+        let sql = format!("SELECT {rendered}, count(*)\n{from}\nGROUP BY 1");
+        let error = |error: duckdb::Error| error.to_string();
+        let mut statement = self.connection.prepare(&sql).map_err(error)?;
+        statement
+            .query_map(params_from_iter(parameters.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error)
+    }
+
+    /// Where each of `values` stands among the column's numbers in the rows
+    /// `view` leaves, in one scan.
+    pub fn value_positions(
+        &self,
+        view: &ViewQuery,
+        column: &str,
+        values: &[f64],
+    ) -> Result<Vec<diver_format::stats::Position>, String> {
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let number = format!("TRY_CAST({} AS DOUBLE)", self.quoted_column(column)?);
+        let mut projection = Vec::new();
+        let mut parameters = Vec::new();
+        for value in values {
+            projection.push("count(*) FILTER (WHERE x > ?)".to_owned());
+            projection.push("count(*) FILTER (WHERE x < ?)".to_owned());
+            parameters.extend([Value::Double(*value), Value::Double(*value)]);
+        }
+        projection.push("count(x)".to_owned());
+        let (from, filter_parameters) = self.filtered_rows(view, None)?;
+        parameters.extend(filter_parameters);
+        let sql = format!("SELECT {}\nFROM (SELECT {number} AS x\n{from})", projection.join(", "));
+        let error = |error: duckdb::Error| error.to_string();
+        let mut statement = self.connection.prepare(&sql).map_err(error)?;
+        let mut rows = statement.query(params_from_iter(parameters.iter())).map_err(error)?;
+        let row = rows.next().map_err(error)?.ok_or("missing position row")?;
+        let count = row.get::<_, i64>(values.len() * 2).map_err(error)? as usize;
+        (0..values.len())
+            .map(|index| {
+                Ok(diver_format::stats::Position {
+                    above: row.get::<_, i64>(index * 2).map_err(error)? as usize,
+                    below: row.get::<_, i64>(index * 2 + 1).map_err(error)? as usize,
+                    count,
+                })
+            })
+            .collect()
+    }
+
     /// Row, null, and exact distinct counts plus min and max for each column,
     /// over every row of this store, in one scan.
     pub fn column_summaries(&self, columns: &[String]) -> Result<Vec<ColumnSummary>, String> {
@@ -2810,6 +2927,39 @@ mod tests {
         assert_eq!((summaries[2].nulls, summaries[2].unique), (1, 2));
         assert_eq!(summaries[2].min, None);
         assert!(source.column_summaries(&["missing".into()]).is_err());
+    }
+
+    #[test]
+    fn formatting_statistics_cover_the_rows_the_filters_leave() {
+        let store = store(
+            "CREATE TABLE qp_data AS SELECT * FROM (VALUES \
+             ('North', 10), ('South', NULL), ('North', 30), (NULL, 5), ('North', 10)) t(region, n)",
+        );
+        let north = ViewQuery {
+            filters: vec![ColumnFilter {
+                column: "region".into(),
+                values: vec![crate::domain::documents::ScalarKey::String("North".into())],
+                condition: None,
+                sql: false,
+            }],
+            ..ViewQuery::default()
+        };
+        use diver_format::Aggregate;
+        let requests = [Aggregate::Min, Aggregate::Max, Aggregate::Count, Aggregate::Distinct, Aggregate::Median]
+            .map(|aggregate| ("n".to_string(), aggregate));
+        assert_eq!(
+            store.column_aggregates(&north, &requests).unwrap(),
+            [Some(10.0), Some(30.0), Some(3.0), Some(2.0), Some(10.0)]
+        );
+        let mut counts = store.value_counts(&north, "n", &["10".into(), "30".into(), "5".into()]).unwrap();
+        counts.sort();
+        // 5 is only in a row the filter leaves out.
+        assert_eq!(counts, [("10".to_string(), 2), ("30".to_string(), 1)]);
+        assert_eq!(
+            store.value_positions(&north, "n", &[10.0]).unwrap(),
+            [diver_format::stats::Position { above: 1, below: 0, count: 3 }]
+        );
+        assert!(store.value_counts(&north, "n", &[]).unwrap().is_empty());
     }
 
     #[test]

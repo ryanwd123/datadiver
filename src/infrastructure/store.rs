@@ -295,6 +295,27 @@ impl Store {
         dispatch!(self, store => store.column_summaries(columns))
     }
 
+    pub fn column_aggregates(
+        &self,
+        view: &ViewQuery,
+        requests: &[(String, diver_format::Aggregate)],
+    ) -> Result<Vec<Option<f64>>, String> {
+        dispatch!(self, store => store.column_aggregates(view, requests))
+    }
+
+    pub fn value_counts(&self, view: &ViewQuery, column: &str, values: &[String]) -> Result<Vec<(String, usize)>, String> {
+        dispatch!(self, store => store.value_counts(view, column, values))
+    }
+
+    pub fn value_positions(
+        &self,
+        view: &ViewQuery,
+        column: &str,
+        values: &[f64],
+    ) -> Result<Vec<diver_format::stats::Position>, String> {
+        dispatch!(self, store => store.value_positions(view, column, values))
+    }
+
     pub fn top_values(&self, column: &str, limit: usize) -> Result<Vec<(Option<String>, usize)>, String> {
         dispatch!(self, store => store.top_values(column, limit))
     }

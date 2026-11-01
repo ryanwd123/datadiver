@@ -578,9 +578,16 @@ impl Env<'_> {
             return Value::Null;
         }
         match f {
-            Relative::Duplicate => return Value::Bool(self.stats.frequency(column, &value) > 1),
-            Relative::Unique => return Value::Bool(self.stats.frequency(column, &value) == 1),
-            Relative::Frequency => return Value::Number(self.stats.frequency(column, &value) as f64),
+            Relative::Duplicate | Relative::Unique | Relative::Frequency => {
+                let Some(count) = self.stats.frequency(column, &value) else {
+                    return Value::Null;
+                };
+                return match f {
+                    Relative::Duplicate => Value::Bool(count > 1),
+                    Relative::Unique => Value::Bool(count == 1),
+                    _ => Value::Number(count as f64),
+                };
+            }
             Relative::Zscore => {
                 let (Some(n), Some(mean), Some(sd)) = (
                     value.number(),

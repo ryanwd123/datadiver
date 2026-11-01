@@ -216,6 +216,132 @@ impl PolarsStore {
         Ok(name)
     }
 
+    /// The rows `view`'s search and filters leave.
+    fn view_frame_of(&self, view: &ViewQuery) -> Result<LazyFrame, String> {
+        let frame = self.query_frame(self.view_mentions_rowid(view));
+        Ok(match self.view_predicate(view)? {
+            Some(predicate) => frame.filter(predicate),
+            None => frame,
+        })
+    }
+
+    /// Whole-column numbers for conditional formatting, over the rows `view`
+    /// leaves, in one pass. Values that aren't numbers count as blanks.
+    pub fn column_aggregates(
+        &self,
+        view: &ViewQuery,
+        requests: &[(String, diver_format::Aggregate)],
+    ) -> Result<Vec<Option<f64>>, String> {
+        use diver_format::Aggregate;
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut projection = Vec::new();
+        for (index, (name, aggregate)) in requests.iter().enumerate() {
+            let column = self.schema_column(name)?;
+            let raw = col(name.as_str());
+            let number = if is_nested(&column.dtype()) {
+                lit(NULL).cast(DataType::Float64)
+            } else {
+                raw.clone().cast(DataType::Float64)
+            };
+            let value = match aggregate {
+                Aggregate::Min => number.min(),
+                Aggregate::Max => number.max(),
+                Aggregate::Mean => number.mean(),
+                Aggregate::Median => number.median(),
+                Aggregate::Sum => number.sum(),
+                Aggregate::Count => raw.count(),
+                Aggregate::Distinct => raw.drop_nulls().n_unique(),
+                Aggregate::Stdev => number.std(1),
+                Aggregate::Percentile(p) => number.quantile(lit(p.clamp(0.0, 1.0)), QuantileMethod::Linear),
+            };
+            projection.push(value.cast(DataType::Float64).alias(format!("a{index}")));
+        }
+        let frame = self.collect(self.view_frame_of(view)?.select(projection))?;
+        (0..requests.len())
+            .map(|index| {
+                Ok(frame
+                    .column(&format!("a{index}"))
+                    .map_err(polars_error)?
+                    .get(0)
+                    .map_err(polars_error)?
+                    .extract::<f64>())
+            })
+            .collect()
+    }
+
+    /// How many of the rows `view` leaves hold each of `values`, which are
+    /// written as the grid shows them. Values with no rows are left out.
+    pub fn value_counts(&self, view: &ViewQuery, column: &str, values: &[String]) -> Result<Vec<(String, usize)>, String> {
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let schema = self.schema_column(column)?;
+        let wanted = Series::new("wanted".into(), values);
+        let frame = self
+            .view_frame_of(view)?
+            .select([rendered(col(column), &schema.dtype()).alias("value")])
+            .filter(col("value").is_in(lit(wanted).implode(false), false))
+            .group_by([col("value")])
+            .agg([len().alias("n")]);
+        let counted = self.collect(frame)?;
+        let names = counted.column("value").map_err(polars_error)?.str().map_err(polars_error)?.clone();
+        let counts = counted.column("n").map_err(polars_error)?.cast(&DataType::UInt64).map_err(polars_error)?;
+        let counts = counts.u64().map_err(polars_error)?;
+        Ok(names
+            .iter()
+            .zip(counts.iter())
+            .filter_map(|(name, count)| Some((name?.to_owned(), count? as usize)))
+            .collect())
+    }
+
+    /// Where each of `values` stands among the column's numbers in the rows
+    /// `view` leaves, in one pass.
+    pub fn value_positions(
+        &self,
+        view: &ViewQuery,
+        column: &str,
+        values: &[f64],
+    ) -> Result<Vec<diver_format::stats::Position>, String> {
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        let schema = self.schema_column(column)?;
+        let number = if is_nested(&schema.dtype()) {
+            lit(NULL).cast(DataType::Float64)
+        } else {
+            col(column).cast(DataType::Float64)
+        };
+        let mut projection = Vec::new();
+        for (index, value) in values.iter().enumerate() {
+            let count = |predicate: Expr| predicate.cast(DataType::UInt64).sum().cast(DataType::Float64);
+            projection.push(count(number.clone().gt(lit(*value))).alias(format!("above{index}")));
+            projection.push(count(number.clone().lt(lit(*value))).alias(format!("below{index}")));
+        }
+        projection.push(number.count().cast(DataType::Float64).alias("count"));
+        let frame = self.collect(self.view_frame_of(view)?.select(projection))?;
+        let read = |name: &str| -> Result<usize, String> {
+            Ok(frame
+                .column(name)
+                .map_err(polars_error)?
+                .get(0)
+                .map_err(polars_error)?
+                .extract::<f64>()
+                .unwrap_or(0.0) as usize)
+        };
+        let count = read("count")?;
+        (0..values.len())
+            .map(|index| {
+                Ok(diver_format::stats::Position {
+                    above: read(&format!("above{index}"))?,
+                    below: read(&format!("below{index}"))?,
+                    count,
+                })
+            })
+            .collect()
+    }
+
     /// Row, null, and exact distinct counts plus min and max for each column,
     /// over every row of this store.
     pub fn column_summaries(&self, columns: &[String]) -> Result<Vec<ColumnSummary>, String> {
@@ -1627,6 +1753,42 @@ mod tests {
         assert_eq!(store.width_sampling_calls(), 2);
         assert!(store.width_candidates(None, &[]).unwrap().is_empty());
         assert_eq!(store.width_sampling_calls(), 2);
+    }
+
+    #[test]
+    fn formatting_statistics_cover_the_rows_the_filters_leave() {
+        let store = PolarsStore::from_frame(
+            df!(
+                "region" => [Some("North"), Some("South"), Some("North"), None, Some("North")],
+                "n" => [Some(10i64), None, Some(30), Some(5), Some(10)],
+            )
+            .unwrap(),
+        );
+        let north = ViewQuery {
+            filters: vec![ColumnFilter {
+                column: "region".into(),
+                values: vec![crate::domain::documents::ScalarKey::String("North".into())],
+                condition: None,
+                sql: false,
+            }],
+            ..ViewQuery::default()
+        };
+        use diver_format::Aggregate;
+        let requests = [Aggregate::Min, Aggregate::Max, Aggregate::Count, Aggregate::Distinct, Aggregate::Median]
+            .map(|aggregate| ("n".to_string(), aggregate));
+        assert_eq!(
+            store.column_aggregates(&north, &requests).unwrap(),
+            [Some(10.0), Some(30.0), Some(3.0), Some(2.0), Some(10.0)]
+        );
+        let mut counts = store.value_counts(&north, "n", &["10".into(), "30".into(), "5".into()]).unwrap();
+        counts.sort();
+        // 5 is only in a row the filter leaves out.
+        assert_eq!(counts, [("10".to_string(), 2), ("30".to_string(), 1)]);
+        assert_eq!(
+            store.value_positions(&north, "n", &[10.0]).unwrap(),
+            [diver_format::stats::Position { above: 1, below: 0, count: 3 }]
+        );
+        assert!(store.value_counts(&north, "n", &[]).unwrap().is_empty());
     }
 
     #[test]
