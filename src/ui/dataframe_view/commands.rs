@@ -3,7 +3,7 @@
 use super::*;
 use crate::application::keymap::{ACTIONS as KEYMAP_ACTIONS, ActionId, canonical_keystroke};
 use crate::domain::actions;
-use crate::domain::documents::ViewAction;
+use crate::domain::documents::{ConditionalFormat, ViewAction};
 use crate::infrastructure::launcher;
 use crate::ui::cell_detail::CellContent;
 use crate::ui::platform::KeyEvent;
@@ -148,6 +148,7 @@ impl DataFrameView {
             CommandId::UnfreezeAll => self.unfreeze_all(cx),
             CommandId::Export => self.export_result(cx),
             CommandId::ToggleTotals => self.toggle_totals(cx),
+            CommandId::ConditionalFormatting => self.open_format_manager(cx),
             CommandId::RecalculateWidths => self.recalculate_widths(cx),
             CommandId::HideColumns => self.hide_selected_columns(cx),
             CommandId::ChooseColumns => self.open_column_chooser(cx),
@@ -632,6 +633,47 @@ impl DataFrameView {
 
     /// Opens the actions editor or menu for a screenshot, with sample actions
     /// when the view has none.
+    /// For screenshots: formats a view without formats by its columns' types
+    /// (duplicates in the first text column; bars, a color scale and arrows
+    /// in the number columns), and for `formatting` opens the manager.
+    pub(crate) fn capture_formatting(&mut self, target: &str, cx: &mut Cx<Self>) {
+        let has_formats = self.session.working.as_ref().is_some_and(|view| !view.formats.is_empty());
+        if !has_formats {
+            let result = &self.session.result;
+            let kinds: Vec<(String, diver_format::ValueKind)> = result
+                .columns
+                .iter()
+                .zip(result.dtypes.iter())
+                .map(|(column, dtype)| {
+                    (column.0.clone(), crate::application::conditional_format::value_kind(dtype))
+                })
+                .collect();
+            let of = |kind: diver_format::ValueKind| {
+                kinds.iter().filter(move |(_, k)| *k == kind).map(|(name, _)| name.clone())
+            };
+            let numbers: Vec<String> = of(diver_format::ValueKind::Number).collect();
+            let format = |rules: &str, column: Option<&String>| {
+                column.map(|column| ConditionalFormat { rules: rules.into(), columns: vec![column.clone()] })
+            };
+            let formats: Vec<ConditionalFormat> = [
+                format("if duplicate(c) then bg: #ffc7ce, text: #9c0006", of(diver_format::ValueKind::Text).next().as_ref()),
+                format("bar(#638ec6, fill=gradient);\nif c > avg(c) then bold", numbers.first()),
+                format("scale(#f8696b, #ffeb84, #63be7b)", numbers.get(1)),
+                format("if c > 0 then text: #006100, icon: up\nelif c < 0 then text: #c00000, icon: down", numbers.get(2)),
+                format("icons(traffic)", numbers.get(3)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            self.ensure_working_view();
+            let _ = self.session.edit_definition(|definition| definition.formats = formats);
+            self.refresh_formatting(cx);
+        }
+        if target == "formatting" {
+            self.open_format_manager(cx);
+        }
+    }
+
     pub(crate) fn capture_actions(&mut self, target: &str, cx: &mut Cx<Self>) {
         if self.view_actions().is_empty() {
             let column = self

@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod computation;
+pub mod conditional_format;
 pub mod history;
 pub mod keymap;
 pub(crate) mod navigation_history;

@@ -265,6 +265,7 @@ fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus() {
                 slicer_columns: Some(vec!["region".into()]),
                 condition_slicers: None,
                 hidden_columns: None,
+                formats: None,
                 file: None,
             },
         )

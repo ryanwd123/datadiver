@@ -6,6 +6,7 @@ pub mod column_completion;
 mod command_palette;
 pub mod database_tree;
 pub mod dataframe_view;
+pub mod format_manager;
 pub(crate) mod font_picker;
 pub mod grid;
 pub(crate) mod help;

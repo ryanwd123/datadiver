@@ -89,6 +89,11 @@ impl View for DataFrameView {
 
     fn caret(&self) -> Option<crate::ui::platform::Rect> {
         let focus = self.focus?;
+        if let Some(Dialog::Formatting(manager)) = &self.dialog
+            && let Some(caret) = manager.caret(Some(focus))
+        {
+            return Some(caret);
+        }
         if focus == self.search_input.id {
             return self.search_input.caret_rect();
         }
@@ -576,6 +581,9 @@ impl DataFrameView {
         if left_down && let Some(capture) = self.capture.clone() {
             self.mouse_drag(pos, &capture, hit, cx);
             return;
+        }
+        if let Some(Dialog::Formatting(manager)) = &mut self.dialog {
+            manager.mouse_move(pos, hit);
         }
         if self.dialog.is_none() && self.keymap_editor.is_none() {
             let grid_hit = match hit {

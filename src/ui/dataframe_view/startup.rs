@@ -340,6 +340,7 @@ impl DataFrameView {
             "help" => self.open_help(cx),
             "keymap" => self.open_keymap_editor(cx),
             "actions" | "action-menu" => self.capture_actions(target, cx),
+            "formatting" | "formatted" => self.capture_formatting(target, cx),
             "ai-providers" => self.open_ai_settings(cx),
             "database-tree" => self.toggle_database_tree(cx),
             "database-tree:sql" => {

@@ -953,11 +953,16 @@ mod tests {
             slicer_columns: Some(vec!["region".into()]),
             condition_slicers: None,
             hidden_columns: None,
+            formats: Some(vec![crate::domain::documents::ConditionalFormat {
+                rules: "if c > 100 then bold".into(),
+                columns: vec!["amount".into()],
+            }]),
             file: None,
         };
         let preferences = repository
             .update_table_preferences(&source, &patch)
             .unwrap();
+        assert_eq!(preferences.formats[0].rules, "if c > 100 then bold");
         assert_eq!(
             repository.load_table_preferences(&source).unwrap(),
             preferences

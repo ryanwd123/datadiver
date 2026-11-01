@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
+use crate::application::conditional_format::{GridFormatting, Lookups};
 use crate::application::keymap::{ActionId, KeyContext, KeymapFile, canonical_keystroke};
 use crate::application::theme::ThemeSettings;
 use crate::domain::documents::SortKey;
@@ -154,6 +155,51 @@ struct Layout {
     horizontal_bar: Rect,
 }
 
+fn theme_color(color: diver_format::Color) -> Color {
+    Color::rgba(u32::from_be_bytes([color.r, color.g, color.b, color.a]))
+}
+
+fn point_of((x, y): diver_format::draw::Point) -> crate::ui::platform::Point {
+    point(x, y)
+}
+
+/// Draws one mark of a formatted cell.
+fn draw_mark(canvas: &mut Canvas<Hit>, mark: &diver_format::draw::Mark) {
+    use diver_format::draw::Mark;
+    use diver_format::style::LineStyle;
+    let area = |r: &diver_format::draw::Rect| rect(r.x, r.y, r.w, r.h);
+    match mark {
+        Mark::Fill { rect: r, color } => canvas.fill(area(r), theme_color(*color)),
+        Mark::Fade { rect: r, color } => canvas.fill_fade(area(r), theme_color(*color)),
+        Mark::Outline { rect: r, color, width, style } => match style {
+            // The grid's stroke is drawn inside its rect.
+            LineStyle::Solid => canvas.stroke(area(r).inset(-width / 2.0), theme_color(*color), *width),
+            LineStyle::Dashed | LineStyle::Dotted => {
+                canvas.dashed_rect(area(r), theme_color(*color), *width, *style == LineStyle::Dotted)
+            }
+        },
+        Mark::Line { from, to, color, width, style } => match style {
+            LineStyle::Solid => canvas.line(point_of(*from), point_of(*to), theme_color(*color), *width),
+            LineStyle::Dashed | LineStyle::Dotted => canvas.dashed_line(
+                point_of(*from),
+                point_of(*to),
+                theme_color(*color),
+                *width,
+                *style == LineStyle::Dotted,
+            ),
+        },
+        Mark::Polyline { points, color, width } => {
+            let points: Vec<_> = points.iter().map(|p| point_of(*p)).collect();
+            canvas.polyline(&points, theme_color(*color), *width);
+        }
+        Mark::Polygon { points, color } => {
+            let points: Vec<_> = points.iter().map(|p| point_of(*p)).collect();
+            canvas.fill_polygon(&points, theme_color(*color));
+        }
+        Mark::Circle { center, radius, color } => canvas.fill_circle(point_of(*center), *radius, theme_color(*color)),
+    }
+}
+
 pub struct GridView {
     pub id: WidgetId,
     result: ResultSnapshot,
@@ -186,6 +232,10 @@ pub struct GridView {
     footer: Option<GridFooter>,
     /// Widen columns to fit the footer once width inference settles.
     footer_fit: bool,
+    /// The view's conditional formatting, with the statistics read so far.
+    formatting: Option<GridFormatting>,
+    /// Counts formatting changes, so work for an older one is dropped.
+    formatting_generation: u64,
     layout: Layout,
     /// Cells drawn cut short in the last frame, which offer their full text.
     overflowing: HashSet<(usize, usize)>,
@@ -317,6 +367,8 @@ impl GridView {
             highlights: Default::default(),
             footer: None,
             footer_fit: false,
+            formatting: None,
+            formatting_generation: 0,
             layout: Layout::default(),
             overflowing: HashSet::new(),
             hover: None,
@@ -324,6 +376,68 @@ impl GridView {
             tooltip: None,
             events: Vec::new(),
         }
+    }
+
+    /// Replaces the conditional formatting, keeping statistics that still
+    /// hold, and reads the whole-column numbers its rules need.
+    pub fn set_formatting<V: GridHost>(&mut self, formatting: Option<GridFormatting>, cx: &mut Cx<V>) {
+        let mut formatting = formatting;
+        if let (Some(new), Some(old)) = (&mut formatting, self.formatting.take()) {
+            new.keep_known(old);
+        }
+        self.formatting = formatting;
+        self.formatting_generation += 1;
+        let Some(formatting) = &self.formatting else { return };
+        let requests = formatting.missing_aggregates();
+        if requests.is_empty() {
+            return;
+        }
+        let scope = formatting.scope.clone();
+        let generation = self.formatting_generation;
+        cx.spawn(
+            move || {
+                let store = scope.store.lock().map_err(|_| "store lock poisoned".to_owned())?;
+                let values = store.column_aggregates(&scope.view, &requests)?;
+                Ok::<_, String>((requests, values))
+            },
+            move |host: &mut V, cx, read| {
+                let grid = host.grid_mut();
+                if grid.formatting_generation != generation {
+                    return;
+                }
+                // A failed read leaves those rules blank rather than retrying each frame.
+                if let (Some(formatting), Ok((requests, values))) = (&mut grid.formatting, read) {
+                    formatting.set_aggregates(&requests, values);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+    }
+
+    pub fn formatting(&self) -> Option<&GridFormatting> {
+        self.formatting.as_ref()
+    }
+
+    /// Looks up the counts and ranks of values on screen.
+    fn request_lookups<V: GridHost>(&mut self, lookups: Lookups, cx: &mut Cx<V>) {
+        let Some(formatting) = &self.formatting else { return };
+        let scope = formatting.scope.clone();
+        let generation = self.formatting_generation;
+        cx.spawn(
+            move || lookups.run(&scope),
+            move |host: &mut V, cx, found| {
+                let grid = host.grid_mut();
+                if grid.formatting_generation != generation {
+                    return;
+                }
+                if let (Some(formatting), Ok(found)) = (&mut grid.formatting, found) {
+                    formatting.absorb(found);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
     }
 
     pub fn set_footer(&mut self, footer: Option<GridFooter>) {
@@ -1489,33 +1603,92 @@ impl GridView {
                         if is_frozen {
                             canvas.fill(cell, if row % 2 == 1 { frozen_stripe } else { frozen_background });
                         }
+                        let store_column = column_indices[column];
+                        let style = match (&self.formatting, page_rows.get(offset)) {
+                            (Some(formatting), Some(cached)) if formatting.formats(store_column) => {
+                                Some(formatting.style(store_column, cached, row))
+                            }
+                            _ => None,
+                        }
+                        .filter(|style| !style.is_plain());
+                        let marks = style.as_ref().map(|style| {
+                            diver_format::draw::layout(style, diver_format::draw::Rect::new(cell.x, cell.y, cell.w - 1.0, cell.h))
+                        });
+                        if let Some(marks) = &marks {
+                            canvas.push_clip(rect(cell.x, cell.y, cell.w - 1.0, cell.h));
+                            for mark in &marks.under {
+                                draw_mark(canvas, mark);
+                            }
+                            canvas.pop_clip();
+                        }
                         if selected {
                             canvas.fill(cell, active);
                         }
                         canvas.fill(rect(cell.right() - 1.0, cell.y, 1.0, cell.h), grid_border);
                         let is_numeric = self.formats[column].is_some();
-                        let align = if is_numeric {
-                            Align::Right
-                        } else if temporal_type_name(&dtypes[column]) {
-                            Align::Center
-                        } else {
-                            Align::Left
+                        let align = match style.as_ref().and_then(|style| style.align) {
+                            Some(diver_format::style::Align::Left) => Align::Left,
+                            Some(diver_format::style::Align::Center) => Align::Center,
+                            Some(diver_format::style::Align::Right) => Align::Right,
+                            None if is_numeric => Align::Right,
+                            None if temporal_type_name(&dtypes[column]) => Align::Center,
+                            None => Align::Left,
                         };
-                        let available = (cell.w - font.size - if active_cell { 4.0 } else { 1.0 }).max(1.0);
-                        let text_area = rect(cell.x + 8.0, cell.y, available, cell.h);
-                        let layout = text::layout(&text, font, TextOptions::truncated(available).align(align));
+                        // An icon or sparkline takes room from the text.
+                        let text_box = match marks.as_ref().map(|marks| marks.text) {
+                            Some(Some(t)) => rect(t.x, t.y, t.w, t.h),
+                            Some(None) => rect(cell.x, cell.y, 0.0, cell.h),
+                            None => cell,
+                        };
+                        let cell_font = match &style {
+                            Some(style) if style.bold || style.italic => Font {
+                                weight: if style.bold { crate::ui::platform::Weight::Bold } else { font.weight },
+                                italic: style.italic || font.italic,
+                                ..font.clone()
+                            },
+                            _ => font.clone(),
+                        };
+                        let available = (text_box.w - font.size - if active_cell { 4.0 } else { 1.0 }).max(1.0);
+                        // Text after an icon sits close to it.
+                        let inset = if text_box.x > cell.x { 2.0 } else { 8.0 };
+                        let text_area = rect(text_box.x + inset, cell.y, available, cell.h);
+                        let layout = text::layout(&text, &cell_font, TextOptions::truncated(available).align(align));
                         let origin = point(text_area.x, cell.y + ((row_height - layout.height) / 2.0).max(0.0));
                         canvas.push_clip(rect(cell.x, cell.y, cell.w - 1.0, cell.h));
-                        if let Some(terms) = highlight_terms.get(column)
-                            && !terms.is_empty()
-                        {
-                            for range in crate::domain::query::highlight_ranges(&text, terms) {
-                                for part in layout.range_rects(range.start, range.end) {
-                                    canvas.fill(part.offset(origin.x, origin.y), SEARCH_HIGHLIGHT);
+                        if marks.as_ref().is_none_or(|marks| marks.text.is_some()) {
+                            if let Some(terms) = highlight_terms.get(column)
+                                && !terms.is_empty()
+                            {
+                                for range in crate::domain::query::highlight_ranges(&text, terms) {
+                                    for part in layout.range_rects(range.start, range.end) {
+                                        canvas.fill(part.offset(origin.x, origin.y), SEARCH_HIGHLIGHT);
+                                    }
+                                }
+                            }
+                            // Text on a formatted fill reads in black or white, whichever suits it.
+                            let ink = style
+                                .as_ref()
+                                .and_then(|style| style.text.or(style.background.filter(|b| b.a > 200).map(|b| b.contrast_text())))
+                                .map(theme_color)
+                                .unwrap_or(foreground);
+                            canvas.draw_layout(&layout, origin, ink);
+                            if let Some(style) = style.as_ref().filter(|style| style.underline || style.strike) {
+                                for part in layout.range_rects(0, text.len()) {
+                                    let part = part.offset(origin.x, origin.y);
+                                    if style.underline {
+                                        canvas.fill(rect(part.x, part.y + part.h * 0.86, part.w, 1.0), ink);
+                                    }
+                                    if style.strike {
+                                        canvas.fill(rect(part.x, part.y + part.h * 0.55, part.w, 1.0), ink);
+                                    }
                                 }
                             }
                         }
-                        canvas.draw_layout(&layout, origin, foreground);
+                        if let Some(marks) = &marks {
+                            for mark in &marks.over {
+                                draw_mark(canvas, mark);
+                            }
+                        }
                         canvas.pop_clip();
                         if active_cell {
                             canvas.stroke(cell, active_border, 2.0);
@@ -1531,6 +1704,13 @@ impl GridView {
                 }
             }
             canvas.pop_clip();
+            if let Some(formatting) = &mut self.formatting {
+                let columns: Vec<usize> = visible.iter().map(|column| column_indices[*column]).collect();
+                let lookups = formatting.missing_lookups(&page_rows, &columns);
+                if !lookups.is_empty() {
+                    self.request_lookups(lookups, cx);
+                }
+            }
         }
         // Footer.
         if let Some(footer) = self.footer.clone() {

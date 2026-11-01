@@ -56,6 +56,7 @@ pub enum CommandId {
     UnfreezeAll,
     Export,
     ToggleTotals,
+    ConditionalFormatting,
     RecalculateWidths,
     HideColumns,
     ChooseColumns,
@@ -467,6 +468,12 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::ToggleTotals,
         key: "toggle_totals",
         label: "Show or hide totals",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ConditionalFormatting,
+        key: "conditional_formatting",
+        label: "Conditional formatting",
         default_binding: None,
     },
     Command {

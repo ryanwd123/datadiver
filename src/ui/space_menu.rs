@@ -30,6 +30,7 @@ const SHARED: &[MenuEntry] = &[
     entry("a", false, CommandId::Aggregation),
     entry("p", false, CommandId::Pivot),
     entry("x", false, CommandId::RunAction),
+    entry("m", false, CommandId::ConditionalFormatting),
 ];
 
 const TABLE: &[MenuEntry] = &[
@@ -274,6 +275,7 @@ fn menu_action(command: CommandId) -> Option<ActionId> {
         CommandId::CopyAs => Some(ActionId::SpaceCopyAs),
         CommandId::Export => Some(ActionId::SpaceExport),
         CommandId::ToggleTotals => Some(ActionId::SpaceToggleTotals),
+        CommandId::ConditionalFormatting => Some(ActionId::SpaceConditionalFormatting),
         CommandId::Save => Some(ActionId::SpaceSave),
         CommandId::Search => Some(ActionId::SpaceSearch),
         CommandId::AddSlicer => Some(ActionId::SpaceAddSlicer),

@@ -65,6 +65,36 @@ impl Brushes {
     }
 }
 
+/// A stroke style from the shared factory; `None` draws solid.
+fn stroke_style(dash: D2D1_DASH_STYLE, cap: D2D1_CAP_STYLE) -> Option<ID2D1StrokeStyle> {
+    let props = D2D1_STROKE_STYLE_PROPERTIES {
+        startCap: cap,
+        endCap: cap,
+        dashCap: cap,
+        lineJoin: D2D1_LINE_JOIN_ROUND,
+        miterLimit: 10.0,
+        dashStyle: dash,
+        dashOffset: 0.0,
+    };
+    unsafe { super::window::d2d_factory().CreateStrokeStyle(&props, None).ok() }
+}
+
+/// A path through `points`, filled and closed or open.
+fn path(points: &[Point], closed: bool) -> Option<ID2D1PathGeometry> {
+    let (first, rest) = points.split_first()?;
+    unsafe {
+        let geometry = super::window::d2d_factory().CreatePathGeometry().ok()?;
+        let sink = geometry.Open().ok()?;
+        let begin = if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW };
+        sink.BeginFigure(Vector2 { X: first.x, Y: first.y }, begin);
+        let rest: Vec<Vector2> = rest.iter().map(|p| Vector2 { X: p.x, Y: p.y }).collect();
+        sink.AddLines(&rest);
+        sink.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+        sink.Close().ok()?;
+        Some(geometry)
+    }
+}
+
 fn d2d_color(color: Color) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: color.r,
@@ -241,6 +271,87 @@ impl<'a, H: Clone> Canvas<'a, H> {
                 width,
                 None,
             );
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+    }
+
+    /// A line drawn dashed or dotted (`dots`), antialiased.
+    pub fn dashed_line(&mut self, from: Point, to: Point, color: Color, width: f32, dots: bool) {
+        let brush = self.brush(color);
+        let style = stroke_style(if dots { D2D1_DASH_STYLE_DOT } else { D2D1_DASH_STYLE_DASH }, D2D1_CAP_STYLE_FLAT);
+        unsafe {
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            self.target.DrawLine(
+                Vector2 { X: from.x, Y: from.y },
+                Vector2 { X: to.x, Y: to.y },
+                &brush,
+                width,
+                style.as_ref(),
+            );
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+    }
+
+    /// `r`'s outline, its stroke centered on the edges, dashed or dotted.
+    pub fn dashed_rect(&mut self, r: Rect, color: Color, width: f32, dots: bool) {
+        let brush = self.brush(color);
+        let style = stroke_style(if dots { D2D1_DASH_STYLE_DOT } else { D2D1_DASH_STYLE_DASH }, D2D1_CAP_STYLE_FLAT);
+        unsafe { self.target.DrawRectangle(&d2d_rect(r), &brush, width, style.as_ref()) };
+    }
+
+    /// `color` at `r`'s left fading to clear at its right.
+    pub fn fill_fade(&mut self, r: Rect, color: Color) {
+        if r.is_empty() {
+            return;
+        }
+        let stops = [
+            D2D1_GRADIENT_STOP { position: 0.0, color: d2d_color(color) },
+            D2D1_GRADIENT_STOP { position: 1.0, color: d2d_color(Color { a: color.a * 0.1, ..color }) },
+        ];
+        unsafe {
+            let Ok(collection) = self.target.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+            else {
+                return;
+            };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: Vector2 { X: r.x, Y: r.y },
+                endPoint: Vector2 { X: r.right(), Y: r.y },
+            };
+            if let Ok(brush) = self.target.CreateLinearGradientBrush(&props, None, &collection) {
+                self.target.FillRectangle(&d2d_rect(r), &brush);
+            }
+        }
+    }
+
+    /// Fills the polygon through `points`, antialiased.
+    pub fn fill_polygon(&mut self, points: &[Point], color: Color) {
+        let Some(geometry) = path(points, true) else { return };
+        let brush = self.brush(color);
+        unsafe {
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            self.target.FillGeometry(&geometry, &brush, None);
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+    }
+
+    /// Connected segments through `points`, with round joins and ends.
+    pub fn polyline(&mut self, points: &[Point], color: Color, width: f32) {
+        let Some(geometry) = path(points, false) else { return };
+        let brush = self.brush(color);
+        let style = stroke_style(D2D1_DASH_STYLE_SOLID, D2D1_CAP_STYLE_ROUND);
+        unsafe {
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            self.target.DrawGeometry(&geometry, &brush, width, style.as_ref());
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+    }
+
+    pub fn fill_circle(&mut self, center: Point, radius: f32, color: Color) {
+        let brush = self.brush(color);
+        let ellipse = D2D1_ELLIPSE { point: Vector2 { X: center.x, Y: center.y }, radiusX: radius, radiusY: radius };
+        unsafe {
+            self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            self.target.FillEllipse(&ellipse, &brush);
             self.target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
         }
     }

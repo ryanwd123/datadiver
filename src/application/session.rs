@@ -150,6 +150,7 @@ impl WindowSession {
         definition.view = ViewKind::Table(config);
         if self.working.is_none() {
             definition.slicers = self.direct_table.slicers();
+            definition.formats = self.direct_table.formats.clone();
         }
         self.working = Some(definition);
         self.identity = SessionIdentity::DraftTable;
@@ -238,6 +239,7 @@ impl WindowSession {
                 .filter(|card| card.condition.is_some() && !card.sql)
                 .map(|card| card.column.clone())
                 .collect();
+            self.direct_table.formats = definition.formats.clone();
             self.dirty |=
                 definition.name != previous_name || definition.actions != previous_actions;
         } else {
@@ -284,6 +286,7 @@ impl WindowSession {
             config.sort = self.sort.clone();
             definition.view = ViewKind::Table(config);
             definition.slicers = self.direct_table.slicers();
+            definition.formats = self.direct_table.formats.clone();
             self.working = Some(definition);
             self.dirty = false;
         }

@@ -54,6 +54,8 @@ mod file_settings;
 mod filter_tests;
 #[cfg(test)]
 mod focus_tests;
+#[cfg(test)]
+mod formatting_tests;
 mod input;
 mod navigation;
 #[cfg(test)]
@@ -294,6 +296,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::FocusSlicers,
     CommandId::Export,
     CommandId::ToggleTotals,
+    CommandId::ConditionalFormatting,
     CommandId::RecalculateWidths,
     CommandId::HideColumns,
     CommandId::ChooseColumns,

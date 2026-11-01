@@ -38,6 +38,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Browse the database:** a sidebar tree of saved views, database tables and views, attached databases, and watched files and folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
 - **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals.
+- **Conditional formatting:** color, bold, data bars, color scales, icons and sparklines from short rules like `if duplicate(c) then bg: mistyrose`, with presets and completion.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
 - **Write SQL:** a SQL editor with highlighting, table, column, and file path completion, SQL sources whose rows you can build views on, SQL scripts, and a startup script.
 - **Ask AI for SQL:** describe what you want and get SQL checked by DuckDB before you run it, using any OpenAI-compatible provider.
@@ -131,6 +132,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | < / > | Decrease / increase decimal places of the selected columns |
 | , | Toggle thousands grouping of the selected columns |
 | T | Show or hide totals (queries) |
+| M | Conditional formatting |
 | D | Show or hide cell detail |
 | N | Drop files to watch |
 | I | Information and column profiles |
@@ -148,6 +150,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | G / A / P / Z | Group By / Aggregations / Pivot By / Add slicer |
 | E | Export result to file |
 | T | Show or hide totals (queries) |
+| M | Conditional formatting |
 | H / Shift+H | Hide selected columns / show or hide columns (tables) |
 | X | Run view action |
 
@@ -219,6 +222,20 @@ The Aggregations manager has a **Columns / Functions** switch. **Functions** lis
 Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid edits show an inline error and preserve the last successful grid. **Tab/Shift+Tab** cycles between available columns, configured entries, and SQL; **Alt+↑/↓** reorders and **Delete** removes a configured entry. Managers stay open for further edits; close with **Escape** or the close button.
 
 - **Totals** (**T**) add a grand total row under the grid and, for pivots, a **(Total)** column for each row. Totals aggregate the source rows, so means, medians, and distinct counts total correctly.
+
+## Conditional formatting
+
+Press **M** (or **Space M**) in the grid to open the formatting manager. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
+
+```text
+if duplicate(c) then bg: #ffc7ce, text: #9c0006;
+if c > "target" then bold, border: 1px green;
+if c > 0 then icon: up elif c < 0 then icon: down;
+scale(red, white, green, mid=0);
+bar(steelblue, fill=gradient)
+```
+
+`c` is the cell, `"name"` another column of the row, and `'text'` text. Click a preset to add its rule, press **Ctrl+Space** for what can come next, type `"` for column names and `#` for colors (with a color picker). Problems are underlined and listed under the rules. Changes show in the grid as you type. Whole-column tests such as duplicates, ranks, averages and color scales count the rows the slicers and filters leave, not a search's. A plain file remembers its formats; a view saves them. The language is described in [crates/diver_format/README.md](crates/diver_format/README.md).
 
 Views store the source path and the exploration configuration. They reference the original source file, so sharing a view also requires making that source available.
 

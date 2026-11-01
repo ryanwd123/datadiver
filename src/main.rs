@@ -134,6 +134,8 @@ fn main() {
                             | "editor:aggregation-error"
                             | "keymap"
                             | "actions"
+                            | "formatting"
+                            | "formatted"
                             | "ai-providers"
                             | "action-menu"
                             | "slicer-search"

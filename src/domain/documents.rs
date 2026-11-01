@@ -516,6 +516,15 @@ impl DatabaseView {
     }
 }
 
+/// Conditional formatting: rules in the formatting language (see the
+/// `diver_format` crate) and the columns they format.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConditionalFormat {
+    pub rules: String,
+    #[serde(default)]
+    pub columns: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DocumentDefinition {
     pub schema_version: u32,
@@ -533,6 +542,9 @@ pub struct DocumentDefinition {
     pub filters: Vec<ValueFilter>,
     #[serde(default)]
     pub actions: Vec<ViewAction>,
+    /// Applied in order; a later format overrides what an earlier one set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<ConditionalFormat>,
     /// Saves each change a moment after it is made, once the view has a name.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_save: bool,
@@ -552,6 +564,7 @@ impl DocumentDefinition {
             slicers: Vec::new(),
             filters: Vec::new(),
             actions: Vec::new(),
+            formats: Vec::new(),
             auto_save: false,
             view: ViewKind::Table(TableConfig::default()),
         }

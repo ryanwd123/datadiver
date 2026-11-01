@@ -129,6 +129,14 @@ pub enum Button {
     ActionCancelEdit,
     ActionRunForm,
     ActionSave,
+    // Conditional formatting manager.
+    FormatSet(usize),
+    FormatNewSet,
+    FormatDeleteSet,
+    FormatColumn(usize),
+    FormatPreset(usize),
+    FormatPresets,
+    FormatProblem(usize),
     // AI providers.
     ProviderDefault(usize),
     ProviderEdit(usize),

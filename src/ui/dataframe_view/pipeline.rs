@@ -372,6 +372,7 @@ impl DataFrameView {
                         view.sync_frozen_count();
                         view.sync_grid_widths(cx);
                         view.refresh_totals(cx);
+                        view.refresh_formatting(cx);
                         view.refresh_cell_detail();
                         let context = if view.is_table() {
                             KeyContext::TableGrid
@@ -539,6 +540,46 @@ impl DataFrameView {
             return;
         }
         self.schedule_search(self.session.search_text.clone(), cx);
+    }
+
+    /// The rows conditional formatting reads statistics over: a query's
+    /// result, or a table's rows under its slicers and filters, before search.
+    pub(crate) fn format_scope(&self) -> Option<crate::application::conditional_format::FormatScope> {
+        use crate::application::conditional_format::FormatScope;
+        match self.session.working.as_ref().map(|view| &view.view) {
+            Some(ViewKind::Query(_)) => {
+                let cache = self.query_cache.as_ref()?;
+                Some(FormatScope {
+                    store: cache.frame.store.clone(),
+                    view: ViewQuery::default(),
+                    schema: cache.frame.schema.clone(),
+                })
+            }
+            _ => {
+                let (query, _) = self.table_query.as_ref()?;
+                Some(FormatScope {
+                    store: self.session.source.store.clone(),
+                    view: ViewQuery {
+                        filters: query.filters.clone(),
+                        value_filters: query.value_filters.clone(),
+                        ..ViewQuery::default()
+                    },
+                    schema: self.session.source.schema.clone(),
+                })
+            }
+        }
+    }
+
+    /// Draws the view's conditional formatting on the grid.
+    pub(crate) fn refresh_formatting(&mut self, cx: &mut Cx<Self>) {
+        let formats = self.session.working.as_ref().map(|view| view.formats.clone()).unwrap_or_default();
+        let formatting = match self.format_scope() {
+            Some(scope) if !formats.is_empty() => {
+                crate::application::conditional_format::GridFormatting::new(&formats, scope)
+            }
+            _ => None,
+        };
+        self.grid.set_formatting(formatting, cx);
     }
 
     /// Shows the grand total row under a query with totals, computing it from

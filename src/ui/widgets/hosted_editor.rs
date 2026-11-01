@@ -2,7 +2,7 @@
 //! frame. DataDiver keeps its keymap, focus, and hit testing, and passes the
 //! editor the keys, text, and mouse input that fall to it.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -32,6 +32,8 @@ pub enum MarkKind {
     Counts,
     /// The query a helper command acts on, shown for a moment.
     Flash,
+    /// Colors written in formatting rules, shown in their own color.
+    Colors,
 }
 
 pub struct HostedEditor {
@@ -40,6 +42,9 @@ pub struct HostedEditor {
     marks: HashMap<MarkKind, Vec<DecorationId>>,
     /// Set by the editor when its text changes; read with [`Self::take_changed`].
     changed: Rc<Cell<bool>>,
+    /// Host commands the editor sent, such as a completion's; read with
+    /// [`Self::take_commands`].
+    commands: Rc<RefCell<Vec<u32>>>,
     /// Where the editor was last painted, in window DIPs.
     bounds: Rect,
     font: Option<Font>,
@@ -62,22 +67,47 @@ impl HostedEditor {
             word_wrap: false,
             ..Options::default()
         };
-        let editor = Editor::create_hosted(host.unwrap_or_default(), options, Theme::Light).expect("create the SQL editor");
+        Self::new(host, options, completions, language)
+    }
+
+    /// An editor for conditional formatting rules. It borrows the SQL grammar
+    /// for `--` comments and auto-closed quotes and brackets; the rules' own
+    /// service colors the text.
+    pub fn rules(host: Option<HWND>, language: diver_format::editor::FormatLanguage) -> Self {
+        let options = Options {
+            word_wrap: true,
+            sticky_scroll: false,
+            folding: false,
+            occurrences_highlight: false,
+            ..Options::default()
+        };
+        Self::new(host, options, language.clone(), language)
+    }
+
+    fn new(
+        host: Option<HWND>,
+        options: Options,
+        completions: impl CompletionProvider + 'static,
+        language: impl LanguageService + 'static,
+    ) -> Self {
+        let editor = Editor::create_hosted(host.unwrap_or_default(), options, Theme::Light).expect("create the code editor");
         editor.set_language("sql");
         editor.set_completion_provider(completions);
         editor.set_language_service(Some(Rc::new(language)));
         let changed = Rc::new(Cell::new(false));
-        let flag = changed.clone();
-        editor.on_event(move |_, event| {
-            if matches!(event, Event::ContentChanged { .. }) {
-                flag.set(true);
-            }
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let (flag, sent) = (changed.clone(), commands.clone());
+        editor.on_event(move |_, event| match event {
+            Event::ContentChanged { .. } => flag.set(true),
+            Event::Command(id) => sent.borrow_mut().push(*id),
+            _ => {}
         });
         Self {
             id: WidgetId::new(),
             editor,
             marks: HashMap::new(),
             changed,
+            commands,
             bounds: Rect::default(),
             font: None,
             settings: EditorSettings::default(),
@@ -177,6 +207,11 @@ impl HostedEditor {
     /// Whether the text changed since the last call.
     pub fn take_changed(&self) -> bool {
         self.changed.replace(false)
+    }
+
+    /// Host commands sent since the last call.
+    pub fn take_commands(&self) -> Vec<u32> {
+        std::mem::take(&mut self.commands.borrow_mut())
     }
 
     /// Colors and problems again from the language service, after the catalog

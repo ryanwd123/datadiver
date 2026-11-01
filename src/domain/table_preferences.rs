@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::documents::{Alignment, ColumnPresentation, Engine, SlicerDefinition, TableConfig};
+use super::documents::{Alignment, ColumnPresentation, ConditionalFormat, Engine, SlicerDefinition, TableConfig};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TablePreferences {
@@ -22,6 +22,8 @@ pub struct TablePreferences {
     pub condition_slicers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<ConditionalFormat>,
     #[serde(default)]
     pub file: FileSettings,
 }
@@ -87,6 +89,7 @@ impl TablePreferences {
             slicer_columns: Vec::new(),
             condition_slicers: Vec::new(),
             hidden_columns: Vec::new(),
+            formats: Vec::new(),
             file: FileSettings::default(),
         }
     }
@@ -204,6 +207,7 @@ pub struct TablePreferencesPatch {
     pub slicer_columns: Option<Vec<String>>,
     pub condition_slicers: Option<Vec<String>>,
     pub hidden_columns: Option<Vec<String>>,
+    pub formats: Option<Vec<ConditionalFormat>>,
     pub file: Option<FileSettings>,
 }
 
@@ -227,6 +231,7 @@ impl TablePreferencesPatch {
                 .then(|| new.condition_slicers.clone()),
             hidden_columns: (old.hidden_columns != new.hidden_columns)
                 .then(|| new.hidden_columns.clone()),
+            formats: (old.formats != new.formats).then(|| new.formats.clone()),
             file: (old.file != new.file).then_some(new.file),
         }
     }
@@ -239,6 +244,7 @@ impl TablePreferencesPatch {
             && self.slicer_columns.is_none()
             && self.condition_slicers.is_none()
             && self.hidden_columns.is_none()
+            && self.formats.is_none()
             && self.file.is_none()
     }
 
@@ -268,6 +274,9 @@ impl TablePreferencesPatch {
         }
         if newer.hidden_columns.is_some() {
             self.hidden_columns = newer.hidden_columns;
+        }
+        if newer.formats.is_some() {
+            self.formats = newer.formats;
         }
     }
 
@@ -301,6 +310,9 @@ impl TablePreferencesPatch {
         }
         if let Some(hidden) = &self.hidden_columns {
             preferences.hidden_columns = hidden.clone();
+        }
+        if let Some(formats) = &self.formats {
+            preferences.formats = formats.clone();
         }
     }
 }
