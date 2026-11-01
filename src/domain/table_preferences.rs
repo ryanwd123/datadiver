@@ -32,8 +32,6 @@ pub struct TablePreferences {
 pub struct FileSettings {
     /// `None` follows the default engine in settings.
     pub engine: Option<Engine>,
-    /// DuckDB only: keep rows in file order. Off reads large files faster.
-    pub preserve_order: bool,
     /// Open the file as a query that DuckDB reads in place on every run,
     /// instead of reading it into memory, for files too big to hold.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -46,7 +44,6 @@ impl Default for FileSettings {
     fn default() -> Self {
         Self {
             engine: None,
-            preserve_order: true,
             scan: false,
             slicers: SlicerOptions::default(),
         }

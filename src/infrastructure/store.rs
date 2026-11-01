@@ -255,6 +255,15 @@ impl Store {
         dispatch!(self, store => store.cut_at())
     }
 
+    /// Whether a file's rows were read in file order. Only DuckDB can read
+    /// out of order.
+    pub fn in_file_order(&self) -> bool {
+        match self {
+            Self::DuckDb(store) => store.in_file_order(),
+            Self::Polars(_) => true,
+        }
+    }
+
     /// Keeps the first `rows` rows of a query result; see [`Self::cut_at`].
     pub fn cut_to(&mut self, rows: usize) -> Result<(), String> {
         dispatch!(self, store => store.cut_to(rows))

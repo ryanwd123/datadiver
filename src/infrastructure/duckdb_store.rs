@@ -223,6 +223,7 @@ impl DuckDbStore {
                 database: backing.database.clone(),
                 source_version: None,
                 _table: None,
+                out_of_order: false,
                 cut_at: None,
             });
             return Ok(result);
@@ -381,6 +382,7 @@ impl DuckDbStore {
             database,
             source_version: None,
             _table: None,
+            out_of_order: false,
             cut_at: None,
         });
         Ok(store)
@@ -469,6 +471,7 @@ impl DuckDbStore {
                     database,
                     source_version: None,
                     _table: None,
+                    out_of_order: false,
                     cut_at: None,
                 },
             )?;
@@ -530,6 +533,7 @@ impl DuckDbStore {
                 database,
                 source_version: None,
                 _table: None,
+                out_of_order: false,
                 cut_at: None,
             }),
             relation: Some(RelationRows::Lazy),
@@ -586,6 +590,11 @@ impl DuckDbStore {
     pub fn cut_at(&self) -> Option<usize> {
         self.result_cut_at
             .or_else(|| self.persistent.as_ref().and_then(|backing| backing.cut_at))
+    }
+
+    /// Whether the rows are in the order of the file they were read from.
+    pub fn in_file_order(&self) -> bool {
+        !self.persistent.as_ref().is_some_and(|backing| backing.out_of_order)
     }
 
     /// Keeps the first `rows` rows of a query result and notes that the

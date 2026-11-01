@@ -23,33 +23,10 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - **Settings to consider adding:** default row limit, restore the last session on startup,
   confirm before closing unsaved views, default slicer options for new files.
 - **Preserve order** is applied with `SET preserve_insertion_order`, which is global in DuckDB, so
-  a read with it off briefly affects queries running in other windows.
+  it is one Settings switch for the profile rather than a per-file option. A read with it off
+  still briefly affects queries running in other windows.
 
-## Improve working with bigger data sources
-- It takes to long to bring up the slicer list on bigger data
-- make a big parquet file a duckdb table to expierement with (300M lines, 100 cols)
-- remove some calculated values from info panel?
-## Tier 2: SQL editor
-
-- [~] **8. SQL language features from `diver_sql`.** Done for the SQL panel through the editor's
-  `LanguageService` (`ui::sql_language`) and `domain::sql_editor::SqlCatalog` (relations with
-  column types, databases, schemas, functions with signatures from `duckdb_functions()`,
-  settings, extensions): context completion, tree-based highlighting, problems after a typing
-  pause (`diver_sql`'s parser passes 99.99% of DuckDB's own test statements, so it is the
-  authority rather than `duckdb_extract_statements`), hovers, signature help, folding and smart
-  select. Statement splitting, path detection and the smaller editors' colors use `diver_sql`
-  too; the hand-written tokenizer and completer are gone.
-  - The group-by, pivot, and aggregation editors complete through
-    `domain::expression_completion` (`Entry::Expression` in the file's dialect, the frame's
-    columns as `Catalog::implicit_columns`, and DuckDB's aggregates in the aggregation editor);
-    SQL cards use it for their `"` list, and the search language keeps its own.
-  - Left: the expression editors are still the old widget; moving them to the hosted editor
-    would bring colors, problems and signature help there too.
-  - Left: columns of files and table functions (`FROM 'x.parquet'`, `read_csv(...)`) need a
-    background `DESCRIBE` and a way to reopen the list when it finishes.
-  - Left: drop tree-sitter-sequel (about 2.4 MB) once brackets and auto-close contexts come
-    from the service too.
-
+ 
 ## Tier 4: bigger features
 
 - [ ] **13. Conditional formatting (beyond the heat map).** Today `QueryConfig.heatmap: bool` gives

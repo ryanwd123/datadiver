@@ -241,7 +241,7 @@ impl DataFrameView {
     /// Whether the file in memory was read in file order, so rows cut at the
     /// limit are its first ones. Only DuckDB can read out of order.
     pub(crate) fn read_in_file_order(&self) -> bool {
-        self.session.source.engine == crate::infrastructure::store::Engine::Polars || self.file_settings.preserve_order
+        self.session.source.in_file_order
     }
 
     /// The saved SQL source this view reads its rows from.

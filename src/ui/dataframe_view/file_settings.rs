@@ -13,6 +13,7 @@ use crate::ui::widgets::list::Item;
 pub(crate) enum SettingsItem {
     DefaultEngine,
     FileEngine,
+    PreserveOrder,
     GridFont,
     EditorFont,
     EditorOptions,
@@ -99,13 +100,31 @@ impl DataFrameView {
         self.change_file_settings(|file| file.engine = Some(engine), cx);
     }
 
+    /// Switches Preserve order for every file DuckDB reads, a setting of the
+    /// profile since DuckDB applies it to the whole database, and reads the
+    /// open file again when DuckDB read it.
     pub(crate) fn toggle_preserve_order(&mut self, cx: &mut Cx<Self>) {
-        if self.file_settings.engine.unwrap_or(self.session.source.engine) != Engine::DuckDb {
-            self.copy_status = Some("Preserve order applies when DuckDB reads the file".into());
-            cx.notify();
-            return;
+        let result = self.repository.load_settings().and_then(|mut settings| {
+            settings.preserve_order = !settings.preserve_order;
+            self.repository.save_settings(&settings).map(|()| settings.preserve_order)
+        });
+        match result {
+            Ok(on) => {
+                let state = if on { "on" } else { "off" };
+                self.copy_status = Some(format!("Preserve order {state} for files DuckDB reads"));
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not save settings: {error}"));
+                cx.notify();
+                return;
+            }
         }
-        self.change_file_settings(|file| file.preserve_order = !file.preserve_order, cx);
+        if let Some(path) = self.settings_file()
+            && self.session.source.engine == Engine::DuckDb
+        {
+            self.load_source(path, false, LoadMode::Check, cx);
+        }
+        cx.notify();
     }
 
     /// The file open now, read into memory or scanned in place.
@@ -167,16 +186,12 @@ impl DataFrameView {
         self.palette("Settings", "Find a setting", items, dialogs::PaletteKind::Settings, cx);
     }
 
-    fn settings_list(&self) -> Vec<(SettingsItem, String, String)> {
-        let default_engine = self
-            .repository
-            .load_settings()
-            .map(|settings| settings.default_engine)
-            .unwrap_or_default();
+    pub(crate) fn settings_list(&self) -> Vec<(SettingsItem, String, String)> {
+        let settings = self.repository.load_settings().unwrap_or_default();
         let mut rows = vec![(
             SettingsItem::DefaultEngine,
             "Default query engine".to_owned(),
-            format!("{} · Enter switches", default_engine.label()),
+            format!("{} · Enter switches", settings.default_engine.label()),
         )];
         if let Some(path) = self.settings_file() {
             rows.push((
@@ -185,6 +200,14 @@ impl DataFrameView {
                 self.session.source.engine.label().to_owned(),
             ));
         }
+        rows.push((
+            SettingsItem::PreserveOrder,
+            "DuckDB: preserve row order".to_owned(),
+            format!(
+                "{} · Keep rows in file order when DuckDB reads a file; off reads large files faster · Enter switches",
+                if settings.preserve_order { "On" } else { "Off" }
+            ),
+        ));
         let font = |family: &Option<String>| family.clone().unwrap_or_else(|| "Default".into());
         rows.extend([
             (SettingsItem::GridFont, "Grid font".to_owned(), format!("{} · {} pt", font(&self.font.family), self.font.size)),
@@ -225,17 +248,21 @@ impl DataFrameView {
         let Some((item, ..)) = self.settings_list().get(index).cloned() else {
             return;
         };
-        if item == SettingsItem::DefaultEngine {
+        if matches!(item, SettingsItem::DefaultEngine | SettingsItem::PreserveOrder) {
             // Switching stays in the list, so it shows the new value.
-            let result = self.repository.load_settings().and_then(|mut settings| {
-                settings.default_engine = match settings.default_engine {
-                    Engine::Polars => Engine::DuckDb,
-                    Engine::DuckDb => Engine::Polars,
-                };
-                self.repository.save_settings(&settings)
-            });
-            if let Err(error) = result {
-                self.error = Some(format!("Could not save settings: {error}"));
+            if item == SettingsItem::PreserveOrder {
+                self.toggle_preserve_order(cx);
+            } else {
+                let result = self.repository.load_settings().and_then(|mut settings| {
+                    settings.default_engine = match settings.default_engine {
+                        Engine::Polars => Engine::DuckDb,
+                        Engine::DuckDb => Engine::Polars,
+                    };
+                    self.repository.save_settings(&settings)
+                });
+                if let Err(error) = result {
+                    self.error = Some(format!("Could not save settings: {error}"));
+                }
             }
             let items = self.settings_items();
             if let Some(dialogs::Dialog::Palette(dialog)) = &mut self.dialog {
@@ -247,7 +274,7 @@ impl DataFrameView {
         }
         self.close_dialog(cx);
         match item {
-            SettingsItem::DefaultEngine => {}
+            SettingsItem::DefaultEngine | SettingsItem::PreserveOrder => {}
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),

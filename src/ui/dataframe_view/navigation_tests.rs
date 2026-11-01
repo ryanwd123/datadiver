@@ -1241,19 +1241,9 @@ fn a_file_read_into_memory_stops_at_the_limit_in_either_engine() {
         viewer.run_until_parked();
         assert!(!viewer.read(|view| view.is_table() && view.limit_applies()));
         // Rows read out of file order are not the file's first ones.
-        crate::application::table_preferences::TablePreferencesWriter::for_repository(&repository)
-            .edit(
-                path.clone(),
-                crate::domain::table_preferences::TablePreferencesPatch {
-                    file: Some(crate::domain::table_preferences::FileSettings {
-                        engine: Some(engine),
-                        preserve_order: false,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        let mut settings = repository.load_settings().unwrap();
+        settings.preserve_order = false;
+        repository.save_settings(&settings).unwrap();
         let viewer = self::viewer(repository.clone());
         open(&viewer, FileEntry::Source(path.clone()));
         viewer.update(|view, cx| {
@@ -1306,21 +1296,60 @@ fn the_engine_button_switches_a_file_between_engines_and_keeps_the_view() {
     assert_eq!(preferences.file.engine, Some(Engine::DuckDb));
     open(&viewer, FileEntry::Source(path.clone()));
     assert_eq!(engine(&viewer), Engine::DuckDb);
-    // Preserve order shows for DuckDB and reads the file again.
-    viewer.view_option(super::view_options::ViewOption::PreserveOrder);
-    viewer.close_dialog();
-    viewer.read(|view| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(!view.file_settings.preserve_order);
-        assert_eq!(view.session.result.row_count(), 3);
-    });
     viewer.update(|view, cx| view.dispatch_command(CommandId::QueryEngine, cx));
     press_each(&viewer, &["enter"]);
     viewer.run_until_parked();
     assert_eq!(engine(&viewer), Engine::Polars);
-    // Preserve order does not apply to Polars.
+}
+
+#[test]
+fn preserve_order_is_a_setting_of_the_profile_and_rereads_a_duckdb_file() {
+    use crate::infrastructure::store::Engine;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    repository
+        .save_settings(&crate::infrastructure::json_store::Settings {
+            default_engine: Engine::DuckDb,
+            ..Default::default()
+        })
+        .unwrap();
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,n\nNorth,1\nSouth,2\nNorth,3\n").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    assert_eq!(engine(&viewer), Engine::DuckDb);
+    let revision = viewer.read(|view| {
+        assert!(view.read_in_file_order());
+        view.session.source.source_revision
+    });
+    // The gear's View options no longer list it; Settings does.
+    viewer.read(|view| {
+        assert!(view.view_options().iter().all(|(_, label, ..)| !label.contains("order")));
+    });
+    press_each(&viewer, &["ctrl-,"]);
+    let index = viewer.read(|view| {
+        view.settings_list()
+            .iter()
+            .position(|(item, ..)| *item == super::file_settings::SettingsItem::PreserveOrder)
+            .unwrap()
+    });
+    viewer.update(|view, cx| view.confirm_setting(index, cx));
+    viewer.run_until_parked();
+    // Switching stays in the list and reads the open file again, out of order.
+    assert!(viewer.has_dialog());
+    assert!(!repository.load_settings().unwrap().preserve_order);
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.session.source.source_revision > revision);
+        assert!(!view.read_in_file_order());
+        assert_eq!(view.session.result.row_count(), 3);
+    });
+    press_each(&viewer, &["escape"]);
+    // The command switches it back.
     viewer.update(|view, cx| view.dispatch_command(CommandId::TogglePreserveOrder, cx));
-    assert!(viewer.read(|view| view.copy_status.as_deref().unwrap().contains("DuckDB")));
+    viewer.run_until_parked();
+    assert!(repository.load_settings().unwrap().preserve_order);
+    assert!(viewer.read(|view| view.read_in_file_order()));
 }
 
 #[test]

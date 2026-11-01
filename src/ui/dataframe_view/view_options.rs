@@ -11,7 +11,6 @@ pub(crate) enum ViewOption {
     AutoSave,
     AutoRun,
     Engine,
-    PreserveOrder,
     ReadMode,
     CrossFilter,
     AvailableFirst,
@@ -62,14 +61,6 @@ impl DataFrameView {
             // The file's setting changes before the file is read again.
             let engine = self.file_settings.engine.unwrap_or(self.session.source.engine);
             rows.push((ViewOption::Engine, "Query engine", format!("{} · Enter switches", engine.label()), None));
-            if engine == Engine::DuckDb {
-                rows.push((
-                    ViewOption::PreserveOrder,
-                    "Preserve order",
-                    "Keep rows in file order when DuckDB reads the file; off reads large files faster".into(),
-                    Some(self.file_settings.preserve_order),
-                ));
-            }
         }
         let slicers = self.file_settings.slicers;
         rows.push((
@@ -127,7 +118,6 @@ impl DataFrameView {
                 };
                 self.set_file_engine(engine, cx);
             }
-            ViewOption::PreserveOrder => self.toggle_preserve_order(cx),
             ViewOption::ReadMode => {
                 // The file opens again, so the list closes rather than show the old mode.
                 self.close_dialog(cx);

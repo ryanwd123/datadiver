@@ -75,6 +75,10 @@ pub struct Settings {
     pub ai: crate::domain::ai::AiSettings,
     /// The engine for files without their own choice.
     pub default_engine: crate::domain::documents::Engine,
+    /// DuckDB keeps rows in file order when it reads a file. Off reads large
+    /// files faster. DuckDB's `preserve_insertion_order` applies to the whole
+    /// database, so this is one setting rather than one per file.
+    pub preserve_order: bool,
     pub editor: EditorSettings,
 }
 
@@ -166,6 +170,7 @@ impl Default for Settings {
             favorites: Default::default(),
             ai: Default::default(),
             default_engine: Default::default(),
+            preserve_order: true,
             editor: EditorSettings::default(),
         }
     }

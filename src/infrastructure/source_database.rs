@@ -117,6 +117,9 @@ pub(crate) struct PersistentBacking {
     pub _table: Option<Arc<LoadedTable>>,
     /// The row limit the file's read stopped at, leaving rows unread.
     pub cut_at: Option<usize>,
+    /// The file was read with `preserve_insertion_order` off, so its rows
+    /// may not be in file order.
+    pub out_of_order: bool,
 }
 
 impl SourceDatabase {
@@ -630,6 +633,7 @@ impl SourceDatabase {
                 source_version: Some((entry.file_id, entry.revision)),
                 _table: Some(table),
                 cut_at: entry.row_limit.filter(|_| entry.cut),
+                out_of_order: !entry.preserve_order,
             },
         )
     }

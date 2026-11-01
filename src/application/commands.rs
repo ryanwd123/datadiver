@@ -179,7 +179,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::TogglePreserveOrder,
         key: "toggle_preserve_order",
-        label: "Preserve row order when DuckDB reads this file",
+        label: "Preserve row order when DuckDB reads files",
         default_binding: None,
     },
     Command {

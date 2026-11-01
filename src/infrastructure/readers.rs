@@ -17,7 +17,8 @@ pub fn read_source(
     sources.load(path, options, mode)
 }
 
-/// How `path` is read: its own file settings, or the default engine. Reads
+/// How `path` is read: its own file settings, or the default engine, and the
+/// profile's Preserve order setting. Reads
 /// the profile, so call it on a worker.
 pub fn read_options(
     repository: &ViewRepository,
@@ -40,7 +41,7 @@ pub fn file_read(
         .unwrap_or_default();
     let options = ReadOptions {
         engine: file.engine_or(settings.default_engine),
-        preserve_order: file.preserve_order,
+        preserve_order: settings.preserve_order,
         row_limit: usize::try_from(settings.query_limit).unwrap_or(usize::MAX),
     };
     (options, file)
@@ -119,9 +120,12 @@ mod tests {
         let repository = ViewRepository::new(crate::infrastructure::json_store::StorePaths::for_home(home.path()));
         let writer = TablePreferencesWriter::for_repository(&repository);
         let path = home.path().join("a.csv");
-        assert_eq!(read_options(&repository, &writer, &path).engine, Engine::Polars);
+        let options = read_options(&repository, &writer, &path);
+        assert_eq!(options.engine, Engine::Polars);
+        assert!(options.preserve_order);
         let mut settings = repository.load_settings().unwrap();
         settings.default_engine = Engine::DuckDb;
+        settings.preserve_order = false;
         repository.save_settings(&settings).unwrap();
         assert_eq!(read_options(&repository, &writer, &path).engine, Engine::DuckDb);
         writer
@@ -130,7 +134,6 @@ mod tests {
                 crate::domain::table_preferences::TablePreferencesPatch {
                     file: Some(crate::domain::table_preferences::FileSettings {
                         engine: Some(Engine::Polars),
-                        preserve_order: false,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -139,6 +142,7 @@ mod tests {
             .unwrap();
         let options = read_options(&repository, &writer, &path);
         assert_eq!(options.engine, Engine::Polars);
+        // Preserve order is the profile's, not the file's.
         assert!(!options.preserve_order);
     }
 }
