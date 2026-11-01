@@ -32,7 +32,7 @@ pub use rowan::{TextRange, TextSize};
 pub use catalog::MockCatalog;
 pub use catalog::{
     Catalog, ColumnInfo, EmptyCatalog, FunctionInfo, PathInfo, SettingInfo, TableInfo, TableKind,
-    VariableInfo, builtin_pragmas, builtin_types,
+    VariableInfo, builtin_pragmas, builtin_types, polars_types,
 };
 pub use complete::{
     CompletionContext, Expected, FunctionKind, Name, NewNameKind, StringNameKind, complete,

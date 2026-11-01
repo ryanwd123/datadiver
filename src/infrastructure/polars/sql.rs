@@ -8,9 +8,12 @@ use std::sync::{Arc, Mutex};
 use polars::prelude::{DataFrame, Engine, IdxSize, LazyFrame, PlanCallback};
 use polars::sql::SQLContext;
 
-use super::expressions::polars_error;
+use diver_sql::Dialect;
+
+use super::expressions::{polars_error, sql_type_name};
 use super::store::PolarsStore;
-use crate::domain::sql_editor::{returns_rows, statements};
+use crate::domain::sql_editor::{Relation, SqlCatalog, returns_rows, statements};
+use crate::infrastructure::duckdb_store::quote_identifier;
 
 /// What running some statements produced.
 pub struct PolarsRun {
@@ -123,6 +126,41 @@ fn collect(frame: LazyFrame, limit: u64, stop: &Arc<AtomicBool>) -> Result<(Data
     Ok((rows, truncated))
 }
 
+/// What the SQL editor completes from on Polars SQL: the tables earlier runs
+/// made in `context`, with their columns, and Polars SQL's functions.
+pub fn catalog(context: &mut SQLContext) -> SqlCatalog {
+    const DATABASE: &str = "polars";
+    let mut tables = context.get_tables();
+    tables.sort();
+    let relations = tables
+        .into_iter()
+        .map(|name| {
+            let schema: Vec<(String, String)> = context
+                .execute(&format!("SELECT * FROM {}", quote_identifier(&name)))
+                .and_then(|mut frame| frame.collect_schema())
+                .map(|schema| schema.iter().map(|(column, dtype)| (column.to_string(), sql_type_name(dtype))).collect())
+                .unwrap_or_default();
+            let (columns, column_types) = schema.into_iter().unzip();
+            Relation {
+                catalog: DATABASE.into(),
+                schema: "main".into(),
+                name,
+                columns,
+                column_types,
+                is_view: false,
+                current_database: true,
+            }
+        })
+        .collect();
+    SqlCatalog {
+        relations,
+        current_database: DATABASE.into(),
+        functions: super::functions::sql_functions(),
+        dialect: Dialect::Polars,
+        ..SqlCatalog::default()
+    }
+}
+
 /// The rows a SQL source's script returns, in a context of its own. Like a
 /// DuckDB source, its last statement has to return them, and it keeps at
 /// most `limit` of them.
@@ -203,6 +241,33 @@ mod tests {
         assert_eq!(run.result.unwrap().row_count(), 4);
         let run = super::tests::run(&mut SQLContext::new(), "SELECT * FROM (VALUES (1)) AS t(n) WHERE n > 5", 4);
         assert_eq!(run.result.unwrap().row_count(), 0);
+    }
+
+    #[test]
+    fn the_catalog_has_the_tables_runs_made_and_polars_functions() {
+        let mut context = SQLContext::new();
+        assert!(catalog(&mut context).relations.is_empty());
+        let made = run(&mut context, "CREATE TABLE fruit AS SELECT * FROM (VALUES ('red', 12)) AS t(color, quantity)", 10);
+        assert!(made.error.is_none(), "{:?}", made.error);
+        let catalog = catalog(&mut context);
+        assert_eq!(catalog.dialect, Dialect::Polars);
+        let fruit = catalog.resolve(&["fruit"]).unwrap();
+        assert_eq!(fruit.columns, ["color", "quantity"]);
+        assert_eq!(fruit.column_types.len(), 2);
+        // Polars completes its own names, not DuckDB's.
+        let labels = |text: &str| {
+            crate::domain::sql_editor::completions(text, text.len(), &catalog)
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>()
+        };
+        let from = labels("SELECT * FROM ");
+        assert!(from.iter().any(|l| l == "fruit") && from.iter().any(|l| l == "read_parquet"), "{from:?}");
+        assert!(!from.iter().any(|l| l == "read_csv_auto"), "{from:?}");
+        let cast = labels("SELECT CAST(quantity AS ");
+        assert!(cast.iter().any(|l| l == "DATETIME") && !cast.iter().any(|l| l == "STRUCT"), "{cast:?}");
+        let start = labels("");
+        assert!(!start.iter().any(|l| l == "PIVOT" || l == "ATTACH"), "{start:?}");
     }
 
     #[test]

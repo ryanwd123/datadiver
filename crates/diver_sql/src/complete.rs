@@ -166,6 +166,8 @@ pub struct CompletionContext {
     /// The string token the cursor is in.
     pub in_string: Option<TextRange>,
     pub in_comment: bool,
+    /// The dialect parsed, which picks the built-in types and pragmas offered.
+    pub dialect: crate::Dialect,
 }
 
 /// Where the cursor is, in token terms.
@@ -283,6 +285,7 @@ pub fn complete_with_options(
         TextSize::of(text)
     };
     let mut ctx = CompletionContext {
+        dialect: options.dialect,
         statement: TextRange::new(stmt_start, stmt_end),
         replace_range: TextRange::empty(offset),
         ..CompletionContext::default()

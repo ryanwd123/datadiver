@@ -147,7 +147,7 @@ pub fn items_with(
                 out.functions(*kind, qualifier, catalog, objects)
             }
             Expected::TypeName => {
-                for t in catalog.types() {
+                for t in ctx.dialect.types().iter().map(|t| t.to_string()).chain(catalog.types()) {
                     out.push(&t, ItemKind::Type, t.clone(), None, rank::OTHER);
                 }
                 for o in objects.iter().filter(|o| o.kind == ObjectKind::Type) {
@@ -171,7 +171,7 @@ pub fn items_with(
                 }
             }
             Expected::PragmaName => {
-                for name in catalog.pragmas() {
+                for name in ctx.dialect.pragmas().iter().map(|p| p.to_string()).chain(catalog.pragmas()) {
                     out.push(&name, ItemKind::Pragma, name.clone(), None, rank::OTHER);
                 }
             }

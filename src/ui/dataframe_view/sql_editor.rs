@@ -386,7 +386,11 @@ WHERE place <= 2";
                         view.sql_interrupt = Some(interrupt);
                         view.sql_stopped = Some(stopped);
                         view.sql_catalog_revision = view.database.revision();
-                        catalog_handle.write().unwrap().replace(catalog);
+                        if view.sql_engine() == Engine::Polars {
+                            view.load_polars_catalog(cx);
+                        } else {
+                            catalog_handle.write().unwrap().replace(catalog);
+                        }
                         *roots_handle.write().unwrap() = path_roots;
                         view.refresh_file_schemas(cx);
                         if let Some(panel) = &mut view.sql_panel {
@@ -627,7 +631,9 @@ WHERE place <= 2";
     }
 
     pub(crate) fn refresh_sql_catalog(&mut self, cx: &mut Cx<Self>) {
-        if self.sql_running
+        // Polars SQL doesn't see the database; its catalog follows its runs.
+        if self.sql_engine() == Engine::Polars
+            || self.sql_running
             || self.sql_catalog_refreshing
             || self.sql_interrupt.is_none()
             || self.sql_catalog_revision == self.database.revision()
@@ -655,7 +661,7 @@ WHERE place <= 2";
                 // Clear before the staleness check: a stopped run bumps the revision
                 // without resetting this flag, which would block every later refresh.
                 view.sql_catalog_refreshing = false;
-                if revision != view.sql_revision {
+                if revision != view.sql_revision || view.sql_engine() == Engine::Polars {
                     return;
                 }
                 if let Ok(catalog) = result {
@@ -923,10 +929,47 @@ WHERE place <= 2";
         if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
             self.persist_view();
         }
+        // The editor completes and checks the SQL in the new engine's dialect.
+        if engine == Engine::Polars {
+            self.load_polars_catalog(cx);
+        } else {
+            self.sql_catalog_revision = u64::MAX;
+            self.refresh_sql_catalog(cx);
+        }
         if let Some(panel) = &mut self.sql_panel {
             panel.status = format!("Runs on {} · Ctrl+Enter · selection or current statement", sql_engine_label(engine));
         }
         cx.notify();
+    }
+
+    /// Fills the editor's catalog from its Polars SQL context, on a worker
+    /// since reading a table's columns may read a file's header.
+    pub(crate) fn load_polars_catalog(&mut self, cx: &mut Cx<Self>) {
+        let Some(panel) = &self.sql_panel else {
+            return;
+        };
+        let catalog_handle = panel.catalog.clone();
+        let context = self.sql_polars.clone();
+        let revision = self.sql_revision;
+        cx.spawn(
+            move || {
+                let mut context = context.lock().map_err(|_| "Polars SQL lock poisoned".to_string())?;
+                Ok::<_, String>(crate::infrastructure::polars::sql::catalog(&mut context))
+            },
+            move |view: &mut Self, cx, result| {
+                if revision != view.sql_revision || view.sql_engine() != Engine::Polars {
+                    return;
+                }
+                if let Ok(catalog) = result {
+                    catalog_handle.write().unwrap().replace(catalog);
+                    if let Some(panel) = &mut view.sql_panel {
+                        panel.editor.refresh_language();
+                    }
+                }
+                cx.notify();
+            },
+        )
+        .detach();
     }
 
     /// Runs `text` on Polars SQL. Statements share this editor's context, so
@@ -1008,6 +1051,8 @@ WHERE place <= 2";
                     view.sql_result_script = Some((revision, Engine::Polars, script.clone()));
                     view.show_sql_result(store.into(), cx);
                 }
+                // The run may have made or dropped tables.
+                view.load_polars_catalog(cx);
                 cx.notify();
             },
         )

@@ -175,3 +175,22 @@ fn polars_completion_offers_only_polars_syntax() {
     let ctx = diver_sql::complete_with_options("SELECT 1;", TextSize::new(9), POLARS_SCRIPT);
     assert!(!ctx.expected.is_empty());
 }
+
+#[test]
+fn types_are_the_dialects_own() {
+    let catalog = MockCatalog::new().implicit_columns(&["amount"]);
+    let got = labels("CAST(amount AS |)", POLARS_EXPR, &catalog);
+    for want in ["DATETIME", "STRING", "BIGINT"] {
+        assert!(got.iter().any(|g| g == want), "missing {want}: {got:?}");
+    }
+    assert!(
+        !got.iter().any(|g| g == "STRUCT" || g == "MAP" || g == "JSON"),
+        "{got:?}"
+    );
+    let duckdb = ParseOptions {
+        dialect: Dialect::DuckDb,
+        entry: Entry::Expression,
+    };
+    let got = labels("CAST(amount AS |)", duckdb, &catalog);
+    assert!(got.iter().any(|g| g == "STRUCT") && !got.iter().any(|g| g == "DATETIME"), "{got:?}");
+}

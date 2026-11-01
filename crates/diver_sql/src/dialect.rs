@@ -78,6 +78,22 @@ impl Dialect {
         }
     }
 
+    /// The built-in type names, offered where a type goes.
+    pub fn types(self) -> &'static [&'static str] {
+        match self {
+            Dialect::DuckDb => crate::catalog::builtin_types(),
+            Dialect::Polars => crate::catalog::polars_types(),
+        }
+    }
+
+    /// The built-in pragmas. Polars SQL has no PRAGMA statement.
+    pub fn pragmas(self) -> &'static [&'static str] {
+        match self {
+            Dialect::DuckDb => crate::catalog::builtin_pragmas(),
+            Dialect::Polars => &[],
+        }
+    }
+
     /// The message for a feature the dialect lacks.
     pub(crate) fn unsupported(self, feature: Feature) -> String {
         let dialect = match self {

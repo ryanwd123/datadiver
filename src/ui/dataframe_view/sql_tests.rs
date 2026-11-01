@@ -1409,10 +1409,21 @@ fn sql_sources_switch_to_polars_sql_and_keep_its_tables_between_runs() {
         assert_eq!(view.session.source.engine, Engine::Polars);
         assert_eq!(view.session.result.row_count(), 1);
         assert!(view.sql_result_complete);
+        // The editor completes from Polars SQL: its tables and functions.
+        let catalog = panel.catalog.read().unwrap();
+        assert_eq!(catalog.dialect, diver_sql::Dialect::Polars);
+        assert!(catalog.resolve(&["fruit"]).is_some());
+        assert!(!catalog.functions.iter().any(|f| f.name == "list_transform"));
     });
-    // Switching back stores DuckDB again.
+    // Switching back stores DuckDB again, and its catalog.
     switch(&viewer, ViewOption::Engine);
     assert_eq!(saved_sql(&repository).engine, Engine::DuckDb);
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        let catalog = view.sql_panel.as_ref().unwrap().catalog.read().unwrap();
+        assert_eq!(catalog.dialect, diver_sql::Dialect::DuckDb);
+        assert!(catalog.functions.iter().any(|f| f.name == "list_transform"));
+    });
 }
 
 #[test]

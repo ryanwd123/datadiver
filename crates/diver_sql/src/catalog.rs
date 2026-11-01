@@ -81,8 +81,9 @@ pub trait Catalog {
     fn functions(&self) -> Vec<FunctionInfo> {
         Vec::new()
     }
+    /// Types beyond the dialect's built-in ones, such as user-defined types.
     fn types(&self) -> Vec<String> {
-        builtin_types().iter().map(|s| s.to_string()).collect()
+        Vec::new()
     }
     fn settings(&self) -> Vec<SettingInfo> {
         Vec::new()
@@ -98,8 +99,9 @@ pub trait Catalog {
     fn sequences(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Pragmas beyond the dialect's built-in ones.
     fn pragmas(&self) -> Vec<String> {
-        builtin_pragmas().iter().map(|s| s.to_string()).collect()
+        Vec::new()
     }
     /// Paths completing `typed`, the string's text up to the cursor.
     fn paths(&self, _typed: &str) -> Vec<PathInfo> {
@@ -151,6 +153,43 @@ pub fn builtin_types() -> &'static [&'static str] {
         "TIMETZ",
         "TIMESTAMPTZ",
         "BIGNUM",
+    ]
+}
+
+/// The type names Polars SQL maps to Polars types (polars-sql 0.55, `types.rs`).
+pub fn polars_types() -> &'static [&'static str] {
+    &[
+        "BIGINT",
+        "BINARY",
+        "BLOB",
+        "BOOLEAN",
+        "BYTEA",
+        "CHAR",
+        "DATE",
+        "DATETIME",
+        "DECIMAL",
+        "DOUBLE",
+        "FLOAT",
+        "HUGEINT",
+        "INT",
+        "INTEGER",
+        "INTERVAL",
+        "NUMERIC",
+        "REAL",
+        "SMALLINT",
+        "STRING",
+        "TEXT",
+        "TIME",
+        "TIMESTAMP",
+        "TINYINT",
+        "UBIGINT",
+        "UHUGEINT",
+        "UINTEGER",
+        "USMALLINT",
+        "UTINYINT",
+        "UUID",
+        "VARBINARY",
+        "VARCHAR",
     ]
 }
 

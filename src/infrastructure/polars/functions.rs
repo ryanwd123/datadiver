@@ -1,6 +1,9 @@
 //! The aggregate functions Polars SQL has, for the aggregation manager's
 //! reference list. Polars does not list them with descriptions, so they are
-//! kept here; a test runs every example.
+//! kept here; a test runs every example. Also every function Polars SQL
+//! has, for the SQL editor's completions.
+
+use diver_sql::{FunctionInfo, FunctionKind};
 
 use crate::infrastructure::sql_execution::AggregateFunction;
 
@@ -36,6 +39,50 @@ const FUNCTIONS: &[(&str, &str, &[&str], &[&str])] = &[
     ("variance", "The sample variance. Also var and var_samp.", &["variance(x)"], &["variance(x)"]),
 ];
 
+/// Aggregates the reference list leaves out: aliases and bitwise ones.
+const OTHER_AGGREGATES: &[&str] = &[
+    "bit_and", "bit_or", "bit_xor", "covar", "group_concat", "listagg", "stddev_samp", "stdev", "stdev_samp", "var",
+    "var_samp",
+];
+
+const WINDOW_FUNCTIONS: &[&str] = &["dense_rank", "first_value", "lag", "last_value", "lead", "rank", "row_number"];
+
+const TABLE_FUNCTIONS: &[&str] = &["read_csv", "read_ipc", "read_json", "read_parquet"];
+
+/// Every function Polars SQL has, by its own list, for completion and
+/// highlighting. The aggregates in the reference list bring their signatures
+/// and descriptions.
+pub fn sql_functions() -> Vec<FunctionInfo> {
+    let mut names = polars::sql::keywords::all_functions();
+    names.extend(TABLE_FUNCTIONS);
+    names.sort_unstable();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| {
+            let reference = FUNCTIONS.iter().find(|(known, ..)| *known == name);
+            let kind = if reference.is_some() || OTHER_AGGREGATES.contains(&name) {
+                FunctionKind::Aggregate
+            } else if WINDOW_FUNCTIONS.contains(&name) {
+                FunctionKind::Window
+            } else if TABLE_FUNCTIONS.contains(&name) {
+                FunctionKind::Table
+            } else {
+                FunctionKind::Scalar
+            };
+            FunctionInfo {
+                name: name.to_owned(),
+                schema: None,
+                kind,
+                signatures: reference.map_or_else(Vec::new, |(_, _, signatures, _)| {
+                    signatures.iter().map(|text| (*text).to_owned()).collect()
+                }),
+                description: reference.map(|(_, description, ..)| (*description).to_owned()),
+            }
+        })
+        .collect()
+}
+
 pub fn aggregate_functions() -> Vec<AggregateFunction> {
     FUNCTIONS
         .iter()
@@ -52,6 +99,24 @@ pub fn aggregate_functions() -> Vec<AggregateFunction> {
 mod tests {
     use super::*;
     use polars::prelude::*;
+
+    #[test]
+    fn sql_functions_are_polars_own_with_kinds() {
+        let functions = sql_functions();
+        let kind = |name: &str| functions.iter().find(|f| f.name == name).map(|f| f.kind);
+        assert_eq!(kind("sum"), Some(FunctionKind::Aggregate));
+        assert_eq!(kind("var_samp"), Some(FunctionKind::Aggregate));
+        assert_eq!(kind("row_number"), Some(FunctionKind::Window));
+        assert_eq!(kind("read_parquet"), Some(FunctionKind::Table));
+        assert_eq!(kind("upper"), Some(FunctionKind::Scalar));
+        // DuckDB's own functions are not offered.
+        for duckdb in ["list_transform", "regexp_extract_all", "read_csv_auto", "epoch_ms"] {
+            assert_eq!(kind(duckdb), None, "{duckdb}");
+        }
+        assert!(functions.windows(2).all(|pair| pair[0].name < pair[1].name));
+        let sum = functions.iter().find(|f| f.name == "sum").unwrap();
+        assert_eq!(sum.signatures, ["sum(x)"]);
+    }
 
     #[test]
     fn every_example_aggregates_in_polars() {

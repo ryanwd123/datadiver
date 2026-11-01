@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use diver_sql::{
-    Catalog, ColumnInfo, CompletionItem, Expected, FunctionInfo, ItemKind, Quoting, RelationSource,
-    SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize, VariableInfo,
+    Catalog, ColumnInfo, CompletionItem, Dialect, Entry, Expected, FunctionInfo, ItemKind, ParseOptions, Quoting,
+    RelationSource, SettingInfo, SyntaxKind, TableInfo, TableKind, TextSize, VariableInfo,
 };
 
 /// A token with its byte range and parenthesis depth.
@@ -185,6 +185,9 @@ pub struct SqlCatalog {
     /// lowercase name: `duckdb_columns()`, and `duckdb_columns`, which DuckDB
     /// reads through a system view of the same name.
     pub table_functions: HashMap<String, Vec<ColumnInfo>>,
+    /// The dialect the editor's SQL runs in, which the editor parses and
+    /// completes it as.
+    pub dialect: Dialect,
 }
 
 impl SqlCatalog {
@@ -470,8 +473,9 @@ pub fn completions(text: &str, offset: usize, catalog: &SqlCatalog) -> Vec<Compl
 }
 
 pub fn completions_with(text: &str, offset: usize, catalog: &SqlCatalog, quoting: Quoting) -> Vec<CompletionItem> {
-    let ctx = diver_sql::complete(text, TextSize::new(offset.min(text.len()) as u32));
-    let objects = diver_sql::document_objects(&diver_sql::parse(text));
+    let options = ParseOptions { dialect: catalog.dialect, entry: Entry::Script };
+    let ctx = diver_sql::complete_with_options(text, TextSize::new(offset.min(text.len()) as u32), options);
+    let objects = diver_sql::document_objects(&diver_sql::parse_with(text, options));
     let mut items = diver_sql::items_with(&ctx, catalog, &objects, quoting);
     let tables = ctx
         .expected

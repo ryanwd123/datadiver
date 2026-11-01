@@ -8,15 +8,15 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use code_editor::{Diagnostic, Ink, LanguageService, Severity, SignatureHelp};
-use diver_sql::{HighlightClass, Parse, TextRange, TextSize};
+use diver_sql::{Dialect, Entry, HighlightClass, Parse, ParseOptions, TextRange, TextSize};
 
 use crate::domain::sql_editor::SqlCatalog;
 
 pub struct SqlLanguage {
     catalog: Arc<RwLock<SqlCatalog>>,
-    /// The last text parsed and its tree: the editor asks for colors,
-    /// problems, folds and smart select of the same text in turn.
-    last_parse: RefCell<Option<(String, Rc<Parse>)>>,
+    /// The last text parsed, its dialect and its tree: the editor asks for
+    /// colors, problems, folds and smart select of the same text in turn.
+    last_parse: RefCell<Option<(String, Dialect, Rc<Parse>)>>,
 }
 
 impl SqlLanguage {
@@ -25,14 +25,17 @@ impl SqlLanguage {
     }
 
     fn parse(&self, text: &str) -> Rc<Parse> {
+        let dialect = self.with_catalog(|catalog| catalog.dialect);
         let mut last = self.last_parse.borrow_mut();
-        if let Some((parsed, tree)) = last.as_ref()
+        if let Some((parsed, parsed_dialect, tree)) = last.as_ref()
             && parsed == text
+            && *parsed_dialect == dialect
         {
             return tree.clone();
         }
-        let tree = Rc::new(diver_sql::parse(text));
-        *last = Some((text.to_owned(), tree.clone()));
+        let options = ParseOptions { dialect, entry: Entry::Script };
+        let tree = Rc::new(diver_sql::parse_with(text, options));
+        *last = Some((text.to_owned(), dialect, tree.clone()));
         tree
     }
 
