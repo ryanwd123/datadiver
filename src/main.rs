@@ -135,6 +135,7 @@ fn main() {
                             | "keymap"
                             | "actions"
                             | "formatting"
+                            | "formatting:presets"
                             | "formatted"
                             | "ai-providers"
                             | "action-menu"

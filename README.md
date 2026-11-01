@@ -225,7 +225,7 @@ Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid
 
 ## Conditional formatting
 
-Press **M** (or **Space M**) in the grid to open the formatting manager. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
+Press **M** (or **Space M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
 
 ```text
 if duplicate(c) then bg: #ffc7ce, text: #9c0006;
@@ -235,7 +235,7 @@ scale(red, white, green, mid=0);
 bar(steelblue, fill=gradient)
 ```
 
-`c` is the cell, `"name"` another column of the row, and `'text'` text. Click a preset to add its rule, press **Ctrl+Space** for what can come next, type `"` for column names and `#` for colors (with a color picker). Problems are underlined and listed under the rules. Changes show in the grid as you type. Whole-column tests such as duplicates, ranks, averages and color scales count the rows the slicers and filters leave, not a search's. A plain file remembers its formats; a view saves them. The language is described in [crates/diver_format/README.md](crates/diver_format/README.md).
+`c` is the cell, `"name"` another column of the row, and `'text'` text. Pick a preset from **Add a preset** to add its rule, press **Ctrl+Space** for what can come next, type `"` for column names and `#` for colors (with a color picker). Problems are underlined and listed under the rules. Changes show in the grid as you type. Whole-column tests such as duplicates, ranks, averages and color scales count the rows the slicers and filters leave, not a search's. A plain file remembers its formats; a view saves them. The language is described in [crates/diver_format/README.md](crates/diver_format/README.md).
 
 Views store the source path and the exploration configuration. They reference the original source file, so sharing a view also requires making that source available.
 

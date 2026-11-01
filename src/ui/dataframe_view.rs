@@ -50,6 +50,7 @@ mod database_tree;
 mod dialogs;
 mod editor_settings;
 mod file_settings;
+mod format_window;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
@@ -623,6 +624,8 @@ pub struct DataFrameView {
     pub(crate) keymap_profile: PathBuf,
     pub(crate) keymap_editor: Option<KeymapEditor>,
     pub(crate) dialog: Option<Dialog>,
+    /// The conditional formatting manager, in a window of its own.
+    pub(crate) format_window: Option<format_window::FormatWindow>,
     /// The focused control; `None` leaves keys to the window.
     pub(crate) focus: Option<WidgetId>,
     window_geometry: Option<WindowGeometry>,
@@ -894,6 +897,7 @@ impl DataFrameView {
             keymap_profile,
             keymap_editor: None,
             dialog: None,
+            format_window: None,
             focus: Some(grid_id),
             window_geometry: None,
             geometry_save: None,

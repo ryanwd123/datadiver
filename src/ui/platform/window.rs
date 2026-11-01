@@ -19,7 +19,7 @@ use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Dra
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
-use super::app::{Cx, Event, MouseButton, OpenRequest, Placement, Runtime, View, WindowId};
+use super::app::{Action, Contents, Cx, Event, MouseButton, OpenRequest, Placement, Runtime, View, WindowId};
 use super::geometry::{Color, Point, Rect, point, rect};
 use super::gfx::{Brushes, Canvas, Cursor, HitRegion};
 use super::keys::{KeyEvent, Modifiers};
@@ -55,7 +55,10 @@ pub struct WindowState<H> {
 
 pub struct WindowSlot<V: View> {
     pub id: WindowId,
-    pub view: RefCell<V>,
+    /// Shared with the owner's slot when this window shows another's view.
+    pub view: Rc<RefCell<V>>,
+    /// The window whose view this one shows.
+    pub owner: Option<WindowId>,
     pub(crate) state: RefCell<WindowState<V::Hit>>,
     dirty: Cell<bool>,
 }
@@ -132,6 +135,23 @@ impl<V: View> WindowSlot<V> {
         })
     }
 
+    /// The window's outer rectangle in screen pixels as it is now, maximized
+    /// or not.
+    pub(crate) fn outer_rect(&self) -> Option<Rect> {
+        let Some(hwnd) = self.hwnd() else {
+            let state = self.state.borrow();
+            return Some(rect(state.origin.0, state.origin.1, state.size.0, state.size.1));
+        };
+        let mut outer = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut outer).ok()? };
+        Some(rect(
+            outer.left as f32,
+            outer.top as f32,
+            (outer.right - outer.left) as f32,
+            (outer.bottom - outer.top) as f32,
+        ))
+    }
+
     pub(crate) fn activate(&self) {
         if let Some(hwnd) = self.hwnd() {
             unsafe {
@@ -149,14 +169,21 @@ fn hit_region<H>(hits: &[HitRegion<H>], pos: Point) -> Option<&HitRegion<H>> {
     hits.iter().rev().find(|region| region.rect.contains(pos))
 }
 
-pub(crate) fn new_slot<V: View>(id: WindowId, view: V, hwnd: Option<HWND>, size: (f32, f32)) -> Rc<WindowSlot<V>> {
+pub(crate) fn new_slot<V: View>(
+    id: WindowId,
+    view: Rc<RefCell<V>>,
+    owner: Option<WindowId>,
+    hwnd: Option<HWND>,
+    size: (f32, f32),
+) -> Rc<WindowSlot<V>> {
     let scale = hwnd
         .map(|hwnd| unsafe { GetDpiForWindow(hwnd) } as f32 / 96.0)
         .filter(|scale| *scale > 0.0)
         .unwrap_or(1.0);
     Rc::new(WindowSlot {
         id,
-        view: RefCell::new(view),
+        view,
+        owner,
         state: RefCell::new(WindowState {
             hwnd,
             target: None,
@@ -352,6 +379,16 @@ fn register_class<V: View>() {
 /// Creates the Win32 window for `request` and builds its view.
 pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>) {
     let options = request.options;
+    let owner = match &request.contents {
+        Contents::View(_) => None,
+        Contents::Owned { owner, .. } => match runtime.window(*owner) {
+            Some(slot) => Some(slot),
+            None => return,
+        },
+    };
+    let parent = owner.as_ref().and_then(|slot| slot.hwnd());
+    // Owned windows get no taskbar button of their own.
+    let ex_style = if owner.is_some() { WINDOW_EX_STYLE::default() } else { WS_EX_APPWINDOW };
     let hwnd = unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
         let dpi = 96.0_f32.max(dpi_for_point(options.placement.map(|p| (p.x as i32, p.y as i32))) as f32);
@@ -362,9 +399,9 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
             right: (options.width * scale) as i32,
             bottom: (options.height * scale) as i32,
         };
-        let _ = AdjustWindowRectExForDpi(&mut outer, WS_OVERLAPPEDWINDOW, false, WS_EX_APPWINDOW, dpi as u32);
+        let _ = AdjustWindowRectExForDpi(&mut outer, WS_OVERLAPPEDWINDOW, false, ex_style, dpi as u32);
         CreateWindowExW(
-            WS_EX_APPWINDOW,
+            ex_style,
             class_name(),
             &HSTRING::from(options.title.as_str()),
             WS_OVERLAPPEDWINDOW,
@@ -372,7 +409,7 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
             CW_USEDEFAULT,
             outer.right - outer.left,
             outer.bottom - outer.top,
-            None,
+            parent,
             None,
             Some(instance.into()),
             None,
@@ -382,14 +419,21 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
         eprintln!("cannot create a window");
         return;
     };
-    unsafe { DragAcceptFiles(hwnd, true) };
     let size = (options.width, options.height);
     let id = request.id;
-    let mut cx = Cx { runtime, window: id };
-    // The view sees its window while it builds, so it can spawn work for it.
-    let placeholder_size = size;
-    let view = (request.build)(&mut cx);
-    let slot = new_slot(id, view, Some(hwnd), placeholder_size);
+    let (slot, opened) = match request.contents {
+        Contents::View(build) => {
+            unsafe { DragAcceptFiles(hwnd, true) };
+            let mut cx = Cx { runtime, window: id };
+            // The view sees its window while it builds, so it can spawn work for it.
+            let view = build(&mut cx);
+            (new_slot(id, Rc::new(RefCell::new(view)), None, Some(hwnd), size), None)
+        }
+        Contents::Owned { owner: owner_id, opened } => {
+            let view = owner.as_ref().map(|slot| slot.view.clone()).expect("the owner is open");
+            (new_slot(id, view, Some(owner_id), Some(hwnd), size), Some(opened))
+        }
+    };
     runtime.windows.borrow_mut().push(slot.clone());
     unsafe {
         let mut placement = WINDOWPLACEMENT {
@@ -412,8 +456,13 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
                 SW_SHOWNORMAL.0 as u32
             };
             let _ = SetWindowPlacement(hwnd, &placement);
-        } else if options.visible {
-            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+        } else {
+            if let Some(parent) = parent {
+                center_over(hwnd, parent);
+            }
+            if options.visible {
+                let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            }
         }
         if options.visible {
             let _ = SetForegroundWindow(hwnd);
@@ -421,6 +470,25 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
     }
     slot.state.borrow_mut().scale = unsafe { GetDpiForWindow(hwnd) } as f32 / 96.0;
     slot.invalidate();
+    if let Some(opened) = opened {
+        runtime.queue(Action::Update(id, opened));
+    }
+}
+
+/// Moves `hwnd` to the middle of `over`.
+fn center_over(hwnd: HWND, over: HWND) {
+    let mut window = RECT::default();
+    let mut target = RECT::default();
+    unsafe {
+        if GetWindowRect(hwnd, &mut window).is_err() || GetWindowRect(over, &mut target).is_err() {
+            return;
+        }
+        let width = window.right - window.left;
+        let height = window.bottom - window.top;
+        let x = target.left + (target.right - target.left - width) / 2;
+        let y = target.top + (target.bottom - target.top - height) / 2;
+        let _ = SetWindowPos(hwnd, None, x, y.max(target.top), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 fn dpi_for_point(point: Option<(i32, i32)>) -> u32 {
@@ -440,6 +508,10 @@ pub(crate) fn close_window<V: View>(runtime: &Runtime<V>, id: WindowId) {
     let Some(slot) = runtime.window(id) else {
         return;
     };
+    // Owned windows close first, while their owner is still there.
+    for owned in owned_windows(runtime, id) {
+        close_window(runtime, owned);
+    }
     if let Ok(mut view) = slot.view.try_borrow_mut() {
         let mut cx = Cx { runtime, window: id };
         view.closing(&mut cx);
@@ -454,6 +526,16 @@ pub(crate) fn close_window<V: View>(runtime: &Runtime<V>, id: WindowId) {
     if runtime.windows.borrow().is_empty() {
         unsafe { PostQuitMessage(0) };
     }
+}
+
+pub(crate) fn owned_windows<V: View>(runtime: &Runtime<V>, owner: WindowId) -> Vec<WindowId> {
+    runtime
+        .windows
+        .borrow()
+        .iter()
+        .filter(|slot| slot.owner == Some(owner))
+        .map(|slot| slot.id)
+        .collect()
 }
 
 /// Monitor work areas in screen pixels.
@@ -724,7 +806,7 @@ fn set_cursor(cursor: Cursor) {
 }
 
 fn place_ime<V: View>(slot: &WindowSlot<V>, hwnd: HWND) {
-    let caret = slot.view.try_borrow().ok().and_then(|view| view.caret());
+    let caret = slot.view.try_borrow().ok().and_then(|view| view.caret(slot.id));
     let Some(caret) = caret else {
         return;
     };

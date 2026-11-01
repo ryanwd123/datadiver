@@ -135,7 +135,11 @@ pub enum Button {
     FormatDeleteSet,
     FormatColumn(usize),
     FormatPreset(usize),
+    /// The presets drop-down's button.
+    FormatPresetsToggle,
+    /// The open presets list, behind its rows.
     FormatPresets,
+    FormatPresetScroll,
     FormatProblem(usize),
     // AI providers.
     ProviderDefault(usize),

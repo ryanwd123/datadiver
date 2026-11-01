@@ -88,8 +88,9 @@ pub trait View: Sized + 'static {
     /// The window is going away, or the app is quitting.
     fn closing(&mut self, _cx: &mut Cx<Self>) {}
 
-    /// Where the text cursor is, so an input method can place its window.
-    fn caret(&self) -> Option<super::geometry::Rect> {
+    /// Where the text cursor is in `window`, so an input method can place
+    /// its window.
+    fn caret(&self, _window: WindowId) -> Option<super::geometry::Rect> {
         None
     }
 }
@@ -139,8 +140,17 @@ struct Timer<V: View> {
 
 pub(crate) struct OpenRequest<V: View> {
     pub options: WindowOptions,
-    pub build: WindowBuilder<V>,
+    pub contents: Contents<V>,
     pub id: WindowId,
+}
+
+/// What a new window shows.
+pub(crate) enum Contents<V: View> {
+    /// A view of its own, which `build` makes.
+    View(WindowBuilder<V>),
+    /// The view of window `owner`, in a window kept above that one and closed
+    /// with it. `opened` runs once the window exists.
+    Owned { owner: WindowId, opened: TimerCallback<V> },
 }
 
 pub(crate) enum Action<V: View> {
@@ -315,7 +325,7 @@ impl<V: View> Runtime<V> {
         let id = self.next_window_id();
         self.queue(Action::Open(OpenRequest {
             options,
-            build: Box::new(build),
+            contents: Contents::View(Box::new(build)),
             id,
         }));
         id
@@ -530,10 +540,16 @@ impl<'a, V: View> Cx<'a, V> {
         self.runtime
     }
 
-    /// Redraws the window.
+    /// Redraws the window, and any other window showing its view.
     pub fn notify(&mut self) {
-        if let Some(slot) = self.runtime.window(self.window) {
-            slot.invalidate();
+        let Some(slot) = self.runtime.window(self.window) else {
+            return;
+        };
+        let slots = self.runtime.windows.borrow().clone();
+        for other in slots {
+            if Rc::ptr_eq(&other.view, &slot.view) {
+                other.invalidate();
+            }
         }
     }
 
@@ -588,10 +604,39 @@ impl<'a, V: View> Cx<'a, V> {
         let id = self.runtime.next_window_id();
         self.runtime.queue(Action::Open(OpenRequest {
             options,
-            build: Box::new(build),
+            contents: Contents::View(Box::new(build)),
             id,
         }));
         id
+    }
+
+    /// Opens another window onto this window's view, kept above this one and
+    /// closed with it. The view tells the windows apart by [`Cx::window_id`].
+    /// `opened` runs once the window exists.
+    pub fn open_owned_window(
+        &mut self,
+        options: WindowOptions,
+        opened: impl FnOnce(&mut V, &mut Cx<V>) + 'static,
+    ) -> WindowId {
+        let id = self.runtime.next_window_id();
+        self.runtime.queue(Action::Open(OpenRequest {
+            options,
+            contents: Contents::Owned {
+                owner: self.window,
+                opened: Box::new(opened),
+            },
+            id,
+        }));
+        id
+    }
+
+    /// This context as window `window`'s, such as the window an owned window
+    /// shows the view of. Work spawned through it belongs to that window.
+    pub fn for_window(&self, window: WindowId) -> Cx<'a, V> {
+        Cx {
+            runtime: self.runtime,
+            window,
+        }
     }
 
     /// Runs `run` once no view is busy, with the whole runtime.
@@ -624,6 +669,13 @@ impl<'a, V: View> Cx<'a, V> {
         self.runtime
             .window(self.window)
             .and_then(|slot| slot.placement())
+    }
+
+    /// The window's outer rectangle in screen pixels as it is now.
+    pub fn window_rect(&self) -> Option<super::geometry::Rect> {
+        self.runtime
+            .window(self.window)
+            .and_then(|slot| slot.outer_rect())
     }
 
     pub fn activate(&mut self) {

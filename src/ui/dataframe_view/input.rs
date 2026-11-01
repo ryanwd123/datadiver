@@ -9,11 +9,18 @@ impl View for DataFrameView {
     type Hit = Hit;
 
     fn paint(&mut self, canvas: &mut crate::ui::platform::Canvas<Hit>, cx: &mut Cx<Self>) {
+        if self.is_format_window(cx) {
+            self.paint_format_window(canvas, cx);
+            return;
+        }
         self.sync_profiles(cx);
         self.render(canvas, cx);
     }
 
     fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {
+        if self.is_format_window(cx) {
+            return self.format_window_event(event, cx);
+        }
         self.sync_profiles(cx);
         let before = self.focus;
         let handled = match event {
@@ -77,23 +84,27 @@ impl View for DataFrameView {
     }
 
     fn close_requested(&mut self, cx: &mut Cx<Self>) -> bool {
-        self.prepare_close(cx);
+        if !self.is_format_window(cx) {
+            self.prepare_close(cx);
+        }
         true
     }
 
     fn closing(&mut self, cx: &mut Cx<Self>) {
+        if self.is_format_window(cx) {
+            self.format_window_closed(cx);
+            return;
+        }
         self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
     }
 
-    fn caret(&self) -> Option<crate::ui::platform::Rect> {
-        let focus = self.focus?;
-        if let Some(Dialog::Formatting(manager)) = &self.dialog
-            && let Some(caret) = manager.caret(Some(focus))
-        {
-            return Some(caret);
+    fn caret(&self, window: crate::ui::platform::WindowId) -> Option<crate::ui::platform::Rect> {
+        if self.format_window.as_ref().is_some_and(|format| format.id == window) {
+            return self.format_window_caret(window);
         }
+        let focus = self.focus?;
         if focus == self.search_input.id {
             return self.search_input.caret_rect();
         }
@@ -581,9 +592,6 @@ impl DataFrameView {
         if left_down && let Some(capture) = self.capture.clone() {
             self.mouse_drag(pos, &capture, hit, cx);
             return;
-        }
-        if let Some(Dialog::Formatting(manager)) = &mut self.dialog {
-            manager.mouse_move(pos, hit);
         }
         if self.dialog.is_none() && self.keymap_editor.is_none() {
             let grid_hit = match hit {

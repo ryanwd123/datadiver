@@ -7,7 +7,6 @@ use crate::infrastructure::json_store::FavoriteTarget;
 use crate::ui::actions_editor::{ActionsEditor, ActionsEditorEvent};
 use crate::ui::ai_settings::{AiSettingsEditor, AiSettingsEvent};
 use crate::ui::aggregation_editor::AggregationPanel;
-use crate::ui::format_manager::{FormatManager, FormatManagerEvent};
 use crate::ui::command_palette::{PALETTE_WIDTH, matches_terms, matching_commands};
 use crate::ui::font_picker::FontTarget;
 use crate::ui::help::HelpDialog;
@@ -103,7 +102,6 @@ pub enum Dialog {
     Theme(ThemeEditor),
     Actions(ActionsEditor),
     AiSettings(AiSettingsEditor),
-    Formatting(FormatManager),
 }
 
 impl Dialog {
@@ -121,7 +119,6 @@ impl Dialog {
             Dialog::Theme(_) => "Theme Editor".into(),
             Dialog::Actions(_) => "View actions".into(),
             Dialog::AiSettings(_) => "AI providers".into(),
-            Dialog::Formatting(_) => "Conditional formatting".into(),
         }
     }
 
@@ -168,8 +165,6 @@ impl DataFrameView {
             Dialog::Pivot(mut panel) => panel.close(),
             Dialog::Aggregation(mut panel) => panel.close(),
             Dialog::SlicerPicker(_) => self.close_slicer_picker(),
-            // Undo takes the formatting as it was when the manager closed.
-            Dialog::Formatting(_) => self.undo_history.record(self.session.view_state()),
             _ => {}
         }
         if self.focus.is_none_or(|focus| !self.owns_focus(focus)) {
@@ -1028,61 +1023,6 @@ impl DataFrameView {
         self.open_dialog(Dialog::Actions(editor), focus, cx);
     }
 
-    pub(crate) fn open_format_manager(&mut self, cx: &mut Cx<Self>) {
-        self.space_menu_open = false;
-        self.action_menu_open = false;
-        let formats = self.session.working.as_ref().map(|view| view.formats.clone()).unwrap_or_default();
-        // The grid's columns first, in its order, then hidden ones.
-        let mut columns = self.format_scope().map(|scope| crate::application::conditional_format::rule_columns(&scope.schema)).unwrap_or_default();
-        let shown: Vec<&str> = self.session.result.columns.iter().map(|column| column.0.as_str()).collect();
-        columns.sort_by_key(|column| shown.iter().position(|name| *name == column.name).unwrap_or(usize::MAX));
-        let active = self
-            .grid
-            .selection()
-            .and_then(|selection| self.session.result.columns.get(selection.active.column))
-            .map(|column| column.0.clone());
-        let manager = FormatManager::new(cx.hwnd(), formats, columns, active);
-        let mut focus = None;
-        manager.focus(&mut focus);
-        self.open_dialog(Dialog::Formatting(manager), focus, cx);
-    }
-
-    /// Applies what the formatting manager changed, at once.
-    pub(crate) fn handle_format_events(&mut self, cx: &mut Cx<Self>) {
-        loop {
-            let Some(Dialog::Formatting(manager)) = &mut self.dialog else { return };
-            let events = manager.take_events();
-            if events.is_empty() {
-                break;
-            }
-            for event in events {
-                match event {
-                    FormatManagerEvent::Changed(formats) => {
-                        self.ensure_working_view();
-                        if let Err(error) = self.session.edit_definition(|definition| definition.formats = formats) {
-                            self.error = Some(error);
-                        }
-                        self.refresh_formatting(cx);
-                        self.autosave_table_preferences(cx);
-                        self.schedule_auto_save(cx);
-                    }
-                    FormatManagerEvent::PickColor => {
-                        let initial = match &self.dialog {
-                            Some(Dialog::Formatting(manager)) => manager.color_at_caret().unwrap_or(0x638ec6),
-                            _ => return,
-                        };
-                        if let Some(rgb) = system::choose_color(cx.hwnd(), initial)
-                            && let Some(Dialog::Formatting(manager)) = &mut self.dialog
-                        {
-                            manager.insert_color(&format!("#{rgb:06x}"));
-                        }
-                    }
-                }
-            }
-        }
-        cx.notify();
-    }
-
     fn handle_actions_events(&mut self, cx: &mut Cx<Self>) {
         let Some(Dialog::Actions(editor)) = &mut self.dialog else {
             return;
@@ -1387,12 +1327,6 @@ impl DataFrameView {
                 self.handle_ai_settings_events(None, cx);
                 return handled;
             }
-            Some(Dialog::Formatting(manager)) => {
-                let handled = manager.key(event, &mut focus);
-                self.focus = focus;
-                self.handle_format_events(cx);
-                return handled;
-            }
         };
         self.focus = focus;
         handled
@@ -1435,10 +1369,8 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.type_text(typed, focus),
             Some(Dialog::Actions(editor)) => editor.type_text(typed, focus),
             Some(Dialog::AiSettings(editor)) => editor.type_text(typed, focus),
-            Some(Dialog::Formatting(manager)) => manager.type_text(typed, focus),
             Some(Dialog::Information(_) | Dialog::Help(_) | Dialog::Confirm(_)) => false,
         };
-        self.handle_format_events(cx);
         cx.notify();
         used
     }
@@ -1600,13 +1532,6 @@ impl DataFrameView {
                     self.handle_ai_settings_events(test, cx);
                     return;
                 }
-                Some(Dialog::Formatting(manager)) => {
-                    manager.mouse_down(hit, pos, clicks, modifiers, &mut focus);
-                    self.focus = focus;
-                    self.handle_format_events(cx);
-                    cx.notify();
-                    return;
-                }
                 Some(Dialog::Help(_) | Dialog::Confirm(_)) | None => {}
             },
         }
@@ -1633,7 +1558,6 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.mouse_drag(pos),
             Some(Dialog::Actions(editor)) => editor.mouse_drag(pos),
             Some(Dialog::AiSettings(editor)) => editor.mouse_drag(pos),
-            Some(Dialog::Formatting(manager)) => manager.mouse_drag(pos),
             Some(Dialog::Confirm(_)) | None => {}
         }
     }
@@ -1651,7 +1575,6 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.mouse_up(),
             Some(Dialog::Actions(editor)) => editor.mouse_up(),
             Some(Dialog::AiSettings(editor)) => editor.mouse_up(),
-            Some(Dialog::Formatting(manager)) => manager.mouse_up(),
             Some(Dialog::Confirm(_)) | None => {}
         }
     }
@@ -1666,9 +1589,6 @@ impl DataFrameView {
             Some(Dialog::OrderBy(panel)) => panel.wheel(hit, delta),
             Some(Dialog::Palette(dialog)) => dialog.palette.list.wheel(delta),
             Some(Dialog::SlicerPicker(picker)) => picker.command.list.wheel(delta),
-            Some(Dialog::Formatting(manager)) => {
-                manager.wheel(hit, delta, crate::ui::platform::Modifiers { shift, ..Default::default() })
-            }
             _ => false,
         }
     }
@@ -1693,7 +1613,7 @@ impl DataFrameView {
                 window_height * (1.0 - crate::ui::info::DIALOG_FRACTION) / 2.0,
             ),
             Dialog::Help(_) => (crate::ui::help::HelpLayout::for_viewport(window_width).dialog_width, 24.0),
-            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::Formatting(_) => (wide, 48.0),
+            Dialog::Pivot(_) | Dialog::Aggregation(_) => (wide, 48.0),
             Dialog::OrderBy(_) => (760.0, 48.0),
             Dialog::Palette(_) => (PALETTE_WIDTH, 24.0),
             Dialog::Theme(_) => (600.0, 48.0),
@@ -1730,7 +1650,6 @@ impl DataFrameView {
             Dialog::Theme(form) => form.height(&fonts).min((window_height - 210.0).clamp(100.0, 650.0)),
             Dialog::Actions(editor) => editor.height(&fonts, content_width),
             Dialog::AiSettings(editor) => editor.height(&fonts, content_width),
-            Dialog::Formatting(manager) => manager.height(window_height),
         }
         .min(max_content);
         let height = title_height + content_height + footer_height + 2.0 * padding;
@@ -1847,7 +1766,6 @@ impl DataFrameView {
                 editor.paint(canvas, content, &fonts, focus);
                 canvas.pop_clip();
             }
-            Dialog::Formatting(manager) => manager.paint(canvas, content, &fonts, focus),
         }
         if !footer.is_empty() {
             let footer_rect = rect(x + padding, frame.bottom() - padding - button_height(font), content_width, button_height(font));

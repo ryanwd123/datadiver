@@ -221,6 +221,9 @@ pub struct ApplicationHistory {
     pub last_raw_source: Option<String>,
     pub recent_sources: Vec<String>,
     pub primary_window: Option<WindowGeometry>,
+    /// The conditional formatting window: its offset from the corner of the
+    /// window it formats, and its size.
+    pub format_window: Option<WindowGeometry>,
 }
 
 impl Default for ApplicationHistory {
@@ -231,6 +234,7 @@ impl Default for ApplicationHistory {
             last_raw_source: None,
             recent_sources: Vec::new(),
             primary_window: None,
+            format_window: None,
         }
     }
 }
@@ -509,6 +513,11 @@ impl ViewRepository {
 
     pub fn save_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
         self.update_history(|history| history.primary_window = Some(geometry.clone()))?;
+        Ok(())
+    }
+
+    pub fn save_format_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
+        self.update_history(|history| history.format_window = Some(geometry.clone()))?;
         Ok(())
     }
 

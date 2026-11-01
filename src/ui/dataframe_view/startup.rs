@@ -306,8 +306,9 @@ impl DataFrameView {
             ));
             steps.push_back(Step::Sleep(options.capture_delay));
             let exit = options.exit_after.is_none();
-            steps.push_back(Step::Run(Box::new(move |_, cx| {
-                let id = cx.window_id();
+            steps.push_back(Step::Run(Box::new(move |view, cx| {
+                // The formatting manager shows in a window of its own.
+                let id = view.format_window.as_ref().map_or(cx.window_id(), |window| window.id);
                 // Painting borrows the view, so it waits until this step returns.
                 cx.with_runtime(move |runtime| {
                     if let Err(error) = crate::ui::platform::headless::capture(runtime, id, &path) {
@@ -340,7 +341,7 @@ impl DataFrameView {
             "help" => self.open_help(cx),
             "keymap" => self.open_keymap_editor(cx),
             "actions" | "action-menu" => self.capture_actions(target, cx),
-            "formatting" | "formatted" => self.capture_formatting(target, cx),
+            "formatting" | "formatting:presets" | "formatted" => self.capture_formatting(target, cx),
             "ai-providers" => self.open_ai_settings(cx),
             "database-tree" => self.toggle_database_tree(cx),
             "database-tree:sql" => {

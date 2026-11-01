@@ -1,6 +1,7 @@
 //! Running views without a window: painting into a bitmap, saving PNG
 //! screenshots, and driving input from tests.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -12,11 +13,11 @@ use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::core::HSTRING;
 
-use super::app::{Cx, Event, MouseButton, OpenRequest, Runtime, View, WindowId, WindowOptions};
+use super::app::{Action, Contents, Cx, Event, MouseButton, OpenRequest, Runtime, View, WindowId, WindowOptions};
 use super::geometry::{Point, Rect};
 use super::gfx::{Brushes, HitRegion};
 use super::keys::{KeyEvent, Modifiers};
-use super::window::{WindowSlot, d2d_factory, new_slot, paint_into};
+use super::window::{WindowSlot, d2d_factory, new_slot, owned_windows, paint_into};
 
 fn wic_factory() -> windows::core::Result<IWICImagingFactory> {
     unsafe {
@@ -104,8 +105,19 @@ fn open_headless<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>) {
         Some(placement) => (placement.width, placement.height),
         None => (request.options.width, request.options.height),
     };
-    let view = (request.build)(&mut cx);
-    let slot = new_slot(request.id, view, None, size);
+    let slot = match request.contents {
+        Contents::View(build) => {
+            let view = build(&mut cx);
+            new_slot(request.id, Rc::new(RefCell::new(view)), None, None, size)
+        }
+        Contents::Owned { owner, opened } => {
+            let Some(owner_slot) = runtime.window(owner) else {
+                return;
+            };
+            runtime.queue(Action::Update(request.id, opened));
+            new_slot(request.id, owner_slot.view.clone(), Some(owner), None, size)
+        }
+    };
     if let Some(placement) = request.options.placement {
         slot.set_origin(placement.x, placement.y);
     }
@@ -116,6 +128,9 @@ fn close_headless<V: View>(runtime: &Runtime<V>, id: WindowId) {
     let Some(slot) = runtime.window(id) else {
         return;
     };
+    for owned in owned_windows(runtime, id) {
+        close_headless(runtime, owned);
+    }
     if let Ok(mut view) = slot.view.try_borrow_mut() {
         let mut cx = Cx { runtime, window: id };
         view.closing(&mut cx);
@@ -152,7 +167,7 @@ impl<V: View> TestApp<V> {
                     visible: false,
                     ..Default::default()
                 },
-                build: Box::new(build),
+                contents: Contents::View(Box::new(build)),
                 id,
             },
         );
@@ -235,6 +250,12 @@ impl<V: View> TestApp<V> {
 
     pub fn resize(&self, id: WindowId, width: f32, height: f32) {
         self.slot(id).set_size(width, height);
+        self.dispatch(id, Event::Moved);
+    }
+
+    /// Moves window `id` so its corner is at `x`, `y` on screen.
+    pub fn move_to(&self, id: WindowId, x: f32, y: f32) {
+        self.slot(id).set_origin(x, y);
         self.dispatch(id, Event::Moved);
     }
 

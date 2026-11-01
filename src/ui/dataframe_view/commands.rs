@@ -635,7 +635,8 @@ impl DataFrameView {
     /// when the view has none.
     /// For screenshots: formats a view without formats by its columns' types
     /// (duplicates in the first text column; bars, a color scale and arrows
-    /// in the number columns), and for `formatting` opens the manager.
+    /// in the number columns), and for `formatting` opens the manager, with
+    /// its presets list for `formatting:presets`.
     pub(crate) fn capture_formatting(&mut self, target: &str, cx: &mut Cx<Self>) {
         let has_formats = self.session.working.as_ref().is_some_and(|view| !view.formats.is_empty());
         if !has_formats {
@@ -669,8 +670,22 @@ impl DataFrameView {
             let _ = self.session.edit_definition(|definition| definition.formats = formats);
             self.refresh_formatting(cx);
         }
-        if target == "formatting" {
+        if target.starts_with("formatting") {
             self.open_format_manager(cx);
+        }
+        if target == "formatting:presets" {
+            self.open_presets_for_capture(cx);
+        }
+    }
+
+    /// Opens the manager's presets list once its window has made the manager.
+    fn open_presets_for_capture(&mut self, cx: &mut Cx<Self>) {
+        match self.format_window.as_mut().and_then(|window| window.manager.as_mut()) {
+            Some(manager) => {
+                manager.presets_open = true;
+                cx.notify();
+            }
+            None => cx.timer(Duration::from_millis(20), |view, cx| view.open_presets_for_capture(cx)).detach(),
         }
     }
 

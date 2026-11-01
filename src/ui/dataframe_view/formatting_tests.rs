@@ -1,6 +1,7 @@
 use super::test_support::Viewer;
-use super::dialogs::Dialog;
 use crate::application::commands::CommandId;
+use crate::ui::hit::{Button, Hit};
+use crate::ui::platform::point;
 
 const SALES: &str = "region,kind,n\nNorth,a,10\nNorth,b,30\nSouth,a,20\nNorth,a,5\n";
 
@@ -8,6 +9,18 @@ fn sales(home: &std::path::Path) -> std::path::PathBuf {
     let path = home.join("sales.csv");
     std::fs::write(&path, SALES).unwrap();
     path
+}
+
+/// Presses M in the grid and returns the manager's window.
+fn open_manager(viewer: &Viewer) -> Viewer {
+    viewer.render();
+    viewer.press("m");
+    viewer.run_until_parked();
+    let id = viewer.read(|view| view.format_window.as_ref().map(|window| window.id)).expect("the manager opened");
+    let manager = viewer.window(id);
+    assert!(manager.read(|view| view.format_window.as_ref().unwrap().manager.is_some()));
+    manager.render();
+    manager
 }
 
 /// Whether each shown row's `column` is bold.
@@ -37,21 +50,18 @@ fn m_opens_the_manager_and_duplicates_count_the_filtered_rows_not_the_search() {
     let viewer = Viewer::file(&path);
     viewer.select(0, 1);
     viewer.render();
-    viewer.press("m");
-    viewer.run_until_parked();
-    let opened = viewer.read(|view| match &view.dialog {
-        Some(Dialog::Formatting(manager)) => Some(manager.formats.clone()),
-        _ => None,
-    });
-    assert_eq!(opened.unwrap()[0].columns, ["kind"]);
-    viewer.input("if duplicate(c) then bold");
+    let manager = open_manager(&viewer);
+    let opened = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().formats.clone());
+    assert_eq!(opened[0].columns, ["kind"]);
+    manager.input("if duplicate(c) then bold");
     viewer.settle();
     // `a` is on three rows, `b` on one.
     assert_eq!(bold(&viewer, 1), [true, false, true, true]);
     // The first Escape closes the completion list typing opened.
-    viewer.press("escape escape");
+    manager.press("escape escape");
     viewer.run_until_parked();
-    assert!(viewer.read(|view| view.dialog.is_none()));
+    assert!(!manager.is_open());
+    assert!(viewer.read(|view| view.format_window.is_none() && view.dialog.is_none()));
 
     // A search narrows the rows shown, not the rows counted.
     viewer.update(|view, cx| view.set_search_text("South".into(), cx));
@@ -109,4 +119,72 @@ fn every_kind_of_mark_paints() {
         view.grid.formatting().unwrap().style(result.column_indices[2], &rows[0], 0)
     });
     assert!(style.background.is_some() && style.bar.is_some() && style.icon.is_some() && style.sparkline.is_some());
+}
+
+#[test]
+fn the_manager_reopens_where_it_was_beside_its_window_and_closes_with_it() {
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    viewer.app.move_to(viewer.id, 10.0, 10.0);
+    let manager = open_manager(&viewer);
+    // A second M brings the open manager forward rather than opening another.
+    viewer.press("m");
+    viewer.run_until_parked();
+    assert_eq!(viewer.others().len(), 1);
+    manager.app.move_to(manager.id, 50.0, 40.0);
+    manager.resize(500.0, 300.0);
+    manager.press("escape");
+    viewer.run_until_parked();
+    assert!(!manager.is_open());
+    let saved = viewer.read(|view| view.repository.load_history().unwrap().format_window.unwrap());
+    assert_eq!((saved.x, saved.y, saved.width, saved.height), (40.0, 30.0, 500.0, 300.0));
+
+    // It keeps that offset when the grid's window has moved.
+    viewer.app.move_to(viewer.id, 60.0, 40.0);
+    let manager = open_manager(&viewer);
+    let placement = manager.app.update(manager.id, |_, cx| cx.placement()).unwrap();
+    assert_eq!((placement.x, placement.y, placement.width, placement.height), (100.0, 70.0, 500.0, 300.0));
+
+    // Closing the grid's window closes the manager first.
+    assert!(viewer.request_close());
+    assert!(!manager.is_open());
+}
+
+#[test]
+fn presets_open_from_a_scrolling_list_and_edits_show_in_the_grid() {
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    viewer.select(0, 1);
+    let manager = open_manager(&viewer);
+    manager.resize(700.0, 360.0);
+    assert!(manager.find(|hit| matches!(hit, Hit::Button(Button::FormatPreset(_)))).is_none());
+    manager.click(|hit| *hit == Hit::Button(Button::FormatPresetsToggle));
+    // The first preset row on show, in painting order.
+    let top = |manager: &Viewer| {
+        manager.app.hits(manager.id).into_iter().find_map(|region| match region.hit {
+            Hit::Button(Button::FormatPreset(index)) => Some((index, region.rect)),
+            _ => None,
+        })
+    };
+    let (first, row) = top(&manager).expect("the presets show");
+    // The list is taller than the window, so it scrolls, by wheel or bar.
+    let bar = manager.find(|hit| *hit == Hit::Button(Button::FormatPresetScroll)).expect("a scroll bar");
+    manager.app.scroll(manager.id, row.center(), point(0.0, -3.0));
+    manager.render();
+    let (scrolled, _) = top(&manager).unwrap();
+    assert!(scrolled > first, "{scrolled} > {first}");
+    manager.drag(bar.center(), point(bar.center().x, bar.bottom() + 400.0));
+    let last = diver_format::PRESETS.len() - 1;
+    assert!(manager.find(|hit| *hit == Hit::Button(Button::FormatPreset(last))).is_some());
+    // Escape closes the list, not the window.
+    manager.press("escape");
+    manager.render();
+    assert!(manager.is_open() && top(&manager).is_none());
+    manager.click(|hit| *hit == Hit::Button(Button::FormatPresetsToggle));
+    manager.click(|hit| *hit == Hit::Button(Button::FormatPreset(last)));
+    viewer.settle();
+    assert!(top(&manager).is_none());
+    assert_eq!(viewer.read(|view| view.session.working.as_ref().unwrap().formats.len()), 1);
 }

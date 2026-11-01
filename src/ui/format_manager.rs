@@ -1,6 +1,7 @@
 //! The conditional formatting manager: the view's format sets, each rules in
 //! the formatting language and the columns they apply to, with presets.
-//! Every change applies at once, so the grid shows it while typing.
+//! It fills a window of its own beside the grid's, and every change applies
+//! at once, so the grid shows it while typing.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,12 +15,14 @@ use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
 use crate::ui::platform::{Align, Canvas, Cursor, Point, Rect, rect, text};
 use crate::ui::widgets::hosted_editor::{HostedEditor, MarkKind};
+use crate::ui::widgets::scroll::{self, Scroll};
 use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
 /// The command "Pick a color…" sends.
 const PICK_COLOR: u32 = 1;
-const LIST_WIDTH: f32 = 220.0;
-const PRESETS_WIDTH: f32 = 210.0;
+const LIST_WIDTH: f32 = 240.0;
+/// The presets drop-down, which may be wider than the list it opens from.
+const PRESETS_WIDTH: f32 = 300.0;
 
 pub enum FormatManagerEvent {
     Changed(Vec<ConditionalFormat>),
@@ -46,6 +49,14 @@ fn preset_entries() -> Vec<Entry> {
     out
 }
 
+/// Where the open presets list scrolls, from the last frame.
+#[derive(Clone, Copy)]
+struct PresetList {
+    track: Rect,
+    viewport: f32,
+    content: f32,
+}
+
 pub struct FormatManager {
     pub(crate) formats: Vec<ConditionalFormat>,
     pub(crate) selected: usize,
@@ -54,7 +65,9 @@ pub struct FormatManager {
     columns: Rc<RefCell<Vec<diver_format::Column>>>,
     problems: Vec<diver_format::Diagnostic>,
     rules_running: usize,
-    preset_scroll: usize,
+    pub(crate) presets_open: bool,
+    preset_scroll: Scroll,
+    preset_list: Option<PresetList>,
     events: Vec<FormatManagerEvent>,
 }
 
@@ -84,7 +97,9 @@ impl FormatManager {
             columns,
             problems: Vec::new(),
             rules_running: 0,
-            preset_scroll: 0,
+            presets_open: false,
+            preset_scroll: Scroll::default(),
+            preset_list: None,
             events: Vec::new(),
         };
         manager.load_selected();
@@ -101,6 +116,23 @@ impl FormatManager {
 
     pub fn contains(&self, id: WidgetId) -> bool {
         id == self.editor.id
+    }
+
+    /// Takes in formats and columns changed outside the manager, such as by
+    /// undo or a new result, leaving what already matches alone.
+    pub fn sync_scope(&mut self, formats: &[ConditionalFormat], columns: Vec<diver_format::Column>) {
+        if *self.columns.borrow() != columns {
+            *self.columns.borrow_mut() = columns;
+            self.check();
+        }
+        if self.kept() != formats {
+            self.formats = formats.to_vec();
+            if self.formats.is_empty() {
+                self.formats.push(ConditionalFormat::default());
+            }
+            self.selected = self.selected.min(self.formats.len() - 1);
+            self.load_selected();
+        }
     }
 
     fn load_selected(&mut self) {
@@ -208,6 +240,7 @@ impl FormatManager {
 
     /// Adds a preset's rule after the selected set's rules.
     pub(crate) fn add_preset(&mut self, index: usize, focus: &mut Option<WidgetId>) {
+        self.presets_open = false;
         let Some(preset) = PRESETS.get(index) else { return };
         let target = self.formats.get(self.selected).and_then(|f| f.columns.first().cloned());
         let rule = preset.text(&self.columns.borrow(), target.as_deref());
@@ -226,6 +259,10 @@ impl FormatManager {
     }
 
     pub fn key(&mut self, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        if self.presets_open && event.is("escape") {
+            self.presets_open = false;
+            return true;
+        }
         if *focus != Some(self.editor.id) {
             return false;
         }
@@ -243,8 +280,25 @@ impl FormatManager {
         true
     }
 
-    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) {
+    pub fn mouse_down(&mut self, hit: Option<&Hit>, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) {
+        // A click outside the presets list closes it, and still does its own thing.
+        let in_presets = matches!(
+            hit,
+            Some(Hit::Button(
+                Button::FormatPreset(_) | Button::FormatPresets | Button::FormatPresetScroll | Button::FormatPresetsToggle
+            ))
+        );
+        if !in_presets {
+            self.presets_open = false;
+        }
+        let Some(hit) = hit else { return };
         match hit {
+            Hit::Button(Button::FormatPresetsToggle) => self.presets_open = !self.presets_open,
+            Hit::Button(Button::FormatPresetScroll) => {
+                if let Some(list) = self.preset_list {
+                    self.preset_scroll.press(pos.y - list.track.y, list.track.h, list.viewport, list.content);
+                }
+            }
             Hit::CodeEditor(id) if *id == self.editor.id => {
                 self.editor.mouse_down(pos, clicks, modifiers);
                 *focus = Some(self.editor.id);
@@ -274,22 +328,27 @@ impl FormatManager {
     }
 
     pub fn mouse_drag(&mut self, pos: Point) {
-        if self.editor.is_dragging() {
+        if self.preset_scroll.dragging()
+            && let Some(list) = self.preset_list
+        {
+            self.preset_scroll.drag(pos.y - list.track.y, list.track.h, list.viewport, list.content);
+        } else if self.editor.is_dragging() {
             self.editor.mouse_move(pos, true);
         }
     }
 
     pub fn mouse_up(&mut self) {
+        self.preset_scroll.release();
         self.editor.mouse_up();
     }
 
     pub fn wheel(&mut self, hit: &Hit, delta: Point, modifiers: Modifiers) -> bool {
         match hit {
             Hit::CodeEditor(id) if *id == self.editor.id => self.editor.wheel(delta, modifiers),
-            Hit::Button(Button::FormatPreset(_) | Button::FormatPresets) => {
-                let steps = (-delta.y / 40.0).round() as isize;
-                self.preset_scroll = (self.preset_scroll as isize + steps).max(0) as usize;
-                true
+            Hit::Button(Button::FormatPreset(_) | Button::FormatPresets | Button::FormatPresetScroll) => {
+                let Some(list) = self.preset_list else { return false };
+                let row = list.content / preset_entries().len().max(1) as f32;
+                self.preset_scroll.scroll_by(-delta.y * row, list.viewport, list.content)
             }
             _ => false,
         }
@@ -297,10 +356,6 @@ impl FormatManager {
 
     pub fn caret(&self, focus: Option<WidgetId>) -> Option<Rect> {
         (focus == Some(self.editor.id)).then(|| self.editor.caret_rect()).flatten()
-    }
-
-    pub fn height(&self, window_height: f32) -> f32 {
-        (window_height - 140.0).clamp(320.0, 580.0)
     }
 
     pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
@@ -311,11 +366,35 @@ impl FormatManager {
         let heading = small.semibold();
         let mut row = Row::new(r, 16.0);
         let list = row.left(LIST_WIDTH);
-        let presets = row.right(PRESETS_WIDTH);
         let main = row.rest();
 
-        // The format sets.
+        // Presets open as a list over the window from a button above the sets.
         let mut column = Column::new(list, 4.0);
+        canvas.text(column.next(small_line), "PRESETS", &heading, colors::MUTED, Align::Left);
+        let toggle = column.next(button_height(small));
+        let entries = preset_entries();
+        let preset_row = (small_line + 6.0).round();
+        let presets_content = entries.len() as f32 * preset_row;
+        let presets_top = toggle.bottom() + 4.0;
+        let presets_panel = rect(
+            toggle.x,
+            presets_top,
+            PRESETS_WIDTH.min(r.right() - toggle.x),
+            (presets_content + 8.0).min(r.bottom() - presets_top).max(preset_row * 3.0),
+        );
+        // What's under the open list doesn't light up as the pointer crosses it.
+        let mouse = canvas.mouse();
+        if self.presets_open && mouse.is_some_and(|at| presets_panel.contains(at)) {
+            canvas.set_mouse(None);
+        }
+        let open = self.presets_open;
+        canvas.fill_rounded(toggle, 4.0, if open { colors::SELECTED } else if canvas.hovered(toggle) { colors::HOVER } else { colors::BACKGROUND });
+        canvas.stroke_rounded(toggle, 4.0, if open { colors::SELECTED_STRONG } else { colors::INPUT_BORDER }, 1.0);
+        let label = toggle.inset_xy(10.0, 0.0);
+        canvas.text(label, "Add a preset…", small, colors::FOREGROUND, Align::Left);
+        canvas.text(label, if open { "▴" } else { "▾" }, small, colors::MUTED, Align::Right);
+        canvas.hit_cursor(toggle, Hit::Button(Button::FormatPresetsToggle), Cursor::Hand);
+        column.skip(10.0);
         canvas.text(column.next(small_line), "FORMAT SETS", &heading, colors::MUTED, Align::Left);
         let set_height = (small_line * 2.0 + 10.0).round();
         let buttons_height = button_height(small) + 8.0;
@@ -384,7 +463,7 @@ impl FormatManager {
         if self.problems.is_empty() {
             let rules = self.formats.get(self.selected).map(|f| f.rules.trim()).unwrap_or_default();
             let message = if rules.is_empty() {
-                "No rules yet: type one, or click a preset.".to_string()
+                "No rules yet: type one, or add a preset.".to_string()
             } else if applied.is_empty() {
                 format!("No problems · pick the columns these {} rules apply to", self.rules_running)
             } else {
@@ -414,41 +493,72 @@ impl FormatManager {
         }
         canvas.text(
             column.next(small_line),
-            "c is the cell · \"name\" another column · 'text' · ; separates rules · # picks a color · Ctrl+Space completes",
+            "c is the cell · \"name\" another column · 'text' · ; separates rules · # picks a color · Ctrl+Space completes · Esc closes",
             small,
             colors::MUTED,
             Align::Left,
         );
 
-        // Presets.
-        let mut column = Column::new(presets, 0.0);
-        canvas.text(column.next(small_line + 4.0), "PRESETS (click to add)", &heading, colors::MUTED, Align::Left);
-        let area = column.rest();
-        canvas.hit(area, Hit::Button(Button::FormatPresets));
-        let entries = preset_entries();
-        let row_height = (small_line + 6.0).round();
-        let visible = (area.h / row_height).floor().max(1.0) as usize;
-        self.preset_scroll = self.preset_scroll.min(entries.len().saturating_sub(visible));
-        canvas.push_clip(area);
-        for (n, entry) in entries.iter().skip(self.preset_scroll).take(visible + 1).enumerate() {
-            let item = rect(area.x, area.y + n as f32 * row_height, area.w, row_height);
+        canvas.set_mouse(mouse);
+        if self.presets_open {
+            self.paint_presets(canvas, presets_panel, &entries, preset_row, &applied, small, &heading);
+        } else {
+            self.preset_list = None;
+        }
+    }
+
+    /// The open presets list in `panel`, grouped, scrolling when it's taller.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_presets(
+        &mut self,
+        canvas: &mut Canvas<Hit>,
+        panel: Rect,
+        entries: &[Entry],
+        row_height: f32,
+        applied: &[String],
+        small: &crate::ui::platform::Font,
+        heading: &crate::ui::platform::Font,
+    ) {
+        canvas.shadow(panel, 6.0);
+        canvas.fill_rounded(panel, 6.0, colors::POPOVER);
+        canvas.stroke_rounded(panel, 6.0, colors::BORDER, 1.0);
+        canvas.hit(panel, Hit::Button(Button::FormatPresets));
+        let inner = panel.inset(4.0);
+        let content = entries.len() as f32 * row_height;
+        self.preset_scroll.clamp(inner.h, content);
+        let bar = scroll::has_bar(inner.h, content);
+        let rows = if bar { inner.with_w(inner.w - scroll::BAR_WIDTH) } else { inner };
+        let target = applied.first().map(String::as_str);
+        let offset = self.preset_scroll.offset;
+        let first = (offset / row_height).floor() as usize;
+        canvas.push_clip(inner);
+        for (n, entry) in entries.iter().enumerate().skip(first) {
+            let item = rect(rows.x, rows.y + n as f32 * row_height - offset, rows.w, row_height);
+            if item.y >= inner.bottom() {
+                break;
+            }
             match entry {
                 Entry::Group(name) => {
-                    canvas.text(item.inset_xy(4.0, 0.0), name, &heading, colors::SELECTED_STRONG, Align::Left);
+                    canvas.text(item.inset_xy(6.0, 0.0), name, heading, colors::SELECTED_STRONG, Align::Left);
                 }
                 Entry::Preset(index) => {
-                    if canvas.hovered(item) {
+                    let shown = item.intersect(&inner);
+                    if canvas.hovered(shown) {
                         canvas.fill_rounded(item, 3.0, colors::HOVER);
                     }
                     let preset = &PRESETS[*index];
-                    canvas.text(item.inset_xy(14.0, 0.0), preset.name, small, colors::FOREGROUND, Align::Left);
-                    let target = applied.first().map(String::as_str);
+                    canvas.text(item.inset_xy(16.0, 0.0), preset.name, small, colors::FOREGROUND, Align::Left);
                     let tip = format!("{}\n{}", preset.description, preset.text(&self.columns.borrow(), target));
-                    canvas.hit_with(item, Hit::Button(Button::FormatPreset(*index)), Cursor::Hand, Some(&tip));
+                    canvas.hit_with(shown, Hit::Button(Button::FormatPreset(*index)), Cursor::Hand, Some(&tip));
                 }
             }
         }
         canvas.pop_clip();
+        let track = rect(inner.right() - scroll::BAR_WIDTH, inner.y, scroll::BAR_WIDTH, inner.h);
+        if bar {
+            scroll::vertical(canvas, track, inner.h, content, &self.preset_scroll, Hit::Button(Button::FormatPresetScroll));
+        }
+        self.preset_list = Some(PresetList { track, viewport: inner.h, content });
     }
 }
 
