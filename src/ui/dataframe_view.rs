@@ -577,6 +577,9 @@ pub struct DataFrameView {
     pub(crate) busy: bool,
     debouncing: bool,
     pub(crate) loading: bool,
+    /// When the toolbar's busy indicator appeared, and the timer that redraws it.
+    thinking_since: Option<Instant>,
+    thinking_frame: Option<Task>,
     copy_revision: u64,
     pub(crate) copy_status: Option<String>,
     statistics_revision: u64,
@@ -853,6 +856,8 @@ impl DataFrameView {
             busy: false,
             debouncing: false,
             loading: false,
+            thinking_since: None,
+            thinking_frame: None,
             copy_revision: 0,
             copy_status: None,
             statistics_revision: 0,

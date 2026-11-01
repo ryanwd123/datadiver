@@ -6,7 +6,7 @@ use crate::ui::hit::{Button, Splitter};
 use crate::ui::platform::{Align, Canvas, Color, Cursor, Rect, rect, text};
 use crate::ui::space_menu::{SpaceMenu, paint_action_menu};
 use crate::ui::status;
-use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors};
+use crate::ui::widgets::{ButtonStyle, Row, THINKING_FRAME, button, button_height, button_width, colors, thinking_dots};
 
 const LIMIT_WARNING: Color = Color::rgb(0xff0000);
 
@@ -75,9 +75,20 @@ impl DataFrameView {
             button(canvas, rect(r.x, button_top, r.w, button_height(font)), "Clear filters", font, ButtonStyle::Outline, true, Hit::Button(Button::ClearFilters));
         }
         if self.loading || self.busy {
+            let now = cx.now();
+            let since = *self.thinking_since.get_or_insert(now);
+            let size = (line * 1.2).round();
+            let r = items.left(size + 8.0);
+            let dots = rect(r.x + 8.0, r.y + (r.h - size) / 2.0, size, size);
+            thinking_dots(canvas, dots, now.saturating_duration_since(since), colors::SELECTED_STRONG);
             let label = if self.loading { "Loading…" } else { "Searching…" };
-            let r = items.left(text::measure(label, font).0 + 12.0);
-            canvas.text(r.offset(8.0, 0.0), label, font, colors::FOREGROUND, Align::Left);
+            canvas.hit_with(dots, Hit::Surface, Cursor::Arrow, Some(label));
+            if !self.thinking_frame.as_ref().is_some_and(Task::is_pending) {
+                self.thinking_frame = Some(cx.timer(THINKING_FRAME, |_, cx| cx.notify()));
+            }
+        } else {
+            self.thinking_since = None;
+            self.thinking_frame = None;
         }
         self.paint_title(canvas, items.rest());
         let mut top = header.bottom();

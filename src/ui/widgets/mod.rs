@@ -247,6 +247,33 @@ pub fn key_cap<H: Clone>(canvas: &mut Canvas<H>, x: f32, y: f32, h: f32, stroke:
     width
 }
 
+/// How often a [`thinking_dots`] indicator wants a new frame.
+pub const THINKING_FRAME: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// A busy indicator: a 3×3 matrix of dots whose lights wander across it.
+/// `elapsed` is the time since the work started; repaint every
+/// [`THINKING_FRAME`] while it runs.
+pub fn thinking_dots<H: Clone>(canvas: &mut Canvas<H>, r: Rect, elapsed: std::time::Duration, color: Color) {
+    const SIZE: usize = 3;
+    let cell = (r.w.min(r.h) / SIZE as f32).floor().max(3.0);
+    let dot = (cell * 0.7).round().max(2.0);
+    let left = r.x + (r.w - cell * SIZE as f32) / 2.0;
+    let top = r.y + (r.h - cell * SIZE as f32) / 2.0;
+    let t = elapsed.as_secs_f32();
+    for row in 0..SIZE {
+        for column in 0..SIZE {
+            let index = (row * SIZE + column) as f32;
+            // A wave rolling down the diagonal, with each dot a little out of
+            // step so the lit dots seem to move around the matrix.
+            let phase = t * 1.6 - (row + column) as f32 * 0.17 + (index * 2.39).sin() * 0.35;
+            let wave = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
+            let x = left + column as f32 * cell + (cell - dot) / 2.0;
+            let y = top + row as f32 * cell + (cell - dot) / 2.0;
+            canvas.fill_rounded(rect(x, y, dot, dot), dot / 2.0, color.opacity(0.15 + 0.85 * wave * wave));
+        }
+    }
+}
+
 /// The bold variant of `font`.
 pub fn bold(font: &Font) -> Font {
     font.weight(Weight::Bold)
