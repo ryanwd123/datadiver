@@ -141,6 +141,10 @@ impl DataFrameView {
             self.set_cache_drop_open(false, cx);
             return true;
         }
+        if self.notices.log_open && event.key == "escape" {
+            self.notices.set_log_open(false);
+            return true;
+        }
         if self.action_menu_open {
             self.handle_action_menu_key(event, cx);
             return true;
@@ -434,6 +438,10 @@ impl DataFrameView {
         if self.sql_helper_open && !matches!(hit, Hit::Surface | Hit::Button(Button::SqlHelperCommand(_))) {
             self.sql_helper_open = false;
         }
+        // So does one outside the message log; its own button toggles it.
+        if self.notices.log_open && !matches!(hit, Hit::Surface | Hit::Button(Button::ClearNotices | Button::NoticeLog)) {
+            self.notices.set_log_open(false);
+        }
         match hit {
             Hit::Grid(grid_hit) => {
                 if self.grid.mouse_down(*grid_hit, pos, modifiers.shift, false) {
@@ -527,6 +535,12 @@ impl DataFrameView {
             }
             Button::CacheDropCancel => self.set_cache_drop_open(false, cx),
             Button::ViewOptions => self.open_view_options(cx),
+            Button::NoticeLog => {
+                let open = !self.notices.log_open;
+                self.notices.set_log_open(open);
+            }
+            Button::DismissNotice => self.notices.dismiss_toast(),
+            Button::ClearNotices => self.notices.clear(),
             Button::CellDetailClose => {
                 self.toggle_cell_detail(cx);
             }
@@ -697,6 +711,7 @@ impl DataFrameView {
                     .sql_panel
                     .as_mut()
                     .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),
+                Hit::Surface if self.notices.log_open => self.notices.wheel(delta, line),
                 _ => false,
             }
         };

@@ -1882,13 +1882,16 @@ fn header_keeps_only_contextual_clear_sort() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);
     viewer.render();
-    // The header holds only search, the limit, the View options gear and
-    // buttons that undo something.
+    // The header holds only search, the limit, the View options gear, the
+    // message log and buttons that undo something.
     let buttons = viewer
         .app
         .hits(viewer.id)
         .into_iter()
-        .filter(|region| matches!(region.hit, Hit::Button(_)) && region.hit != Hit::Button(Button::ViewOptions))
+        .filter(|region| {
+            matches!(region.hit, Hit::Button(_))
+                && !matches!(region.hit, Hit::Button(Button::ViewOptions | Button::NoticeLog))
+        })
         .map(|region| region.hit)
         .collect::<Vec<_>>();
     assert!(buttons.is_empty(), "unexpected buttons {buttons:?}");
@@ -3109,4 +3112,31 @@ fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
     let labels = menu().unwrap();
     assert_eq!(labels[0], "region");
     assert!(labels.contains(&"regr_count".to_string()), "{labels:?}");
+}
+
+#[test]
+fn messages_pop_up_briefly_and_stay_in_the_log() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, _| view.copy_status = Some("Copied".into()));
+    assert!(has_button(&viewer, Button::DismissNotice));
+    viewer.advance_clock(Duration::from_secs(3));
+    assert!(!has_button(&viewer, Button::DismissNotice));
+    viewer.update(|view, _| view.error = Some("Search failed".into()));
+    assert!(has_button(&viewer, Button::DismissNotice));
+    viewer.read(|view| {
+        let log = view.notices.log();
+        assert_eq!(log.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Copied", "Search failed"]);
+        assert_eq!(view.notices.unread_errors(), 1);
+    });
+    click_button(&viewer, Button::DismissNotice);
+    assert!(!has_button(&viewer, Button::DismissNotice));
+    click_button(&viewer, Button::NoticeLog);
+    viewer.read(|view| {
+        assert!(view.notices.log_open);
+        assert_eq!(view.notices.unread_errors(), 0);
+    });
+    assert!(has_button(&viewer, Button::ClearNotices));
+    viewer.press("escape");
+    assert!(!viewer.read(|view| view.notices.log_open));
 }

@@ -580,6 +580,9 @@ pub struct DataFrameView {
     /// When the toolbar's busy indicator appeared, and the timer that redraws it.
     thinking_since: Option<Instant>,
     thinking_frame: Option<Task>,
+    /// The toast and log for `error`, `copy_status` and the other messages.
+    pub(crate) notices: crate::ui::notices::Notices,
+    notice_timer: Option<(Instant, Task)>,
     copy_revision: u64,
     pub(crate) copy_status: Option<String>,
     statistics_revision: u64,
@@ -858,6 +861,8 @@ impl DataFrameView {
             loading: false,
             thinking_since: None,
             thinking_frame: None,
+            notices: Default::default(),
+            notice_timer: None,
             copy_revision: 0,
             copy_status: None,
             statistics_revision: 0,

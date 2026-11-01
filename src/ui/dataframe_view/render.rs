@@ -18,6 +18,7 @@ impl DataFrameView {
             self.update_statement_mark();
         }
         self.drain_grid_events(cx);
+        self.sync_notices(cx);
         canvas.clear(colors::BACKGROUND);
         if self.keymap_editor.is_some() {
             let fonts = self.fonts.clone();
@@ -49,6 +50,9 @@ impl DataFrameView {
         button(canvas, gear, "", font, ButtonStyle::Ghost, true, Hit::Button(Button::ViewOptions));
         paint_gear(canvas, gear, colors::FOREGROUND);
         canvas.hit_with(gear, Hit::Button(Button::ViewOptions), Cursor::Arrow, Some("View options"));
+        let log_button = items.right(button_height(font));
+        self.notices
+            .paint_button(canvas, rect(log_button.x, button_top, log_button.w, button_height(font)), font);
         let search_width = 320.0_f32.min((items.rest().w * 0.4).max(128.0));
         let search = items.left(search_width);
         let search_id = self.search_input.id;
@@ -92,16 +96,6 @@ impl DataFrameView {
         }
         self.paint_title(canvas, items.rest());
         let mut top = header.bottom();
-        // Errors.
-        for error in [&self.error, &self.table_preferences_error, &self.limit_error].into_iter().flatten() {
-            let area = rect(bounds.x + 12.0, top, bounds.w - 24.0, line * 3.0);
-            let layout = text::layout(error, font, crate::ui::platform::TextOptions::wrapped(area.w));
-            let height = layout.height.min(line * 3.0);
-            canvas.push_clip(rect(area.x, top, area.w, height));
-            canvas.draw_layout(&layout, area.origin(), colors::DANGER);
-            canvas.pop_clip();
-            top += height;
-        }
         // Value filter chips.
         if !self.session.value_filters().is_empty() {
             let small = &fonts.small;
@@ -165,6 +159,7 @@ impl DataFrameView {
                 .collect::<Vec<_>>();
             paint_action_menu(canvas, &fonts, &actions);
         }
+        self.notices.paint_log(canvas, bounds, header.bottom(), &fonts);
         if modal {
             canvas.set_mouse(mouse);
         }
@@ -172,8 +167,33 @@ impl DataFrameView {
             self.paint_cache_drop(canvas);
         }
         self.paint_dialog(canvas, cx);
+        // Messages pop up over everything, dialogs included.
+        let now = cx.now();
+        self.notices.paint_toast(canvas, bounds, header.bottom(), &fonts, now);
         // Painting the grid can measure column widths; record them now.
         self.drain_grid_events(cx);
+    }
+
+    /// Pops up the messages that changed since the last frame, and redraws
+    /// when the toast's time is up.
+    fn sync_notices(&mut self, cx: &mut Cx<Self>) {
+        use crate::ui::notices::NoticeSource;
+        let now = cx.now();
+        let statistics = self.statistics_error.as_ref().map(|error| format!("Statistics failed: {error}"));
+        for (source, message) in [
+            (NoticeSource::Error, self.error.as_deref()),
+            (NoticeSource::TablePreferences, self.table_preferences_error.as_deref()),
+            (NoticeSource::Limit, self.limit_error.as_deref()),
+            (NoticeSource::Status, self.copy_status.as_deref()),
+            (NoticeSource::Statistics, statistics.as_deref()),
+        ] {
+            self.notices.observe(source, message, now);
+        }
+        self.notices.expire(now);
+        let deadline = self.notices.deadline();
+        if self.notice_timer.as_ref().map(|(at, _)| *at) != deadline {
+            self.notice_timer = deadline.map(|at| (at, cx.timer(at.saturating_duration_since(now), |_, cx| cx.notify())));
+        }
     }
 
     /// The end of the search row: what is open, whether it is saved, and
@@ -288,9 +308,6 @@ impl DataFrameView {
         // One line at the grid's size: statistics that do not fit are cut off
         // on the right rather than wrapping into the grid's space.
         let mut parts: Vec<(String, Color, bool, Option<&str>)> = Vec::new();
-        if let Some(copy) = &self.copy_status {
-            parts.push((copy.clone(), colors::FOREGROUND, false, None));
-        }
         if let Some((rows, columns, cells)) = self.selection_counts {
             parts.push((
                 format!(
@@ -318,9 +335,6 @@ impl DataFrameView {
             for label in status::statistics(stats) {
                 parts.push((label, colors::FOREGROUND, false, None));
             }
-        }
-        if let Some(error) = &self.statistics_error {
-            parts.push((format!("Statistics failed: {error}"), colors::FOREGROUND, false, None));
         }
         let area = items.rest();
         let bold = font.bold();

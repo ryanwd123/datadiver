@@ -68,6 +68,11 @@ pub enum Button {
     CacheDropCancel,
     // The gear at the end of the search row.
     ViewOptions,
+    // Status and error messages: the log's toolbar button, the toast, and
+    // the log's Clear.
+    NoticeLog,
+    DismissNotice,
+    ClearNotices,
     // Dialog chrome.
     DialogClose,
     DialogOk,
