@@ -67,7 +67,8 @@ pub fn command_for_key(key: &str, shifted: bool, table: bool) -> Option<CommandI
 }
 
 /// The Helper menu, opened with Space: the grid's own shortcuts on top, which
-/// work without the menu, and below them the commands the menu's keys run.
+/// also work while the menu is open, and below them the commands only the
+/// menu's keys run.
 pub struct SpaceMenu {
     pub sql: bool,
     /// A saved SQL source, whose rows views can be built on.
@@ -155,14 +156,24 @@ impl SpaceMenu {
         items
     }
 
-    fn menu_items(&self, keymap: &KeymapFile) -> Vec<Item> {
+    /// The menu's own commands, leaving out those a grid key already runs,
+    /// since grid keys work while the menu is open.
+    fn menu_items(&self, keymap: &KeymapFile, grid_items: &[Item]) -> Vec<Item> {
         let context = if self.table {
             KeyContext::TableSpaceMenu
         } else {
             KeyContext::QuerySpaceMenu
         };
+        let grid_commands: Vec<CommandId> = grid_items
+            .iter()
+            .filter_map(|item| match item.button {
+                Button::GridKey(action) => KEYMAP_ACTIONS.iter().find(|spec| spec.id == action).and_then(|spec| spec.command),
+                _ => None,
+            })
+            .collect();
         self.shown()
             .into_iter()
+            .filter(|entry| !grid_commands.contains(&entry.command))
             .map(|entry| Item {
                 label: COMMANDS
                     .iter()
@@ -181,9 +192,11 @@ impl SpaceMenu {
         let title_font = font.semibold();
         let line = text::line_height(font);
         let row_height = line + 6.0;
+        let grid_items = self.grid_items(keymap);
+        let menu_items = self.menu_items(keymap, &grid_items);
         let sections = [
-            ("Grid keys", "work in the grid without this menu", self.grid_items(keymap)),
-            ("Menu keys", "press while this menu is open", self.menu_items(keymap)),
+            ("Grid keys", "work in the grid and in this menu", grid_items),
+            ("Menu keys", "work only while this menu is open", menu_items),
         ];
         // The fewest columns that fit the window; each section fills down its columns.
         let room = (canvas.width - 16.0).max(MIN_COLUMN_WIDTH + 16.0);

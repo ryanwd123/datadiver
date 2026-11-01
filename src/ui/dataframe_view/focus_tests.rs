@@ -1932,7 +1932,10 @@ fn helper_menu_lists_grid_keys_that_run_when_clicked() {
     assert!(has_button(&viewer, Button::GridKey(ActionId::MoveColumnRight)));
     assert!(!has_button(&viewer, Button::GridKey(ActionId::MoveDown)));
     assert!(!has_button(&viewer, Button::GridKey(ActionId::Space)));
-    assert!(has_button(&viewer, Button::SpaceCommand(CommandId::Copy)));
+    // A menu command that a grid key also runs is listed once, as the grid key.
+    assert!(has_button(&viewer, Button::GridKey(ActionId::Copy)));
+    assert!(!has_button(&viewer, Button::SpaceCommand(CommandId::Copy)));
+    assert!(has_button(&viewer, Button::SpaceCommand(CommandId::Save)));
     let grouping = numeric_format(&viewer, "sales").unwrap().grouping;
     click_button(&viewer, Button::GridKey(ActionId::ToggleThousandsGrouping));
     assert!(!viewer.read(|view| view.space_menu_open));
@@ -1941,6 +1944,13 @@ fn helper_menu_lists_grid_keys_that_run_when_clicked() {
     press(&viewer, "space");
     click_button(&viewer, Button::GridKey(ActionId::IncreaseColumnWidth));
     assert_eq!(column_width(&viewer, "sales"), width + 10.);
+    // Grid keys also work while the menu is open, and close it.
+    press(&viewer, "space ,");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    assert_eq!(numeric_format(&viewer, "sales").unwrap().grouping, grouping);
+    press(&viewer, "space shift-0");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    assert_eq!(column_width(&viewer, "sales"), width + 20.);
 }
 
 fn frozen_count(viewer: &Viewer) -> usize {

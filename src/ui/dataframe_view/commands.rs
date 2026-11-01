@@ -301,35 +301,45 @@ impl DataFrameView {
         self.dispatch_keymap_action(action, cx);
     }
 
+    /// The Helper menu's own keys run their commands; any other grid shortcut
+    /// closes the menu and runs as if it were pressed in the grid.
     pub(crate) fn handle_space_key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) {
         let key = event.key.to_ascii_lowercase();
         if matches!(key.as_str(), "space" | "escape") {
             self.space_menu_open = false;
             cx.notify();
-        } else if let Ok(stroke) = canonical_keystroke(&event.stroke()) {
-            let context = if self.is_table() {
-                KeyContext::TableSpaceMenu
-            } else {
-                KeyContext::QuerySpaceMenu
-            };
-            let produced = event
-                .typed()
-                .filter(|typed| !typed.chars().all(char::is_alphanumeric) && event.modifiers.shift)
-                .and_then(|typed| self.keymap.binding_for(typed, context));
-            if let Some(action) = self.keymap.binding_for(&stroke, context).or(produced)
-                && let Some(command) = KEYMAP_ACTIONS
-                    .iter()
-                    .find(|spec| {
-                        spec.id == action
-                            && matches!(
-                                spec.context,
-                                KeyContext::SpaceMenu | KeyContext::TableSpaceMenu | KeyContext::QuerySpaceMenu
-                            )
-                    })
-                    .and_then(|spec| spec.command)
-            {
-                self.select_space_command(command, cx);
-            }
+            return;
+        }
+        let Ok(stroke) = canonical_keystroke(&event.stroke()) else {
+            return;
+        };
+        let (menu, grid) = if self.is_table() {
+            (KeyContext::TableSpaceMenu, KeyContext::TableGrid)
+        } else {
+            (KeyContext::QuerySpaceMenu, KeyContext::QueryGrid)
+        };
+        // Shifted punctuation also matches the character it types, such as `)`.
+        let produced = event
+            .typed()
+            .filter(|typed| !typed.chars().all(char::is_alphanumeric) && event.modifiers.shift);
+        let lookup = |context: KeyContext| {
+            self.keymap
+                .binding_for(&stroke, context)
+                .or_else(|| produced.and_then(|typed| self.keymap.binding_for(typed, context)))
+        };
+        let menu_command = lookup(menu).and_then(|action| {
+            KEYMAP_ACTIONS
+                .iter()
+                .find(|spec| {
+                    spec.id == action
+                        && matches!(spec.context, KeyContext::SpaceMenu | KeyContext::TableSpaceMenu | KeyContext::QuerySpaceMenu)
+                })
+                .and_then(|spec| spec.command)
+        });
+        if let Some(command) = menu_command {
+            self.select_space_command(command, cx);
+        } else if let Some(action) = lookup(grid) {
+            self.select_grid_key(action, cx);
         }
     }
 
