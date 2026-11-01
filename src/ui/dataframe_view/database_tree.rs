@@ -96,6 +96,8 @@ impl DataFrameView {
                 view.tree_check_pending = false;
                 if stale && view.database_tree_open && !view.database_tree.is_loading() {
                     view.refresh_database_tree(cx);
+                    // Files may have come or gone in a watched folder.
+                    view.sync_file_views(false, cx);
                 }
             },
         )
@@ -219,6 +221,7 @@ impl DataFrameView {
             self.error = Some(format!("Cannot update watched sources: {error}"));
         }
         self.refresh_database_tree(cx);
+        self.sync_file_views(false, cx);
         cx.notify();
     }
 

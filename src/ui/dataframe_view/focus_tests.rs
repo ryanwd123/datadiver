@@ -2064,7 +2064,7 @@ fn changed_source_refreshes_all_open_windows_and_pivots() {
             assert!(view.error.is_none(), "{:?}", view.error);
             assert_eq!(view.session.source.row_count(), 3);
             assert_eq!(view.session.source.columns.len(), 3);
-            assert_eq!(view.session.source.store.lock().unwrap().duckdb().unwrap().table_sql(), "files.main.\"sales_csv\"");
+            assert_eq!(view.session.source.store.lock().unwrap().duckdb().unwrap().table_sql(), "__dd_files.main.\"sales_csv\"");
         });
     }
     assert_eq!(table.read(|view| view.session.result.row_count()), 3);

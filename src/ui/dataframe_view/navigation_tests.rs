@@ -849,6 +849,8 @@ fn database_tree_toggles_filters_by_typing_and_opens_sources_and_metadata() {
     let repository = repository(home.path());
     let mut settings = repository.load_settings().unwrap();
     settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
+    // Only the file itself matches the filter, not its view as well.
+    settings.file_views = false;
     repository.save_settings(&settings).unwrap();
     let viewer = viewer(repository.clone());
     press_each(&viewer, &["ctrl-b"]);
@@ -1034,10 +1036,55 @@ fn database_tree_refresh_button_lists_new_tables() {
 }
 
 #[test]
+fn watched_files_get_views_in_the_files_schema_unless_turned_off() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("data");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("q1.csv"), "region,n\nNorth,1\nSouth,2\n").unwrap();
+    let single = home.path().join("orders.csv");
+    std::fs::write(&single, "id\n1\n").unwrap();
+    let repository = repository(home.path());
+    let mut settings = repository.load_settings().unwrap();
+    assert!(settings.file_views);
+    settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
+    settings.watched_files = vec![single.to_string_lossy().into_owned()];
+    repository.save_settings(&settings).unwrap();
+    let viewer = viewer(repository.clone());
+    viewer.run_until_parked();
+    let views = || {
+        viewer.read(|view| {
+            let connection = view.database.connect().unwrap();
+            let mut statement = connection
+                .prepare("SELECT view_name FROM duckdb_views() WHERE schema_name = 'files' ORDER BY 1")
+                .unwrap();
+            statement.query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        })
+    };
+    // Opening a window makes them, and SQL reads files.q1_csv.
+    assert_eq!(views(), ["orders_csv", "q1_csv"]);
+    let rows: i64 = viewer.read(|view| {
+        view.database.connect().unwrap().query_row("SELECT count(*) FROM files.q1_csv", [], |row| row.get(0)).unwrap()
+    });
+    assert_eq!(rows, 2);
+    viewer.update(|view, cx| view.toggle_file_views(cx));
+    viewer.run_until_parked();
+    assert!(!repository.load_settings().unwrap().file_views);
+    assert!(views().is_empty());
+    viewer.read(|view| assert!(view.error.is_none(), "{:?}", view.error));
+    viewer.update(|view, cx| view.toggle_file_views(cx));
+    viewer.run_until_parked();
+    assert_eq!(views(), ["orders_csv", "q1_csv"]);
+}
+
+#[test]
 fn database_tree_reads_again_only_when_what_it_lists_may_have_changed() {
     use crate::application::state::ApplicationState;
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
+    // A new file's view would change the database too, which costs a read.
+    let mut settings = repository.load_settings().unwrap();
+    settings.file_views = false;
+    repository.save_settings(&settings).unwrap();
     let folder = home.path().join("watched");
     std::fs::create_dir_all(folder.join("nested")).unwrap();
     std::fs::write(folder.join("nested/first.csv"), "n\n1\n").unwrap();

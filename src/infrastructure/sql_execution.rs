@@ -98,7 +98,8 @@ impl SqlExecution {
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        relations.retain(|r| !r.name.starts_with("__qp_") && !r.name.starts_with("__dd_"));
+        // DataDiver's own catalogs, such as the files the DuckDB engine reads, are internal.
+        relations.retain(|r| !r.name.starts_with("__qp_") && !r.name.starts_with("__dd_") && !r.catalog.starts_with("__dd_"));
         let index = relations
             .iter()
             .enumerate()
@@ -1471,16 +1472,17 @@ mod tests {
     #[test]
     fn database_catalog_completes_files_tables_and_view_alias_columns() {
         use crate::domain::sql_editor::completions;
+        use crate::infrastructure::source_database::FILES_CATALOG;
         let (_dir, service) = service();
-        let run = service.run("CREATE TABLE files.amazon_book_parquet(asin VARCHAR, ISBN10 VARCHAR); CREATE VIEW main.book_view AS SELECT * FROM files.amazon_book_parquet", 10);
+        let run = service.run(&format!("CREATE SCHEMA files; CREATE TABLE files.amazon_book_parquet(asin VARCHAR, ISBN10 VARCHAR); CREATE VIEW main.book_view AS SELECT * FROM files.amazon_book_parquet; CREATE TABLE {FILES_CATALOG}.main.amazon_import(asin VARCHAR)"), 10);
         assert!(run.error.is_none(), "{:?}", run.error);
-        let columns = service.connection.query_row("SELECT count(*) FROM duckdb_columns() WHERE database_name = 'files' AND table_name = 'amazon_book_parquet' AND NOT internal", [], |row| row.get::<_, i64>(0)).unwrap();
-        assert_eq!(columns, 2);
         let catalog = service.sql_catalog().unwrap();
+        // The tables the DuckDB engine reads files into are internal.
+        assert!(!catalog.relations.iter().any(|r| r.name == "amazon_import"));
         let table = catalog
             .relations
             .iter()
-            .find(|r| r.catalog == "files" && r.name == "amazon_book_parquet")
+            .find(|r| r.schema == "files" && r.name == "amazon_book_parquet")
             .unwrap();
         assert_eq!(table.columns, ["asin", "ISBN10"]);
         assert_eq!(table.column_types, ["VARCHAR", "VARCHAR"]);

@@ -925,6 +925,7 @@ impl DataFrameView {
                 if let Some(path) = paths.first() {
                     let result = ApplicationState::load(self.repository.clone()).and_then(|mut state| state.add_watched_folder(path));
                     self.error = result.err().map(|error| format!("Add folder failed: {error}"));
+                    self.sync_file_views(false, cx);
                 }
             }
             Ok(None) => {}
@@ -936,6 +937,7 @@ impl DataFrameView {
     pub(crate) fn remove_folder(&mut self, folder: &str, cx: &mut Cx<Self>) {
         let result = ApplicationState::load(self.repository.clone()).and_then(|mut state| state.remove_watched_folder(folder));
         self.error = result.err().map(|error| format!("Remove folder failed: {error}"));
+        self.sync_file_views(false, cx);
         cx.notify();
     }
 

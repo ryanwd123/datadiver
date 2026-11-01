@@ -921,6 +921,8 @@ impl DataFrameView {
         if view.database_tree_open {
             view.refresh_database_tree(cx);
         }
+        // Watched folders may have changed while the app was closed.
+        view.sync_file_views(false, cx);
         view.start_source_monitor(cx);
         if view.session.is_sql() {
             view.sql_restore_sort = true;

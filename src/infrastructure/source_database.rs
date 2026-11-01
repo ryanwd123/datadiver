@@ -12,7 +12,12 @@ use crate::domain::documents::{DatabaseView, RelationKind};
 const DATABASE_VERSION: i32 = 3;
 /// The in-memory catalog holding files the DuckDB engine reads. Nothing in it
 /// is written to disk.
-pub const FILES_CATALOG: &str = "files";
+pub const FILES_CATALOG: &str = "__dd_files";
+/// The schema of the profile database with a view of each watched file.
+pub const FILE_VIEWS_SCHEMA: &str = "files";
+/// Starts the comment of each view DataDiver keeps in [`FILE_VIEWS_SCHEMA`],
+/// so views someone else made there are left alone.
+const FILE_VIEW_COMMENT: &str = "DataDiver file view: ";
 /// The script run on the profile database when it opens, in the settings folder.
 pub const STARTUP_SCRIPT: &str = "duckdb_startup.sql";
 type Profiles = HashMap<PathBuf, Weak<SourceDatabase>>;
@@ -713,6 +718,123 @@ impl SourceDatabase {
         Ok(error)
     }
 
+    /// Keeps a view in the profile database's `files` schema for each of
+    /// `files`, named like the table the DuckDB engine reads it into
+    /// (`sales.csv` is `files.sales_csv`). Each view reads its file when
+    /// queried. Views of files no longer listed are dropped, and the schema
+    /// too once nothing is left in it. A view is made again only when how it
+    /// reads its file changed, since making one reads the file's columns.
+    /// Returns the files whose view could not be made.
+    pub fn sync_file_views(&self, files: &[PathBuf]) -> Result<Vec<String>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "database writer lock poisoned")?;
+        self.ensure_initialized(&mut state)?;
+        let connection = &state.as_ref().unwrap().connection;
+        let strings = |sql: &str| -> Result<Vec<(String, Option<String>)>, String> {
+            let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+            statement
+                .query_map(params![FILE_VIEWS_SCHEMA], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())
+        };
+        let views = strings(
+            "SELECT view_name, comment FROM duckdb_views() \
+             WHERE database_name = current_database() AND schema_name = ?",
+        )?;
+        let (ours, others): (Vec<_>, Vec<_>) = views
+            .into_iter()
+            .partition(|(_, comment)| comment.as_deref().is_some_and(|c| c.starts_with(FILE_VIEW_COMMENT)));
+        let mut taken = strings(
+            "SELECT table_name, NULL FROM duckdb_tables() \
+             WHERE database_name = current_database() AND schema_name = ?",
+        )?
+        .into_iter()
+        .chain(others)
+        .map(|(name, _)| name.to_lowercase())
+        .collect::<Vec<_>>();
+        let database: String = connection
+            .query_row("SELECT current_database()", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        let schema = format!("{}.{}", quote_identifier(&database), quote_identifier(FILE_VIEWS_SCHEMA));
+
+        // The views wanted, in path order, so the same files get the same names.
+        let mut sources = files
+            .iter()
+            .map(|path| absolute_source_path(path))
+            .filter_map(|path| Some((path_key(&path), source_reader(&path).ok()?, path)))
+            .collect::<Vec<_>>();
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources.dedup_by(|left, right| left.0 == right.0);
+        let mut wanted = Vec::new();
+        for (_, reader, path) in sources {
+            let Ok(base) = source_table_name(&path) else {
+                continue;
+            };
+            let name = std::iter::once(base.clone())
+                .chain((2..).map(|number| format!("{base}_{number}")))
+                .find(|name| !taken.contains(name))
+                .unwrap();
+            taken.push(name.clone());
+            let read = reader.replacen('?', &sql_string(&path.to_string_lossy()), 1);
+            wanted.push((name, format!("{FILE_VIEW_COMMENT}{read}"), read, path));
+        }
+
+        let mut changed = false;
+        let mut failed = Vec::new();
+        for (name, _) in &ours {
+            if !wanted.iter().any(|(wanted, ..)| wanted.eq_ignore_ascii_case(name)) {
+                connection
+                    .execute_batch(&format!("DROP VIEW IF EXISTS {schema}.{}", quote_identifier(name)))
+                    .map_err(|error| format!("Cannot drop the view of a file no longer watched: {error}"))?;
+                changed = true;
+            }
+        }
+        if !wanted.is_empty() {
+            connection
+                .execute_batch(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                .map_err(|error| error.to_string())?;
+        }
+        for (name, comment, read, path) in &wanted {
+            let current = ours.iter().any(|(view, existing)| view.eq_ignore_ascii_case(name) && existing.as_deref() == Some(comment));
+            if current {
+                continue;
+            }
+            let view = format!("{schema}.{}", quote_identifier(name));
+            let made = connection.execute_batch(&format!(
+                "BEGIN; CREATE OR REPLACE VIEW {view} AS SELECT * FROM {read}; COMMENT ON VIEW {view} IS {}; COMMIT;",
+                sql_string(comment)
+            ));
+            match made {
+                Ok(()) => changed = true,
+                Err(error) => {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    failed.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+        if wanted.is_empty() && taken.is_empty() {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT count(*) > 0 FROM duckdb_schemas() WHERE database_name = current_database() AND schema_name = ?",
+                    params![FILE_VIEWS_SCHEMA],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            // Without CASCADE, so anything else made in the schema keeps it.
+            if exists && connection.execute_batch(&format!("DROP SCHEMA {schema}")).is_ok() {
+                changed = true;
+            }
+        }
+        drop(state);
+        if changed {
+            self.invalidate();
+        }
+        Ok(failed)
+    }
+
     /// Detaches an attached database for the rest of this session.
     pub fn detach(&self, catalog: &str) -> Result<(), String> {
         self.execute_and_invalidate(&format!("DETACH {}", quote_identifier(catalog)))
@@ -1089,6 +1211,61 @@ pub(crate) fn path_key(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_views_follow_the_watched_files() {
+        let home = tempfile::tempdir().unwrap();
+        let sales = home.path().join("sales.csv");
+        fs::write(&sales, "region,amount\nnorth,1\nsouth,2\n").unwrap();
+        let nested = home.path().join("2024");
+        fs::create_dir(&nested).unwrap();
+        let other_sales = nested.join("Sales.csv");
+        fs::write(&other_sales, "region,amount\neast,3\n").unwrap();
+        let broken = home.path().join("notes.txt");
+        fs::write(&broken, "not a table").unwrap();
+        let database = SourceDatabase::for_profile(home.path());
+        let connection = database.connect().unwrap();
+        connection.execute_batch("CREATE SCHEMA files; CREATE VIEW files.mine AS SELECT 42 AS n").unwrap();
+        let count = |relation: &str| -> i64 {
+            connection.query_row(&format!("SELECT count(*) FROM {relation}"), [], |row| row.get(0)).unwrap()
+        };
+        let views = || -> Vec<String> {
+            let mut statement = connection
+                .prepare("SELECT view_name FROM duckdb_views() WHERE schema_name = 'files' ORDER BY view_name")
+                .unwrap();
+            statement.query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+
+        let revision = database.revision();
+        let failed = database.sync_file_views(&[sales.clone(), other_sales.clone(), broken.clone(), sales.clone()]).unwrap();
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(database.revision() > revision);
+        // Names follow the files tables, numbered in path order; files.sales_csv
+        // no longer clashes with the in-memory catalog.
+        assert_eq!(views(), ["mine", "sales_csv", "sales_csv_2"]);
+        assert_eq!(count("files.sales_csv_2"), 2);
+        assert_eq!(count("files.sales_csv"), 1);
+        // Nothing changed: nothing is made again.
+        let revision = database.revision();
+        database.sync_file_views(&[sales.clone(), other_sales.clone()]).unwrap();
+        assert_eq!(database.revision(), revision);
+        // The view reads the file as it is now.
+        fs::write(&sales, "region,amount\nnorth,1\nsouth,2\nwest,4\n").unwrap();
+        assert_eq!(count("files.sales_csv_2"), 3);
+        // Unwatched files lose their views; the user's own view stays.
+        database.sync_file_views(std::slice::from_ref(&sales)).unwrap();
+        assert_eq!(views(), ["mine", "sales_csv"]);
+        assert_eq!(count("files.sales_csv"), 3);
+        database.sync_file_views(&[]).unwrap();
+        assert_eq!(views(), ["mine"]);
+        connection.execute_batch("DROP VIEW files.mine").unwrap();
+        // With nothing left, the schema goes too.
+        database.sync_file_views(&[]).unwrap();
+        let schemas: i64 = connection
+            .query_row("SELECT count(*) FROM duckdb_schemas() WHERE schema_name = 'files'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schemas, 0);
+    }
 
     #[test]
     fn ordered_writes_wait_while_an_import_turns_insertion_order_off() {
@@ -1786,7 +1963,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         assert_eq!(count("SELECT count(*) FROM future.keep"), 0);
         // The files catalog is in memory now.
         assert_eq!(
-            count("SELECT count(*) FROM duckdb_databases() WHERE database_name = 'files' AND path IS NULL"),
+            count("SELECT count(*) FROM duckdb_databases() WHERE database_name = '__dd_files' AND path IS NULL"),
             1
         );
     }
@@ -1822,7 +1999,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let database = SourceDatabase::for_profile(home.path());
         let old = database.load(&source, LoadMode::Check, true).unwrap();
         let first_table = old.table_sql().to_owned();
-        assert_eq!(first_table, "files.main.\"data_csv\"");
+        assert_eq!(first_table, "__dd_files.main.\"data_csv\"");
         let cached = database.load(&source, LoadMode::Check, true).unwrap();
         assert_eq!(cached.table_sql(), first_table);
         assert_eq!(contents(&old), contents(&cached));
@@ -1844,7 +2021,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 .connect()
                 .unwrap()
                 .query_row(
-                    "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'files'",
+                    "SELECT count(*) FROM duckdb_tables() WHERE database_name = '__dd_files'",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
@@ -1904,8 +2081,8 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let b = database
             .load(&home.path().join("b/same.csv"), LoadMode::Check, true)
             .unwrap();
-        assert_eq!(a.table_sql(), "files.main.\"same_csv\"");
-        assert_eq!(b.table_sql(), "files.main.\"same_csv_2\"");
+        assert_eq!(a.table_sql(), "__dd_files.main.\"same_csv\"");
+        assert_eq!(b.table_sql(), "__dd_files.main.\"same_csv_2\"");
         assert_eq!(contents(&a), vec![vec![Some("3".into())]]);
     }
     #[test]
@@ -1915,11 +2092,11 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
         let source = home.path().join("Sales-2024.csv");
         fs::write(&source, "n\n1\n").unwrap();
         let first = database.load(&source, LoadMode::Check, true).unwrap();
-        assert_eq!(first.table_sql(), "files.main.\"sales_2024_csv\"");
+        assert_eq!(first.table_sql(), "__dd_files.main.\"sales_2024_csv\"");
         let collision = home.path().join("sales_2024.csv");
         fs::write(&collision, "n\n2\n").unwrap();
         let second = database.load(&collision, LoadMode::Check, true).unwrap();
-        assert_eq!(second.table_sql(), "files.main.\"sales_2024_csv_2\"");
+        assert_eq!(second.table_sql(), "__dd_files.main.\"sales_2024_csv_2\"");
         assert_eq!(contents(&first), vec![vec![Some("1".into())]]);
         assert_eq!(contents(&second), vec![vec![Some("2".into())]]);
     }
@@ -2149,7 +2326,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 .relations()
                 .unwrap()
                 .iter()
-                .any(|relation| relation.schema == "files")
+                .any(|relation| relation.catalog.as_deref() == Some(FILES_CATALOG))
         );
         let missing = DatabaseView::file(home.path().join("gone.csv").to_string_lossy());
         assert!(

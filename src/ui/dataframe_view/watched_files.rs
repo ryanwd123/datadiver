@@ -5,6 +5,14 @@ use crate::ui::hit::Button;
 use crate::ui::platform::{Align, Canvas, rect, system, text};
 use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors};
 
+/// The watched files and the files in watched folders.
+fn watched_sources(settings: &crate::infrastructure::json_store::Settings) -> Vec<PathBuf> {
+    let folders = settings.watched_folders.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let mut files = crate::infrastructure::catalog::scan_sources(&folders);
+    files.extend(settings.watched_files.iter().map(PathBuf::from));
+    files
+}
+
 /// Why `path` cannot be a watched file, if it cannot.
 fn cache_rejection(path: &std::path::Path) -> Option<String> {
     if path.is_dir() {
@@ -68,10 +76,44 @@ impl DataFrameView {
                 let names = files.iter().map(|path| source_file_name(path)).collect::<Vec<_>>();
                 self.copy_status = Some(format!("Watching {}", names.join(", ")));
                 self.refresh_database_tree(cx);
+                self.sync_file_views(false, cx);
             }
             Err(error) => self.error = Some(format!("Add watched files failed: {error}")),
         }
         cx.notify();
+    }
+
+    /// Brings the profile database's `files` views in step with the watched
+    /// files and folders, or drops them when the setting is off. Runs on a
+    /// worker, since it lists the folders and a new view reads its file's
+    /// columns. `report` says how it went; otherwise it stays quiet, since
+    /// it also runs when a window opens.
+    pub(crate) fn sync_file_views(&mut self, report: bool, cx: &mut Cx<Self>) {
+        let repository = self.repository.clone();
+        let database = self.database.clone();
+        cx.spawn(
+            move || {
+                let settings = repository.load_settings().map_err(|error| error.to_string())?;
+                let files = if settings.file_views { watched_sources(&settings) } else { Vec::new() };
+                database.sync_file_views(&files).map(|failed| (settings.file_views, failed))
+            },
+            move |view: &mut Self, cx, result| {
+                if !report {
+                    return;
+                }
+                match result {
+                    Ok((on, failed)) if failed.is_empty() => {
+                        view.copy_status = Some(
+                            if on { "Watched files have views in the files schema" } else { "Dropped the views of the watched files" }.into(),
+                        );
+                    }
+                    Ok((_, failed)) => view.error = Some(format!("Could not make views of some watched files:\n{}", failed.join("\n"))),
+                    Err(error) => view.error = Some(format!("Could not update the views of the watched files: {error}")),
+                }
+                cx.notify();
+            },
+        )
+        .detach();
     }
 
     pub(crate) fn paint_cache_drop(&self, canvas: &mut Canvas<Hit>) {

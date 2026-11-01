@@ -14,6 +14,7 @@ pub(crate) enum SettingsItem {
     DefaultEngine,
     FileEngine,
     PreserveOrder,
+    FileViews,
     GridFont,
     EditorFont,
     EditorOptions,
@@ -127,6 +128,23 @@ impl DataFrameView {
         cx.notify();
     }
 
+    /// Switches the profile database's views of the watched files on or off,
+    /// and makes or drops them.
+    pub(crate) fn toggle_file_views(&mut self, cx: &mut Cx<Self>) {
+        let result = self.repository.load_settings().and_then(|mut settings| {
+            settings.file_views = !settings.file_views;
+            self.repository.save_settings(&settings).map(|()| settings.file_views)
+        });
+        match result {
+            Ok(on) => {
+                self.copy_status = Some(if on { "Making views of the watched files…" } else { "Dropping the views of the watched files" }.into());
+                self.sync_file_views(true, cx);
+            }
+            Err(error) => self.error = Some(format!("Could not save settings: {error}")),
+        }
+        cx.notify();
+    }
+
     /// The file open now, read into memory or scanned in place.
     pub(crate) fn read_mode_file(&self) -> Option<PathBuf> {
         self.settings_file().or_else(|| self.query_file().map(PathBuf::from))
@@ -208,6 +226,14 @@ impl DataFrameView {
                 if settings.preserve_order { "On" } else { "Off" }
             ),
         ));
+        rows.push((
+            SettingsItem::FileViews,
+            "DuckDB: views of watched files".to_owned(),
+            format!(
+                "{} · A view of each watched file in the profile database's files schema, such as files.sales_csv · Enter switches",
+                if settings.file_views { "On" } else { "Off" }
+            ),
+        ));
         let font = |family: &Option<String>| family.clone().unwrap_or_else(|| "Default".into());
         rows.extend([
             (SettingsItem::GridFont, "Grid font".to_owned(), format!("{} · {} pt", font(&self.font.family), self.font.size)),
@@ -248,10 +274,12 @@ impl DataFrameView {
         let Some((item, ..)) = self.settings_list().get(index).cloned() else {
             return;
         };
-        if matches!(item, SettingsItem::DefaultEngine | SettingsItem::PreserveOrder) {
+        if matches!(item, SettingsItem::DefaultEngine | SettingsItem::PreserveOrder | SettingsItem::FileViews) {
             // Switching stays in the list, so it shows the new value.
             if item == SettingsItem::PreserveOrder {
                 self.toggle_preserve_order(cx);
+            } else if item == SettingsItem::FileViews {
+                self.toggle_file_views(cx);
             } else {
                 let result = self.repository.load_settings().and_then(|mut settings| {
                     settings.default_engine = match settings.default_engine {
@@ -274,7 +302,7 @@ impl DataFrameView {
         }
         self.close_dialog(cx);
         match item {
-            SettingsItem::DefaultEngine | SettingsItem::PreserveOrder => {}
+            SettingsItem::DefaultEngine | SettingsItem::PreserveOrder | SettingsItem::FileViews => {}
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),

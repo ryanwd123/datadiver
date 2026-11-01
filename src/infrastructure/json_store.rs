@@ -79,6 +79,9 @@ pub struct Settings {
     /// files faster. DuckDB's `preserve_insertion_order` applies to the whole
     /// database, so this is one setting rather than one per file.
     pub preserve_order: bool,
+    /// The profile database keeps a view of each watched file in its
+    /// `files` schema, so SQL can read `files.sales_csv`.
+    pub file_views: bool,
     pub editor: EditorSettings,
 }
 
@@ -171,6 +174,7 @@ impl Default for Settings {
             ai: Default::default(),
             default_engine: Default::default(),
             preserve_order: true,
+            file_views: true,
             editor: EditorSettings::default(),
         }
     }

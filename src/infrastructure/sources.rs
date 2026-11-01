@@ -329,7 +329,7 @@ mod tests {
             .database()
             .connect()
             .unwrap()
-            .query_row("SELECT count(*) FROM files.sales_csv", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM __dd_files.sales_csv", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
         drop(store);
@@ -343,7 +343,7 @@ mod tests {
             .connect()
             .unwrap()
             .query_row(
-                "SELECT count(*) > 0 FROM duckdb_tables() WHERE database_name = 'files' AND table_name = 'sales_csv'",
+                "SELECT count(*) > 0 FROM duckdb_tables() WHERE database_name = '__dd_files' AND table_name = 'sales_csv'",
                 [],
                 |row| row.get(0),
             )
