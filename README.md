@@ -37,7 +37,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Two query engines:** each file is read by Polars, which loads files into memory fast, or DuckDB, with its full SQL in expressions and cards. Polars is the default; choose per file.
 - **Browse the database:** a sidebar tree of saved views, database tables and views, attached databases, and watched files and folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
-- **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals and a heat map.
+- **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
 - **Write SQL:** a SQL editor with highlighting, table, column, and file path completion, SQL sources whose rows you can build views on, SQL scripts, and a startup script.
 - **Ask AI for SQL:** describe what you want and get SQL checked by DuckDB before you run it, using any OpenAI-compatible provider.
@@ -148,7 +148,6 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | G / A / P / Z | Group By / Aggregations / Pivot By / Add slicer |
 | E | Export result to file |
 | T | Show or hide totals (queries) |
-| M | Show or hide heat map (queries) |
 | H / Shift+H | Hide selected columns / show or hide columns (tables) |
 | X | Run view action |
 
@@ -220,7 +219,6 @@ The Aggregations manager has a **Columns / Functions** switch. **Functions** lis
 Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid edits show an inline error and preserve the last successful grid. **Tab/Shift+Tab** cycles between available columns, configured entries, and SQL; **Alt+↑/↓** reorders and **Delete** removes a configured entry. Managers stay open for further edits; close with **Escape** or the close button.
 
 - **Totals** (**T**) add a grand total row under the grid and, for pivots, a **(Total)** column for each row. Totals aggregate the source rows, so means, medians, and distinct counts total correctly.
-- **Heat map** (**Space M**) shades measure cells by where each value falls in its range. In a pivot, the columns of one aggregate share a scale so they can be compared.
 
 Views store the source path and the exploration configuration. They reference the original source file, so sharing a view also requires making that source available.
 

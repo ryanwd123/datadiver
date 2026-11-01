@@ -1590,7 +1590,6 @@ mod tests {
             }],
             result_sort: vec![],
             totals: false,
-            heatmap: false,
         }
     }
 
@@ -1976,7 +1975,6 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
-                heatmap: false,
             },
             &[],
         )
@@ -2006,7 +2004,6 @@ mod tests {
             }],
             result_sort: vec![],
             totals: false,
-            heatmap: false,
         };
         let result = execute(&source(), &config, &[]).unwrap();
         assert_eq!(result.row_count(), 2);
@@ -2044,7 +2041,6 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
-                heatmap: false,
             },
             &[],
         )

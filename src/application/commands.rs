@@ -56,7 +56,6 @@ pub enum CommandId {
     UnfreezeAll,
     Export,
     ToggleTotals,
-    ToggleHeatmap,
     RecalculateWidths,
     HideColumns,
     ChooseColumns,
@@ -468,12 +467,6 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::ToggleTotals,
         key: "toggle_totals",
         label: "Show or hide totals",
-        default_binding: None,
-    },
-    Command {
-        id: CommandId::ToggleHeatmap,
-        key: "toggle_heatmap",
-        label: "Show or hide heat map",
         default_binding: None,
     },
     Command {

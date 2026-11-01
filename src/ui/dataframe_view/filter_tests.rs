@@ -857,43 +857,6 @@ fn d_shows_the_active_cell_in_a_detail_pane_that_follows_the_cursor() {
     assert_eq!(pane(), None);
 }
 
-#[test]
-fn space_m_shades_pivot_measures_on_one_scale_and_toggles_off() {
-    let home = tempfile::tempdir().unwrap();
-    let path = home.path().join("sales.csv");
-    std::fs::write(&path, SALES).unwrap();
-    let viewer = viewer(repository(home.path()));
-    open(&viewer, FileEntry::View(pivot(&path, sum_total(), true)));
-    let ranges = || {
-        viewer.read(|view| {
-            assert!(view.error.is_none(), "{:?}", view.error);
-            let mut ranges = view
-                .heat_ranges
-                .as_ref()
-                .map(|(_, ranges)| ranges.clone().into_iter().collect::<Vec<_>>())
-                .unwrap_or_default();
-            ranges.sort_by(|a, b| a.0.cmp(&b.0));
-            ranges
-        })
-    };
-    assert!(ranges().is_empty());
-    let toggle = || press_on_cell(&viewer, 0, 0, "space m");
-    toggle();
-    // Both pivot columns share the sum's range, North a = 15 to North b = 30;
-    // the (Total) column is not shaded.
-    assert_eq!(
-        ranges(),
-        [("a_total".to_string(), (15.0, 30.0)), ("b_total".to_string(), (15.0, 30.0))]
-    );
-    viewer.read(|view| {
-        assert!(view.session.query_config().heatmap);
-        assert!(view.session.dirty);
-    });
-    toggle();
-    assert!(ranges().is_empty());
-    assert!(!viewer.read(|view| view.session.query_config().heatmap));
-}
-
 fn filter_labels(viewer: &Viewer) -> Vec<String> {
     viewer.read(|view| view.session.value_filters().iter().map(ValueFilter::label).collect())
 }

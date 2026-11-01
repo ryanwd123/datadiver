@@ -1,5 +1,5 @@
-//! Computing the displayed result: search, slicers, queries, totals, the
-//! heat map, copying, and selection statistics.
+//! Computing the displayed result: search, slicers, queries, totals,
+//! copying, and selection statistics.
 
 use super::*;
 use crate::application::pivot_editor::{self, AggregationEdit};
@@ -372,7 +372,6 @@ impl DataFrameView {
                         view.sync_frozen_count();
                         view.sync_grid_widths(cx);
                         view.refresh_totals(cx);
-                        view.refresh_heatmap(cx);
                         view.refresh_cell_detail();
                         let context = if view.is_table() {
                             KeyContext::TableGrid
@@ -540,89 +539,6 @@ impl DataFrameView {
             return;
         }
         self.schedule_search(self.session.search_text.clone(), cx);
-    }
-
-    pub(crate) fn toggle_heatmap(&mut self, cx: &mut Cx<Self>) {
-        if !matches!(
-            self.session.working.as_ref().map(|view| &view.view),
-            Some(ViewKind::Query(config)) if !config.group_by.is_empty()
-        ) {
-            self.error = Some("The heat map applies to queries with a group-by".into());
-            cx.notify();
-            return;
-        }
-        if let Err(error) = self.session.edit_definition(|definition| {
-            if let ViewKind::Query(config) = &mut definition.view {
-                config.heatmap = !config.heatmap;
-            }
-        }) {
-            self.error = Some(error);
-            cx.notify();
-            return;
-        }
-        self.schedule_search(self.session.search_text.clone(), cx);
-    }
-
-    /// Shades a query's measure columns when its heat map is on. Each
-    /// column's range covers the whole query result, not only the rows a
-    /// search leaves, so colors stay put while searching.
-    fn refresh_heatmap(&mut self, cx: &mut Cx<Self>) {
-        self.heat_revision += 1;
-        let config = match self.session.working.as_ref().map(|view| &view.view) {
-            Some(ViewKind::Query(config)) if config.heatmap => Some(config.clone()),
-            _ => None,
-        };
-        let frame = self.query_cache.as_ref().map(|cache| cache.frame.clone());
-        let (Some(config), Some(frame)) = (config, frame) else {
-            self.heat_ranges = None;
-            self.grid.set_heat_ranges(Default::default());
-            return;
-        };
-        let store = std::sync::Arc::downgrade(&frame.store);
-        if let Some((cached, ranges)) = &self.heat_ranges
-            && cached.ptr_eq(&store)
-        {
-            self.grid.set_heat_ranges(ranges.clone());
-            return;
-        }
-        let columns = frame
-            .columns
-            .iter()
-            .zip(frame.dtypes.iter())
-            .map(|(column, dtype)| (column.0.clone(), dtype.clone()))
-            .collect::<Vec<_>>();
-        let groups = crate::domain::heatmap::scale_groups(&config, &columns);
-        let revision = self.heat_revision;
-        cx.spawn(
-            move || {
-                let store = frame
-                    .store
-                    .lock()
-                    .map_err(|_| "DuckDB store lock poisoned".to_owned())?;
-                let mut ranges = std::collections::HashMap::new();
-                for group in groups {
-                    let range = crate::domain::heatmap::combined(store.numeric_ranges(&group)?);
-                    if let Some(range) = range {
-                        ranges.extend(group.into_iter().map(|name| (name, range)));
-                    }
-                }
-                Ok::<_, String>(ranges)
-            },
-            move |view: &mut Self, cx, ranges| {
-                if view.heat_revision != revision {
-                    return;
-                }
-                match ranges {
-                    Ok(ranges) => {
-                        view.heat_ranges = Some((store, ranges.clone()));
-                        view.grid.set_heat_ranges(ranges);
-                    }
-                    Err(error) => view.error = Some(format!("Heat map failed: {error}")),
-                }
-                cx.notify();
-            },
-        )
-        .detach();
     }
 
     /// Shows the grand total row under a query with totals, computing it from

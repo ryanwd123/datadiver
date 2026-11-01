@@ -45,7 +45,6 @@ const TABLE: &[MenuEntry] = &[
 
 const QUERY: &[MenuEntry] = &[
     entry("t", false, CommandId::ToggleTotals),
-    entry("m", false, CommandId::ToggleHeatmap),
     // Shown for SQL views only.
     entry("f", false, CommandId::ToggleFrozen),
     entry("f", true, CommandId::UnfreezeAll),
@@ -108,7 +107,6 @@ impl SpaceMenu {
                     | CommandId::Aggregation
                     | CommandId::AddSlicer
                     | CommandId::ToggleTotals
-                    | CommandId::ToggleHeatmap
                     | CommandId::DrillDown
                     | CommandId::DrillDownNewWindow
             )
@@ -276,7 +274,6 @@ fn menu_action(command: CommandId) -> Option<ActionId> {
         CommandId::CopyAs => Some(ActionId::SpaceCopyAs),
         CommandId::Export => Some(ActionId::SpaceExport),
         CommandId::ToggleTotals => Some(ActionId::SpaceToggleTotals),
-        CommandId::ToggleHeatmap => Some(ActionId::SpaceToggleHeatmap),
         CommandId::Save => Some(ActionId::SpaceSave),
         CommandId::Search => Some(ActionId::SpaceSearch),
         CommandId::AddSlicer => Some(ActionId::SpaceAddSlicer),

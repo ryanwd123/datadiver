@@ -273,9 +273,6 @@ pub struct QueryConfig {
     /// correct for averages, medians, and distinct counts.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub totals: bool,
-    /// Shade measure cells by where they fall in their column's range.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub heatmap: bool,
 }
 
 /// A SQL source, whose last statement's rows other views can be built on,

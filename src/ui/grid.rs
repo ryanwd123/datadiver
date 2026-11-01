@@ -154,12 +154,6 @@ struct Layout {
     horizontal_bar: Rect,
 }
 
-/// A heat-map cell background: a translucent green, stronger for larger
-/// values, so it reads on light and dark themes.
-fn heat_color(fraction: f32) -> Color {
-    Color::hsla(0.36, 0.6, 0.45, 0.06 + 0.5 * fraction)
-}
-
 pub struct GridView {
     pub id: WidgetId,
     result: ResultSnapshot,
@@ -192,8 +186,6 @@ pub struct GridView {
     footer: Option<GridFooter>,
     /// Widen columns to fit the footer once width inference settles.
     footer_fit: bool,
-    /// Heat-map ranges by column name; cells of other columns are not shaded.
-    heat_ranges: HashMap<String, (f64, f64)>,
     layout: Layout,
     /// Cells drawn cut short in the last frame, which offer their full text.
     overflowing: HashSet<(usize, usize)>,
@@ -325,19 +317,12 @@ impl GridView {
             highlights: Default::default(),
             footer: None,
             footer_fit: false,
-            heat_ranges: Default::default(),
             layout: Layout::default(),
             overflowing: HashSet::new(),
             hover: None,
             hover_task: None,
             tooltip: None,
             events: Vec::new(),
-        }
-    }
-
-    pub fn set_heat_ranges(&mut self, ranges: HashMap<String, (f64, f64)>) {
-        if self.heat_ranges != ranges {
-            self.heat_ranges = ranges;
         }
     }
 
@@ -1457,12 +1442,6 @@ impl GridView {
             if crate::infrastructure::performance::enabled() && page_rows.len() == visible_rows {
                 self.benchmark_rendered_revision = Some(self.result.result_revision);
             }
-            let heat = self
-                .result
-                .columns
-                .iter()
-                .map(|column| self.heat_ranges.get(&column.0).copied())
-                .collect::<Vec<_>>();
             let highlight_terms: Vec<Vec<String>> = if self.highlights.is_empty() {
                 Vec::new()
             } else {
@@ -1509,11 +1488,6 @@ impl GridView {
                         let active_cell = selection.is_some_and(|selection| selection.active == Cell { row, column });
                         if is_frozen {
                             canvas.fill(cell, if row % 2 == 1 { frozen_stripe } else { frozen_background });
-                        }
-                        if let Some(range) = heat[column]
-                            && let Some(number) = value.and_then(|value| value.parse::<f64>().ok())
-                        {
-                            canvas.fill(cell, heat_color(crate::domain::heatmap::fraction(number, range)));
                         }
                         if selected {
                             canvas.fill(cell, active);

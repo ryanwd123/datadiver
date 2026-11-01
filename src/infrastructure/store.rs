@@ -291,10 +291,6 @@ impl Store {
         dispatch!(self, store => store.dimension_name(sql))
     }
 
-    pub fn numeric_ranges(&self, columns: &[String]) -> Result<Vec<Option<(f64, f64)>>, String> {
-        dispatch!(self, store => store.numeric_ranges(columns))
-    }
-
     pub fn column_summaries(&self, columns: &[String]) -> Result<Vec<ColumnSummary>, String> {
         dispatch!(self, store => store.column_summaries(columns))
     }

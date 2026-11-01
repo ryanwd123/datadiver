@@ -731,38 +731,6 @@ impl DuckDbStore {
 
     /// Row, null, and exact distinct counts plus min and max for each column,
     /// over every row of this store, in one scan.
-    /// Each column's smallest and largest value as numbers, or `None` when it
-    /// has no numeric values.
-    pub fn numeric_ranges(&self, columns: &[String]) -> Result<Vec<Option<(f64, f64)>>, String> {
-        if columns.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut projection = Vec::new();
-        for name in columns {
-            let column = self
-                .column(name)
-                .ok_or_else(|| format!("column not found: {name}"))?;
-            let value = format!(
-                "TRY_CAST({} AS DOUBLE)",
-                quote_identifier(&column.storage_name)
-            );
-            projection.push(format!("min({value})"));
-            projection.push(format!("max({value})"));
-        }
-        let sql = format!("SELECT {} FROM {}", projection.join(", "), self.table_sql);
-        let error = |error: duckdb::Error| error.to_string();
-        let mut statement = self.connection.prepare(&sql).map_err(error)?;
-        let mut rows = statement.query([]).map_err(error)?;
-        let row = rows.next().map_err(error)?.ok_or("missing range row")?;
-        (0..columns.len())
-            .map(|index| {
-                let min = row.get::<_, Option<f64>>(index * 2).map_err(error)?;
-                let max = row.get::<_, Option<f64>>(index * 2 + 1).map_err(error)?;
-                Ok(min.zip(max))
-            })
-            .collect()
-    }
-
     pub fn column_summaries(&self, columns: &[String]) -> Result<Vec<ColumnSummary>, String> {
         self.drop_retired_view_row_maps()?;
         if columns.is_empty() {
@@ -2953,7 +2921,6 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
-                heatmap: false,
             };
             let slicers = [SlicerDefinition {
                 sql: false,

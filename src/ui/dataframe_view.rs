@@ -294,7 +294,6 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::FocusSlicers,
     CommandId::Export,
     CommandId::ToggleTotals,
-    CommandId::ToggleHeatmap,
     CommandId::RecalculateWidths,
     CommandId::HideColumns,
     CommandId::ChooseColumns,
@@ -496,10 +495,6 @@ pub(crate) struct SplitDrag {
     size: f32,
 }
 
-/// Identifies a query result without keeping it alive.
-type StoreHandle = std::sync::Weak<std::sync::Mutex<crate::infrastructure::store::Store>>;
-type HeatRanges = std::collections::HashMap<String, (f64, f64)>;
-
 pub struct DataFrameView {
     pub(crate) sql_panel: Option<SqlPanel>,
     pub(crate) sql_panel_open: bool,
@@ -597,9 +592,6 @@ pub struct DataFrameView {
     /// The grand total row of the last query with totals, and what it covers.
     totals: Option<(TotalsKey, crate::domain::pivot::TotalsRow)>,
     totals_revision: u64,
-    /// Heat-map ranges and the query result they were measured on.
-    heat_ranges: Option<(StoreHandle, HeatRanges)>,
-    heat_revision: u64,
     pub(crate) query_cache: Option<QueryResultCache>,
     table_query: Option<(ViewQuery, SqlTrace)>,
     navigation_backup: Option<NavigationBackup>,
@@ -876,8 +868,6 @@ impl DataFrameView {
             information_busy: false,
             totals: None,
             totals_revision: 0,
-            heat_ranges: None,
-            heat_revision: 0,
             query_cache: None,
             table_query: None,
             navigation_backup: None,

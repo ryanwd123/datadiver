@@ -216,38 +216,6 @@ impl PolarsStore {
         Ok(name)
     }
 
-    /// Each column's smallest and largest value as numbers, or `None` when it
-    /// has no numeric values.
-    pub fn numeric_ranges(&self, columns: &[String]) -> Result<Vec<Option<(f64, f64)>>, String> {
-        if columns.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut projection = Vec::new();
-        for (index, name) in columns.iter().enumerate() {
-            let column = self.schema_column(name)?;
-            if is_nested(&column.dtype()) {
-                projection.push(lit(NULL).cast(DataType::Float64).alias(format!("min{index}")));
-                projection.push(lit(NULL).cast(DataType::Float64).alias(format!("max{index}")));
-                continue;
-            }
-            let value = col(name.as_str()).cast(DataType::Float64);
-            projection.push(value.clone().min().alias(format!("min{index}")));
-            projection.push(value.max().alias(format!("max{index}")));
-        }
-        let frame = self.collect(self.query_frame(false).select(projection))?;
-        let float = |name: String| -> Result<Option<f64>, String> {
-            Ok(frame
-                .column(&name)
-                .map_err(polars_error)?
-                .get(0)
-                .map_err(polars_error)?
-                .extract::<f64>())
-        };
-        (0..columns.len())
-            .map(|index| Ok(float(format!("min{index}"))?.zip(float(format!("max{index}"))?)))
-            .collect()
-    }
-
     /// Row, null, and exact distinct counts plus min and max for each column,
     /// over every row of this store.
     pub fn column_summaries(&self, columns: &[String]) -> Result<Vec<ColumnSummary>, String> {
@@ -1704,7 +1672,6 @@ mod tests {
             [(Some("North".into()), 2), (Some("South".into()), 1), (None, 1)]
         );
         assert_eq!(store.unique_counts(&["n".into()]).unwrap(), [("n".into(), 3)]);
-        assert_eq!(store.numeric_ranges(&["n".into()]).unwrap(), [Some((5.0, 30.0))]);
     }
 
     #[test]

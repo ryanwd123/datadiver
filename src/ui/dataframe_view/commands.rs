@@ -148,7 +148,6 @@ impl DataFrameView {
             CommandId::UnfreezeAll => self.unfreeze_all(cx),
             CommandId::Export => self.export_result(cx),
             CommandId::ToggleTotals => self.toggle_totals(cx),
-            CommandId::ToggleHeatmap => self.toggle_heatmap(cx),
             CommandId::RecalculateWidths => self.recalculate_widths(cx),
             CommandId::HideColumns => self.hide_selected_columns(cx),
             CommandId::ChooseColumns => self.open_column_chooser(cx),

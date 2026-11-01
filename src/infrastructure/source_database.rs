@@ -2224,7 +2224,6 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
             }],
             result_sort: vec![],
             totals: false,
-            heatmap: false,
         };
         let mut retained = Vec::new();
         for (season, count) in [("Winter", 2), ("Summer", 1), ("Winter", 2)] {
