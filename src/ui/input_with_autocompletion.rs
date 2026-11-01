@@ -112,6 +112,8 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                     range: Some(item.range),
                     sort_text: None,
                     snippet: false,
+                    swatch: None,
+                    command: None,
                 })
                 .collect();
         }
@@ -152,6 +154,8 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 label: item.label,
                 retrigger: false,
                 snippet: false,
+                swatch: None,
+                command: None,
             })
             .collect();
         // Snippets follow what was typed, after everything else.

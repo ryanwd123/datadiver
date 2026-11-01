@@ -699,7 +699,14 @@ impl crate::editor::State {
                 CompletionKind::Text => Ink::WidgetDim,
                 CompletionKind::Snippet => Ink::Control,
             };
-            r.text(rt, it.kind.icon(), &f.suggest_center, fr.l + 4.0, y, fr.l + icon_w, y + row_h, icon);
+            if let Some(argb) = it.swatch {
+                let side = (row_h * 0.55).round();
+                let (l, t) = ((fr.l + 4.0 + (icon_w - 4.0 - side) / 2.0).round(), (y + (row_h - side) / 2.0).round());
+                r.fill_argb(rt, l, t, l + side, t + side, argb);
+                r.stroke(rt, l + 0.5, t + 0.5, l + side - 0.5, t + side - 0.5, 1.0, Ink::WidgetBorder);
+            } else {
+                r.text(rt, it.kind.icon(), &f.suggest_center, fr.l + 4.0, y, fr.l + icon_w, y + row_h, icon);
+            }
             // The label comes first; the detail gets the room left after it,
             // trimmed, and is left out when only a sliver remains.
             let lx = fr.l + icon_w + 4.0;

@@ -1163,6 +1163,14 @@ impl State {
         let Some(item) = self.suggest.selected_item().cloned() else {
             return self.close_suggest();
         };
+        let command = item.command;
+        self.insert_item(item);
+        if let Some(id) = command {
+            self.events.push(Event::Command(id));
+        }
+    }
+
+    fn insert_item(&mut self, item: CompletionItem) {
         let head = self.doc.sels.primary().head;
         if let Some(range) = item.range.clone().filter(|_| self.suggest.ranged) {
             let insert = item.insert_text.unwrap_or(item.label);
@@ -1191,7 +1199,11 @@ impl State {
         self.close_suggest();
         if item.snippet {
             let start = if self.doc.buffer.slice(head.saturating_sub(n), head) == prefix { head - n } else { head };
-            return self.insert_snippet(start..head, &insert);
+            self.insert_snippet(start..head, &insert);
+            if item.retrigger {
+                self.open_suggest(None, true);
+            }
+            return;
         }
         let b = &self.doc.buffer;
         let o = commands::per_selection(&self.doc.sels, |s| {
@@ -1200,6 +1212,9 @@ impl State {
             commands::Replace::caret_after(start.min(s.start()), s.end(), insert.clone())
         });
         self.edit(o, EditKind::Other);
+        if item.retrigger {
+            self.open_suggest(None, true);
+        }
         if self.opts.parameter_hints && insert.ends_with('(') {
             self.update_signature(true);
         }
@@ -3444,6 +3459,36 @@ mod suggest_tests {
         key(&mut st, VK_RETURN);
         assert_eq!(shown(&st), "FROM 'data/a.parquet|'");
         assert!(!st.suggest.open);
+    }
+
+    /// `then` opens the list again; `pick` asks the host for command 7.
+    struct Steps;
+
+    impl CompletionProvider for Steps {
+        fn complete(&self, cx: &CompletionContext) -> Vec<CompletionItem> {
+            if cx.text[..cx.offset].ends_with("then ") {
+                return vec![CompletionItem { label: "pick".into(), command: Some(7), ..Default::default() }];
+            }
+            vec![CompletionItem { label: "then".into(), insert_text: Some("then ".into()), retrigger: true, ..Default::default() }]
+        }
+
+        fn extra_words(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn items_can_retrigger_and_send_commands() {
+        let mut st = state(None, "x |");
+        st.provider = Some(Rc::new(Steps));
+        type_in(&mut st, "th");
+        key(&mut st, VK_RETURN);
+        assert_eq!(shown(&st), "x then |");
+        assert_eq!(labels(&st), vec!["pick"]);
+        st.events.clear();
+        key(&mut st, VK_RETURN);
+        assert_eq!(shown(&st), "x then pick|");
+        assert!(st.events.contains(&Event::Command(7)));
     }
 
     /// A toy service: `sel` is a keyword, `'…'` a string, `bad` a problem,

@@ -60,6 +60,11 @@ pub struct CompletionItem {
     pub sort_text: Option<String>,
     /// `insert_text` is a snippet: `${1:name}` placeholders become linked tab stops.
     pub snippet: bool,
+    /// A color (`0xAARRGGBB`) shown in place of the kind's icon.
+    pub swatch: Option<u32>,
+    /// Sent as [`crate::Event::Command`] after the item is inserted, for
+    /// items the host finishes itself (like opening a color picker).
+    pub command: Option<u32>,
 }
 
 impl CompletionItem {
