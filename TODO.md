@@ -1,9 +1,6 @@
 # TODO
 
-Findings from a review of the query pipeline and the UI after the SQL
-source / SQL editor / row-limit work. Grouped by impact; each item names
-where it starts.
-
+# Do not worry about the items below for now
 ## Bugs
 
 - [ ] **A non-linear DuckDB percentile in custom SQL fails in a pivot.**
