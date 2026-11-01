@@ -232,7 +232,7 @@ impl HelpDialog {
         if section.category == ActionCategory::SpaceMenu {
             ops.push((
                 rect(0.0, y, width, line),
-                Op::Muted("Keys apply after opening the Helper menu with Space.".into()),
+                Op::Muted("Keys apply after opening the Helper menu with Space or Ctrl+K.".into()),
             ));
             y += line + 8.0;
         }

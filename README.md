@@ -45,7 +45,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Reuse your work:** save views, open favorites with **Ctrl+1–9**, go back and forward through history, undo view changes, and restore the previous session.
 - **Copy and export:** copy cells as TSV, CSV, JSON, or Python lists, or export the displayed result to CSV, Parquet, JSON, or Excel.
 - **Look things up:** view actions open a web page, internal site, or program for the active row.
-- **Work from the keyboard:** a searchable command palette, a Helper menu (**Space**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
+- **Work from the keyboard:** a searchable command palette, a Helper menu (**Space** or **Ctrl+K**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
 - **Make it comfortable:** themes, grid and editor fonts, font size, and independent windows.
 
 ## Install
@@ -115,7 +115,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Shortcut | Action |
 | --- | --- |
 | / | Search |
-| Space | Open the Helper menu |
+| Space or Ctrl+K | Open the Helper menu |
 | G / A / P / O | Group By / Aggregations / Pivot By / Order By |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
@@ -130,6 +130,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | ( / ) | Decrease / increase the selected columns' widths |
 | < / > | Decrease / increase decimal places of the selected columns |
 | , | Toggle thousands grouping of the selected columns |
+| T | Show or hide totals (queries) |
 | D | Show or hide cell detail |
 | N | Drop files to watch |
 | I | Information and column profiles |
@@ -137,7 +138,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Ctrl+Shift+C | Copy as… |
 | Ctrl+V | Open table from clipboard |
 
-**Helper menu** (press **Space**, then the key). The menu also lists the grid keys above, so it doubles as a reminder of them; click any entry to run it.
+**Helper menu** (press **Space** or **Ctrl+K**, then the key). The menu also lists the grid keys above, so it doubles as a reminder of them; click any entry to run it.
 
 | Key | Action |
 | --- | --- |
@@ -218,7 +219,7 @@ The Aggregations manager has a **Columns / Functions** switch. **Functions** lis
 
 Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid edits show an inline error and preserve the last successful grid. **Tab/Shift+Tab** cycles between available columns, configured entries, and SQL; **Alt+↑/↓** reorders and **Delete** removes a configured entry. Managers stay open for further edits; close with **Escape** or the close button.
 
-- **Totals** (**Space T**) add a grand total row under the grid and, for pivots, a **(Total)** column for each row. Totals aggregate the source rows, so means, medians, and distinct counts total correctly.
+- **Totals** (**T**) add a grand total row under the grid and, for pivots, a **(Total)** column for each row. Totals aggregate the source rows, so means, medians, and distinct counts total correctly.
 - **Heat map** (**Space M**) shades measure cells by where each value falls in its range. In a pivot, the columns of one aggregate share a scale so they can be compared.
 
 Views store the source path and the exploration configuration. They reference the original source file, so sharing a view also requires making that source available.

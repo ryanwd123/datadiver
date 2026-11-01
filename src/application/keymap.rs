@@ -1094,7 +1094,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Open Helper menu",
         context: KeyContext::Grid,
         command: Some(CommandId::Space),
-        default_bindings: &["space"],
+        default_bindings: &["space", "ctrl-k"],
     },
     ActionSpec {
         id: ActionId::Group,
@@ -1295,7 +1295,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Show or hide totals",
         context: KeyContext::QueryGrid,
         command: Some(CommandId::ToggleTotals),
-        default_bindings: &[],
+        default_bindings: &["t"],
     },
     ActionSpec {
         id: ActionId::ToggleHeatmap,
@@ -2089,6 +2089,20 @@ mod tests {
         assert_eq!(map.binding_for("ctrl-r", KeyContext::Grid), Some(ActionId::Reload));
         assert_eq!(action_id("back"), Some(ActionId::Back));
         assert_eq!(action_id("forward"), Some(ActionId::Forward));
+    }
+
+    #[test]
+    fn totals_and_helper_menu_keys_work_on_grids() {
+        let map = KeymapFile::default();
+        assert_eq!(map.binding_for("t", KeyContext::QueryGrid), Some(ActionId::ToggleTotals));
+        assert_eq!(map.binding_for("t", KeyContext::TableGrid), None);
+        assert_eq!(map.binding_for("t", KeyContext::Search), None);
+        for context in [KeyContext::TableGrid, KeyContext::QueryGrid] {
+            for stroke in ["space", "ctrl-k"] {
+                assert_eq!(map.binding_for(stroke, context), Some(ActionId::Space));
+            }
+        }
+        assert_eq!(map.binding_for("ctrl-k", KeyContext::SqlEditor), Some(ActionId::SqlHelperMenu));
     }
 
     #[test]

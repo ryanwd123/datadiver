@@ -338,6 +338,10 @@ impl DataFrameView {
         });
         if let Some(command) = menu_command {
             self.select_space_command(command, cx);
+        } else if lookup(grid) == Some(ActionId::Space) {
+            // Any key that opens the menu, such as ctrl-k, also closes it.
+            self.space_menu_open = false;
+            cx.notify();
         } else if let Some(action) = lookup(grid) {
             self.select_grid_key(action, cx);
         }

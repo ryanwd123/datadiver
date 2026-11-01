@@ -1925,6 +1925,19 @@ fn space_menu_is_scoped_to_grid_and_unknown_keys_leave_it_open() {
 }
 
 #[test]
+fn ctrl_k_opens_and_closes_the_helper_menu() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.render();
+    viewer.focus_grid();
+    viewer.press("ctrl-k");
+    assert!(viewer.read(|view| view.space_menu_open));
+    viewer.render();
+    viewer.press("ctrl-k");
+    assert!(!viewer.read(|view| view.space_menu_open));
+}
+
+#[test]
 fn helper_menu_lists_grid_keys_that_run_when_clicked() {
     use crate::application::keymap::ActionId;
     let home = tempfile::tempdir().unwrap();

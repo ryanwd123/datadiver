@@ -221,6 +221,23 @@ fn totals_of_a_file_cut_at_the_limit_say_how_many_rows_they_cover() {
 }
 
 #[test]
+fn t_in_the_grid_toggles_totals_without_the_helper_menu() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, SALES).unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path.clone()));
+    open(&viewer, FileEntry::View(pivot(&path, sum_total(), false)));
+    press_on_cell(&viewer, 0, 0, "t");
+    assert!(!viewer.read(|view| view.space_menu_open));
+    assert_eq!(column_names(&viewer), ["region", "a_total", "b_total", "(Total)"]);
+    assert!(viewer.read(|view| view.grid.footer().is_some()));
+    press_on_cell(&viewer, 0, 0, "t");
+    assert_eq!(column_names(&viewer), ["region", "a_total", "b_total"]);
+    assert!(viewer.read(|view| view.grid.footer().is_none()));
+}
+
+#[test]
 fn space_t_adds_row_totals_and_a_grand_total_footer() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("sales.csv");
