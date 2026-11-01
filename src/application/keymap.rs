@@ -1155,7 +1155,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         id: ActionId::FilterToValue,
         category: ActionCategory::DataExploration,
-        name: "Filter to cell value",
+        name: "Filter to selected values",
         context: KeyContext::Grid,
         command: Some(CommandId::FilterToValue),
         default_bindings: &["="],
@@ -1163,7 +1163,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         id: ActionId::ExcludeValue,
         category: ActionCategory::DataExploration,
-        name: "Exclude cell value",
+        name: "Exclude selected values",
         context: KeyContext::Grid,
         command: Some(CommandId::ExcludeValue),
         default_bindings: &["-"],

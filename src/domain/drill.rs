@@ -19,7 +19,7 @@ pub fn cell_filters(
         .zip(group_values)
         .map(|(target, value)| ValueFilter {
             target: target.clone(),
-            value: value.clone(),
+            values: vec![value.clone()],
             exclude: false,
         })
         .collect::<Vec<_>>();
@@ -44,7 +44,7 @@ pub fn cell_filters(
             .zip(keys)
             .map(|(target, value)| ValueFilter {
                 target: target.clone(),
-                value: value.clone(),
+                values: vec![value.clone()],
                 exclude: false,
             }),
     );
@@ -117,19 +117,19 @@ mod tests {
             group_only[1].target,
             Dimension::expression("year(day) AS y")
         );
-        assert_eq!(group_only[1].value, None);
+        assert_eq!(group_only[1].values, [None]);
 
         let named = cell_filters(&config, &group_values, "a_NULL_total", false, &pivots).unwrap();
         assert_eq!(
             named[2..]
                 .iter()
-                .map(|filter| (filter.target.to_string(), filter.value.clone()))
+                .map(|filter| (filter.target.to_string(), filter.values[0].clone()))
                 .collect::<Vec<_>>(),
             [("kind".into(), Some("a".into())), ("size".into(), None)]
         );
         // An exact name wins over a longer key whose prefix also matches.
         let exact = cell_filters(&config, &group_values, "a_b_S", false, &pivots).unwrap();
-        assert_eq!(exact[2].value.as_deref(), Some("a_b"));
+        assert_eq!(exact[2].values, [Some("a_b".to_owned())]);
         assert!(cell_filters(&config, &group_values, "z_S", false, &pivots).is_err());
     }
 

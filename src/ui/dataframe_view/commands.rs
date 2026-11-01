@@ -451,24 +451,11 @@ impl DataFrameView {
         }
     }
 
+    /// Filters to, or with `exclude` filters out, the values of the selected
+    /// cells: one filter for each selected column.
     pub(crate) fn filter_active_value(&mut self, exclude: bool, cx: &mut Cx<Self>) {
-        let filter = self.active_cell_value().and_then(|(_, column, value)| {
-            let target = match self.session.working.as_ref().map(|view| &view.view) {
-                Some(ViewKind::Sql(_)) => {
-                    if let Some(reason) = self.sql_filters_unavailable() {
-                        return Err(reason.into());
-                    }
-                    Dimension::Column(self.session.result.columns[column].0.clone())
-                }
-                Some(ViewKind::Query(config)) => config.group_by.get(column).cloned().ok_or_else(|| {
-                    "Value filters apply to group-by columns; press Enter to drill down instead".to_owned()
-                })?,
-                _ => Dimension::Column(self.session.result.columns[column].0.clone()),
-            };
-            Ok(ValueFilter { target, value, exclude })
-        });
-        let filter = match filter {
-            Ok(filter) => filter,
+        let filters = match self.selected_value_filters(exclude) {
+            Ok(filters) => filters,
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();
@@ -476,15 +463,92 @@ impl DataFrameView {
             }
         };
         self.ensure_working_view();
-        match self.session.add_value_filter(filter) {
-            Ok(true) => {
-                self.error = None;
-                self.schedule_search(self.session.search_text.clone(), cx);
+        let mut changed = false;
+        let mut failed = None;
+        for filter in filters {
+            match self.session.add_value_filter(filter) {
+                Ok(added) => changed |= added,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
             }
-            Ok(false) => {}
-            Err(error) => self.error = Some(error),
+        }
+        if changed {
+            self.error = None;
+            self.schedule_search(self.session.search_text.clone(), cx);
+        }
+        if failed.is_some() {
+            self.error = failed;
         }
         cx.notify();
+    }
+
+    /// The selected columns' distinct values as value filters. Excluding NULL
+    /// is a filter of its own, "is not null", so later exclusions can join
+    /// the one that excludes values.
+    fn selected_value_filters(&self, exclude: bool) -> Result<Vec<ValueFilter>, String> {
+        /// More rows than this would be read on the UI thread.
+        const MAX_ROWS: usize = 100_000;
+        /// A filter lists at most this many values.
+        const MAX_VALUES: usize = 1_000;
+        let selection = self.grid.selection().ok_or("Select a cell first")?;
+        let result = &self.session.result;
+        let (rows, columns) = selection.rectangle();
+        if *rows.end() >= result.row_count() || *columns.end() >= result.column_count() {
+            return Err("Select a cell first".into());
+        }
+        let row_count = rows.clone().count();
+        if row_count > MAX_ROWS {
+            return Err(format!(
+                "Select at most {} rows to filter by their values",
+                crate::domain::formatting::group_numeric_text(&MAX_ROWS.to_string())
+            ));
+        }
+        let targets = columns.clone().map(|column| self.value_filter_target(column)).collect::<Result<Vec<_>, _>>()?;
+        let fetched = match result.cached_rows(*rows.start(), row_count) {
+            Some(rows) => rows,
+            None => result.fetch_rows(*rows.start(), row_count)?,
+        };
+        let mut filters = Vec::new();
+        for (target, column) in targets.into_iter().zip(columns) {
+            let index = result.column_indices[column];
+            let mut seen = std::collections::HashSet::new();
+            let mut values = Vec::new();
+            for row in &fetched {
+                let value = row.values.get(index).ok_or("The selected rows are no longer available")?;
+                if seen.insert(value) {
+                    values.push(value.clone());
+                }
+            }
+            if values.len() > MAX_VALUES {
+                return Err(format!("The selection holds more than {MAX_VALUES} values in a column; select fewer to filter by them"));
+            }
+            let not_null = (exclude && values.len() > 1 && values.contains(&None)).then(|| ValueFilter {
+                target: target.clone(),
+                values: vec![None],
+                exclude,
+            });
+            values.retain(|value| not_null.is_none() || value.is_some());
+            filters.push(ValueFilter { target, values, exclude });
+            filters.extend(not_null);
+        }
+        Ok(filters)
+    }
+
+    /// What a value filter on the result's `column` compares.
+    fn value_filter_target(&self, column: usize) -> Result<Dimension, String> {
+        let name = || Dimension::Column(self.session.result.columns[column].0.clone());
+        match self.session.working.as_ref().map(|view| &view.view) {
+            Some(ViewKind::Sql(_)) => match self.sql_filters_unavailable() {
+                Some(reason) => Err(reason.into()),
+                None => Ok(name()),
+            },
+            Some(ViewKind::Query(config)) => config.group_by.get(column).cloned().ok_or_else(|| {
+                "Value filters apply to group-by columns; press Enter to drill down instead".to_owned()
+            }),
+            _ => Ok(name()),
+        }
     }
 
     /// A raw file has no view definition; start a table draft so filters and

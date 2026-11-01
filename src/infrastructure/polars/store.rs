@@ -694,12 +694,17 @@ impl PolarsStore {
         let mut predicates = Vec::new();
         for filter in value_filters {
             let rendered = self.rendered_dimension(&filter.target)?;
-            predicates.push(match (&filter.value, filter.exclude) {
-                (None, false) => rendered.is_null(),
-                (None, true) => rendered.is_not_null(),
-                (Some(value), false) => rendered.eq(lit(value.clone())).fill_null(lit(false)),
-                (Some(value), true) => rendered.neq_missing(lit(value.clone())),
-            });
+            let keys: Vec<&str> = filter.values.iter().flatten().map(String::as_str).collect();
+            let mut alternatives = Vec::new();
+            if !keys.is_empty() {
+                alternatives.push(rendered.clone().is_in(lit(Series::new("".into(), keys)).implode(false), false));
+            }
+            if filter.values.contains(&None) {
+                alternatives.push(rendered.is_null());
+            }
+            // A NULL target matches no value, so excluding values keeps it.
+            let matches = any(alternatives).fill_null(lit(false));
+            predicates.push(if filter.exclude { matches.not() } else { matches });
         }
         for filter in filters {
             if let Some(text) = &filter.condition {
@@ -1981,7 +1986,7 @@ mod tests {
         };
         let filter = |target: Dimension, value: Option<&str>, exclude: bool| ValueFilter {
             target,
-            value: value.map(str::to_owned),
+            values: vec![value.map(str::to_owned)],
             exclude,
         };
         // The displayed rendering of each cell is what the filter matches.
@@ -1998,6 +2003,16 @@ mod tests {
             ]),
             [2]
         );
+        let many = |values: &[Option<&str>], exclude: bool| ValueFilter {
+            target: "department".into(),
+            values: values.iter().map(|value| value.map(str::to_owned)).collect(),
+            exclude,
+        };
+        assert_eq!(ids(vec![many(&[Some("A"), Some("B")], false)]), [0, 1]);
+        assert_eq!(ids(vec![many(&[Some("A"), None], false)]), [0, 2]);
+        // Excluding values keeps NULL unless NULL is among them.
+        assert_eq!(ids(vec![many(&[Some("A"), Some("B")], true)]), [2]);
+        assert_eq!(ids(vec![many(&[Some("A"), None], true)]), [1]);
         assert_eq!(
             ids(vec![filter(
                 Dimension::expression("month(day) AS month"),

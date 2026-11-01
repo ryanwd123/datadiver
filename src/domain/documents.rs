@@ -354,31 +354,46 @@ impl SlicerDefinition {
     }
 }
 
-/// Keeps rows whose target renders as `value`, or with `exclude` removes them.
+/// Keeps rows whose target renders as one of `values`, or with `exclude`
+/// removes them; an excluded value keeps rows where the target is NULL.
 /// Values are compared as DuckDB renders them with `CAST(... AS VARCHAR)`, which is
 /// also how the grid displays cells, so any displayed value can be matched exactly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueFilter {
     pub target: Dimension,
     /// `None` matches SQL NULL.
-    pub value: Option<String>,
+    pub values: Vec<Option<String>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude: bool,
 }
 
 impl ValueFilter {
+    /// How many values a label lists before counting the rest.
+    const LABEL_VALUES: usize = 3;
+
     pub fn label(&self) -> String {
         let target = match &self.target {
             Dimension::Column(name) => name.clone(),
             Dimension::Expression { sql } => crate::domain::aggregation_sql::dimension_alias(sql)
                 .unwrap_or_else(|| sql.trim().to_owned()),
         };
-        let operator = if self.exclude { "≠" } else { "=" };
-        let value = match &self.value {
+        let shown = |value: &Option<String>| match value {
             Some(value) => crate::domain::formatting::truncate(value, 40),
             None => "NULL".to_owned(),
         };
-        format!("{target} {operator} {value}")
+        match self.values.as_slice() {
+            [None] if self.exclude => format!("{target} is not null"),
+            [None] => format!("{target} is null"),
+            [value] => format!("{target} {} {}", if self.exclude { "≠" } else { "=" }, shown(value)),
+            values => {
+                let mut listed: Vec<String> = values.iter().take(Self::LABEL_VALUES).map(shown).collect();
+                if values.len() > Self::LABEL_VALUES {
+                    listed.push(format!("+{} more", values.len() - Self::LABEL_VALUES));
+                }
+                let operator = if self.exclude { "not in" } else { "in" };
+                format!("{target} {operator} ({})", listed.join(", "))
+            }
+        }
     }
 }
 

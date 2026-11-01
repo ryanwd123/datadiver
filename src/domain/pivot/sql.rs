@@ -2466,12 +2466,12 @@ mod dimension_tests {
         let filters = [
             ValueFilter {
                 target: Dimension::expression("upper(region) AS Code"),
-                value: None,
+                values: vec![None],
                 exclude: true,
             },
             ValueFilter {
                 target: "kind".into(),
-                value: Some("y".into()),
+                values: vec![Some("y".into())],
                 exclude: true,
             },
         ];

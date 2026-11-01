@@ -1505,14 +1505,24 @@ impl DuckDbStore {
         let mut parameters = Vec::new();
         for filter in value_filters {
             let rendered = self.rendered_dimension(&filter.target)?;
-            predicates.push(match (&filter.value, filter.exclude) {
-                (None, false) => format!("{rendered} IS NULL"),
-                (None, true) => format!("{rendered} IS NOT NULL"),
-                (Some(value), exclude) => {
-                    parameters.push(Value::Text(value.clone()));
-                    let operator = if exclude { "IS DISTINCT FROM" } else { "=" };
-                    format!("{rendered} {operator} ?")
-                }
+            let mut alternatives = Vec::new();
+            let keys: Vec<&String> = filter.values.iter().flatten().collect();
+            if !keys.is_empty() {
+                parameters.extend(keys.iter().map(|key| Value::Text((*key).clone())));
+                alternatives.push(format!("{rendered} IN ({})", vec!["?"; keys.len()].join(", ")));
+            }
+            if filter.values.contains(&None) {
+                alternatives.push(format!("{rendered} IS NULL"));
+            }
+            if alternatives.is_empty() {
+                alternatives.push("false".into());
+            }
+            let matches = format!("({})", alternatives.join(" OR "));
+            // A NULL target matches no value, so excluding values keeps it.
+            predicates.push(if filter.exclude {
+                format!("NOT coalesce({matches}, false)")
+            } else {
+                matches
             });
         }
         for filter in filters {
@@ -3405,7 +3415,7 @@ mod tests {
         };
         let filter = |target: Dimension, value: Option<&str>, exclude: bool| ValueFilter {
             target,
-            value: value.map(str::to_owned),
+            values: vec![value.map(str::to_owned)],
             exclude,
         };
         // The displayed (VARCHAR) rendering of each cell is what the filter matches.
@@ -3428,6 +3438,16 @@ mod tests {
             ]),
             [2]
         );
+        let many = |values: &[Option<&str>], exclude: bool| ValueFilter {
+            target: "department".into(),
+            values: values.iter().map(|value| value.map(str::to_owned)).collect(),
+            exclude,
+        };
+        assert_eq!(ids(vec![many(&[Some("A"), Some("B")], false)]), [0, 1]);
+        assert_eq!(ids(vec![many(&[Some("A"), None], false)]), [0, 2]);
+        // Excluding values keeps NULL unless NULL is among them.
+        assert_eq!(ids(vec![many(&[Some("A"), Some("B")], true)]), [2]);
+        assert_eq!(ids(vec![many(&[Some("A"), None], true)]), [1]);
         assert_eq!(
             ids(vec![filter(
                 Dimension::expression("date_trunc('month', day)::DATE AS month"),

@@ -863,7 +863,7 @@ mod tests {
         // Excluding East leaves only the West row, which is Red.
         let exclude_east = [ValueFilter {
             target: "region".into(),
-            value: Some("East".into()),
+            values: vec![Some("East".into())],
             exclude: true,
         }];
         let filtered =

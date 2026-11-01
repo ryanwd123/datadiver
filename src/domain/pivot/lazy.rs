@@ -1523,7 +1523,7 @@ mod tests {
             .distinct_rendered(&config.pivot_by, &[], &[])
             .unwrap();
         let filters = crate::domain::drill::cell_filters(&config, &[Some("M".into())], "NULL", false, &keys).unwrap();
-        assert_eq!(filters[1].value, None);
+        assert_eq!(filters[1].values, [None]);
         let view = ViewQuery {
             value_filters: filters,
             ..ViewQuery::default()
@@ -1564,7 +1564,7 @@ mod tests {
         // A value filter on an expression narrows the source rows before grouping.
         let filters = [ValueFilter {
             target: Dimension::expression("year(day) AS year"),
-            value: Some("2024".into()),
+            values: vec![Some("2024".into())],
             exclude: false,
         }];
         let result = execute_filtered(&source, &config, &[], &filters, &EvaluationClock::system(), 100, &mut SqlTrace::default())

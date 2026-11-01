@@ -503,13 +503,13 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::FilterToValue,
         key: "filter_to_value",
-        label: "Filter to cell value",
+        label: "Filter to selected values",
         default_binding: Some("="),
     },
     Command {
         id: CommandId::ExcludeValue,
         key: "exclude_value",
-        label: "Exclude cell value",
+        label: "Exclude selected values",
         default_binding: Some("-"),
     },
     Command {

@@ -145,7 +145,7 @@ fn value_keys_filter_exclude_null_cells_and_clear() {
         viewer.read(|view| view.session.value_filters()[1].clone()),
         ValueFilter {
             target: "region".into(),
-            value: None,
+            values: vec![None],
             exclude: false,
         }
     );
@@ -875,4 +875,38 @@ fn space_m_shades_pivot_measures_on_one_scale_and_toggles_off() {
     toggle();
     assert!(ranges().is_empty());
     assert!(!viewer.read(|view| view.session.query_config().heatmap));
+}
+
+fn filter_labels(viewer: &Viewer) -> Vec<String> {
+    viewer.read(|view| view.session.value_filters().iter().map(ValueFilter::label).collect())
+}
+
+#[test]
+fn value_keys_filter_each_selected_column_and_exclusions_join() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("data.csv");
+    std::fs::write(&path, "region,kind,n\nNorth,a,10\nSouth,b,20\nEast,a,30\n,b,40\nNorth,c,50\n").unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path));
+
+    // Each selected column keeps the values selected in it.
+    press_on_cell(&viewer, 0, 0, "shift-down shift-right =");
+    assert_eq!(filter_labels(&viewer), ["region in (North, South)", "kind in (a, b)"]);
+    assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into())]);
+    command(&viewer, CommandId::ClearFilters);
+
+    // Excluding values one at a time builds one filter; NULL gets its own.
+    press_on_cell(&viewer, 0, 0, "-");
+    press_on_cell(&viewer, 0, 0, "-");
+    assert_eq!(filter_labels(&viewer), ["region not in (North, South)"]);
+    assert_eq!(column_values(&viewer), [Some("East".into()), None]);
+    press_on_cell(&viewer, 1, 0, "-");
+    assert_eq!(filter_labels(&viewer), ["region not in (North, South)", "region is not null"]);
+    assert_eq!(column_values(&viewer), [Some("East".into())]);
+    command(&viewer, CommandId::ClearFilters);
+
+    // A selection holding NULL excludes it apart from the other values.
+    press_on_cell(&viewer, 2, 0, "shift-down -");
+    assert_eq!(filter_labels(&viewer), ["region ≠ East", "region is not null"]);
+    assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into()), Some("North".into())]);
 }

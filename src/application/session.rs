@@ -571,12 +571,34 @@ impl WindowSession {
             .map_or(&[], |definition| definition.filters.as_slice())
     }
 
-    /// Adds a value filter unless an identical one is already applied.
+    /// Adds a value filter unless it changes nothing. Excluded values join an
+    /// earlier exclusion on the same target, so removing values one at a time
+    /// builds a single "not in" filter. Excluding NULL stays a filter of its
+    /// own, "is not null", and so does an exclusion that holds NULL.
     pub fn add_value_filter(&mut self, filter: ValueFilter) -> Result<bool, String> {
-        if self.value_filters().contains(&filter) {
+        let filters = self.value_filters();
+        if filters.contains(&filter) {
             return Ok(false);
         }
-        self.edit_definition(|definition| definition.filters.push(filter))?;
+        let joins = |existing: &ValueFilter| {
+            existing.exclude && existing.target == filter.target && !existing.values.contains(&None)
+        };
+        let index = (filter.exclude && !filter.values.contains(&None))
+            .then(|| filters.iter().position(joins))
+            .flatten();
+        let Some(index) = index else {
+            self.edit_definition(|definition| definition.filters.push(filter))?;
+            return Ok(true);
+        };
+        let added: Vec<_> = filter
+            .values
+            .into_iter()
+            .filter(|value| !filters[index].values.contains(value))
+            .collect();
+        if added.is_empty() {
+            return Ok(false);
+        }
+        self.edit_definition(|definition| definition.filters[index].values.extend(added))?;
         Ok(true)
     }
 
@@ -1168,7 +1190,7 @@ mod tests {
             session
                 .add_value_filter(ValueFilter {
                     target: column.as_str().into(),
-                    value: None,
+                    values: vec![None],
                     exclude: false,
                 })
                 .is_err()
@@ -1176,7 +1198,7 @@ mod tests {
         session.start_table_draft("Table".into()).unwrap();
         let filter = ValueFilter {
             target: column.as_str().into(),
-            value: Some("x".into()),
+            values: vec![Some("x".into())],
             exclude: true,
         };
         assert!(session.add_value_filter(filter.clone()).unwrap());
@@ -1184,7 +1206,7 @@ mod tests {
         assert!(session.has_filters());
         let missing = ValueFilter {
             target: "missing".into(),
-            value: None,
+            values: vec![None],
             exclude: false,
         };
         session.add_value_filter(missing).unwrap();
@@ -1201,6 +1223,43 @@ mod tests {
         assert!(session.dirty);
         assert!(session.value_filters().is_empty());
         assert!(!session.has_filters());
+    }
+
+    #[test]
+    fn excluded_values_join_one_filter_and_excluded_null_stays_apart() {
+        let source = FrameSnapshot::new(DuckDbStore::synthetic(3).unwrap(), 1);
+        let column = source.columns[0].0.clone();
+        let mut session = WindowSession::raw(source, Some("data.csv".into()));
+        session.start_table_draft("Table".into()).unwrap();
+        let filter = |values: &[Option<&str>], exclude: bool| ValueFilter {
+            target: column.as_str().into(),
+            values: values.iter().map(|value| value.map(str::to_owned)).collect(),
+            exclude,
+        };
+        assert!(session.add_value_filter(filter(&[Some("a")], true)).unwrap());
+        assert!(session.add_value_filter(filter(&[None], true)).unwrap());
+        assert!(session.add_value_filter(filter(&[Some("b"), Some("a")], true)).unwrap());
+        assert!(!session.add_value_filter(filter(&[Some("b")], true)).unwrap());
+        assert!(!session.add_value_filter(filter(&[None], true)).unwrap());
+        // Kept values are not joined: each filter narrows the rows further.
+        assert!(session.add_value_filter(filter(&[Some("c")], false)).unwrap());
+        assert!(session.add_value_filter(filter(&[Some("d")], false)).unwrap());
+        assert_eq!(
+            session.value_filters(),
+            [
+                filter(&[Some("a"), Some("b")], true),
+                filter(&[None], true),
+                filter(&[Some("c")], false),
+                filter(&[Some("d")], false),
+            ]
+        );
+        let labels: Vec<_> = session.value_filters().iter().map(ValueFilter::label).collect();
+        assert_eq!(labels[..2], [format!("{column} not in (a, b)"), format!("{column} is not null")]);
+        assert_eq!(labels[2], format!("{column} = c"));
+        assert_eq!(
+            filter(&[Some("a"), Some("b"), None, Some("c")], false).label(),
+            format!("{column} in (a, b, NULL, +1 more)")
+        );
     }
 
     #[test]

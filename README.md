@@ -204,7 +204,7 @@ The same **Limit**, one setting for every window, also caps how many rows of a f
 
 ## Filters and drill-down
 
-Press **=** in the grid to keep only rows whose value in the active column equals the active cell, or **-** to exclude them. Filters match the value as the grid shows it before number formatting, including empty (NULL) cells. In a query, **=** and **-** work on group-by cells and filter the source rows before grouping. Active filters appear as chips under the header; click a chip to remove it, or use **Clear filters**. Filters are saved with a view.
+Press **=** in the grid to keep only rows whose value in the active column equals the active cell, or **-** to exclude them. With several cells selected, each selected column is filtered to (or from) the values selected in it, shown as `in (…)` or `not in (…)`. Pressing **-** again on the same column adds the value to its `not in` filter rather than making a new one; excluding an empty cell is a filter of its own, `is not null`, and excluding values keeps empty cells. Filters match the value as the grid shows it before number formatting, including empty (NULL) cells. In a query, **=** and **-** work on group-by cells and filter the source rows before grouping. Active filters appear as chips under the header; click a chip to remove it, or use **Clear filters**. Filters are saved with a view.
 
 In a query result, press **Enter** on a cell to open the source table filtered to the rows behind it: the row's group-by values, plus the pivot values when the cell is a pivoted measure. The query's slicer selections and filters carry over. Press **U** (Back) to return to the query, or use **Shift+Enter** to open the drill-down in a new window and keep the query where it is.
 
