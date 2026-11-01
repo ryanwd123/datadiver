@@ -20,7 +20,6 @@ pub enum SqlPanelEvent {
     Run(bool),
     Stop,
     Close,
-    GridFocus,
     Ask(SqlAsk),
     /// The ask strip opened; the view says which provider it will use.
     AskOpened,
@@ -398,16 +397,9 @@ impl SqlPanel {
         if *focus != Some(self.editor.id) {
             return false;
         }
-        // Escape closes the editor's popups and extra carets first, then
-        // leaves for the grid.
-        if self.editor.key(event) {
-            return true;
-        }
-        if key == "escape" {
-            self.events.push(SqlPanelEvent::GridFocus);
-            return true;
-        }
-        false
+        // Escape closes the editor's popups and extra carets, and otherwise
+        // stays in the editor.
+        self.editor.key(event) || key == "escape"
     }
 
     pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {

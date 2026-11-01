@@ -458,7 +458,6 @@ WHERE place <= 2";
                 self.focus_grid(cx);
                 cx.notify();
             }
-            SqlPanelEvent::GridFocus => self.focus_grid(cx),
             SqlPanelEvent::Helper => self.open_sql_helper(cx),
             SqlPanelEvent::Ask(ask) => self.ask_sql(&ask, cx),
             SqlPanelEvent::AskOpened => {

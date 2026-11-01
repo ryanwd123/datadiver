@@ -483,7 +483,10 @@ fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
         let panel = view.sql_panel.as_ref().unwrap();
         assert!(panel.error.is_none(), "{:?}", panel.error);
     });
+    // Escape stays in the editor.
     press(&viewer, "escape");
+    assert!(editor_focused(&viewer));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::FocusGrid, cx));
     assert!(viewer.grid_focused());
     viewer.press("ctrl-j");
     assert!(viewer.read(|view| view.sql_panel_open));
