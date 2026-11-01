@@ -1,0 +1,40 @@
+[package]
+name = "diver_format"
+version = "0.1.0"
+edition = "2024"
+description = "DataDiver's conditional formatting rules: parser, completion, evaluation and cell drawing"
+license = "MIT"
+publish = false
+
+[features]
+default = ["editor"]
+# `editor::FormatLanguage`, the rules' language service for `code_editor`.
+editor = ["dep:code_editor"]
+
+[dependencies]
+code_editor = { path = "../code_editor", default-features = false, optional = true }
+
+[dev-dependencies]
+# The demo borrows the SQL grammar for comments and auto-closed pairs.
+code_editor = { path = "../code_editor", default-features = false, features = ["lang-sql"] }
+# The demo window draws the sample grid itself.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-numerics = "0.3.1"
+
+[[example]]
+name = "demo"
+required-features = ["editor"]
