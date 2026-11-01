@@ -8,7 +8,8 @@
 //! `--capture out.png` paints one frame to a PNG and exits; `--set N`
 //! selects a set first, `--rules TEXT` replaces its rules, and `--suggest`
 //! opens completion at the end of the rules (`--caret N` puts the caret at
-//! byte N instead), and `--size 1200x400` sets the picture's size.
+//! byte N instead), `--size 1200x400` sets the picture's size, and
+//! `--click X,Y` (repeatable, in DIPs) clicks there before the picture.
 
 #![windows_subsystem = "windows"]
 
@@ -93,14 +94,20 @@ struct App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// Kept apart from the app, so messages that arrive while the app is
+    /// busy (the editor placing the IME window sends one) can still reach it.
+    static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
 }
 
 fn editor() -> Option<Editor> {
-    APP.with(|a| a.borrow().as_ref().map(|a| a.editor.clone()))
+    EDITOR.with(|e| e.borrow().clone())
 }
 
+/// Runs `f` on the app, unless a message arrived while the app was already
+/// in use: calls into the editor can send the window messages before they
+/// return, and those are skipped rather than borrowing the app twice.
 fn with_app<T>(f: impl FnOnce(&mut App) -> T) -> Option<T> {
-    APP.with(|a| a.borrow_mut().as_mut().map(f))
+    APP.with(|a| a.try_borrow_mut().ok()?.as_mut().map(f))
 }
 
 /// Groups and presets as the list shows them.
@@ -538,18 +545,18 @@ fn pick_color(hwnd: HWND) {
     let caret = ed.selections().first().map_or(text.len(), |s| offset(&text, s.head));
     let range = hex_at(&text, caret).unwrap_or(caret..caret);
     let initial = Color::parse_hex(&text[range.clone()]).unwrap_or(Color::rgb(0x63, 0x8e, 0xc6));
-    let chosen = with_app(|app| unsafe {
-        let mut cc = CHOOSECOLORW {
-            lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
-            hwndOwner: hwnd,
-            rgbResult: COLORREF(initial.r as u32 | (initial.g as u32) << 8 | (initial.b as u32) << 16),
-            lpCustColors: app.custom_colors.as_mut_ptr(),
-            Flags: CC_FULLOPEN | CC_RGBINIT,
-            ..Default::default()
-        };
-        ChooseColorW(&mut cc).as_bool().then_some(cc.rgbResult.0)
-    })
-    .flatten();
+    // The dialog runs its own message loop, so the app isn't held while it's open.
+    let Some(mut custom) = with_app(|app| app.custom_colors) else { return };
+    let mut cc = CHOOSECOLORW {
+        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwndOwner: hwnd,
+        rgbResult: COLORREF(initial.r as u32 | (initial.g as u32) << 8 | (initial.b as u32) << 16),
+        lpCustColors: custom.as_mut_ptr(),
+        Flags: CC_FULLOPEN | CC_RGBINIT,
+        ..Default::default()
+    };
+    let chosen = unsafe { ChooseColorW(&mut cc) }.as_bool().then_some(cc.rgbResult.0);
+    with_app(|app| app.custom_colors = custom);
     if let Some(bgr) = chosen {
         let color = Color::rgb(bgr as u8, (bgr >> 8) as u8, (bgr >> 16) as u8);
         let (start, end) = (pos(&text, range.start), pos(&text, range.end));
@@ -645,10 +652,11 @@ struct Args {
     suggest: bool,
     caret: Option<usize>,
     size: Option<(u32, u32)>,
+    clicks: Vec<(f32, f32)>,
 }
 
 fn args() -> Args {
-    let mut out = Args { capture: None, set: None, rules: None, suggest: false, caret: None, size: None };
+    let mut out = Args { capture: None, set: None, rules: None, suggest: false, caret: None, size: None, clicks: Vec::new() };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -657,6 +665,13 @@ fn args() -> Args {
             "--rules" => out.rules = it.next(),
             "--suggest" => out.suggest = true,
             "--caret" => out.caret = it.next().and_then(|n| n.parse().ok()),
+            "--click" => {
+                if let Some((x, y)) = it.next().as_deref().and_then(|s| s.split_once(','))
+                    && let (Ok(x), Ok(y)) = (x.parse(), y.parse())
+                {
+                    out.clicks.push((x, y));
+                }
+            }
             "--size" => {
                 out.size = it.next().and_then(|s| {
                     let (w, h) = s.split_once('x')?;
@@ -669,7 +684,8 @@ fn args() -> Args {
     out
 }
 
-fn capture(hwnd: HWND, path: &std::path::Path, width: u32, height: u32) -> Result<()> {
+/// Paints a frame at 96 DPI, and saves it when given a path.
+fn capture(path: Option<&std::path::Path>, width: u32, height: u32) -> Result<()> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
@@ -693,7 +709,7 @@ fn capture(hwnd: HWND, path: &std::path::Path, width: u32, height: u32) -> Resul
             target.EndDraw(None, None)
         })
         .unwrap_or(Ok(()))?;
-        let _ = hwnd;
+        let Some(path) = path else { return Ok(()) };
         let stream = wic.CreateStream()?;
         stream.InitializeFromFilename(&HSTRING::from(path.as_os_str()), 0x4000_0000)?;
         let encoder = wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
@@ -712,7 +728,28 @@ fn capture(hwnd: HWND, path: &std::path::Path, width: u32, height: u32) -> Resul
     Ok(())
 }
 
+/// A windowed app has no console, so a panic would just close it: say what
+/// happened instead, and keep it in a file too.
+fn report_panics() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = format!("{info}
+
+{}", std::backtrace::Backtrace::force_capture());
+        let path = std::env::temp_dir().join("diver_format_demo_panic.txt");
+        let _ = std::fs::write(&path, &text);
+        default(info);
+        let message = HSTRING::from(format!("{info}
+
+Details: {}", path.display()));
+        unsafe {
+            MessageBoxW(None, &message, w!("Demo panicked"), MB_ICONERROR);
+        }
+    }));
+}
+
 fn main() -> Result<()> {
+    report_panics();
     let args = args();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -794,6 +831,7 @@ fn main() -> Result<()> {
             app.sync_text();
         }
         APP.with(|a| *a.borrow_mut() = Some(app));
+        EDITOR.with(|e| *e.borrow_mut() = Some(ed.clone()));
         layout(hwnd);
 
         if let Some(path) = &args.capture {
@@ -807,7 +845,25 @@ fn main() -> Result<()> {
                 }
             }
             let (w, h) = args.size.unwrap_or((width as u32, height as u32));
-            let result = capture(hwnd, path, w, h);
+            // Clicks go through the window procedure like real ones, at the
+            // places the first frame laid things out.
+            if !args.clicks.is_empty() {
+                capture(None, w, h)?;
+                let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
+                for (x, y) in &args.clicks {
+                    let l = LPARAM(((y * scale) as isize) << 16 | (x * scale) as isize);
+                    SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(l));
+                    SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(l));
+                    SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(l));
+                    let mut msg = MSG::default();
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).into() {
+                        DispatchMessageW(&msg);
+                    }
+                    capture(None, w, h)?;
+                }
+            }
+            let result = capture(Some(path), w, h);
+            EDITOR.with(|e| e.borrow_mut().take());
             APP.with(|a| a.borrow_mut().take());
             return result;
         }
@@ -819,6 +875,7 @@ fn main() -> Result<()> {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        EDITOR.with(|e| e.borrow_mut().take());
         APP.with(|a| a.borrow_mut().take());
         Ok(())
     }
