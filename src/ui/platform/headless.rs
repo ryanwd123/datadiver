@@ -179,6 +179,11 @@ impl<V: View> TestApp<V> {
         self.runtime.windows.borrow().iter().map(|slot| slot.id).collect()
     }
 
+    /// Whether window `id` waits to be painted again.
+    pub fn is_dirty(&self, id: WindowId) -> bool {
+        self.slot(id).is_dirty()
+    }
+
     fn slot(&self, id: WindowId) -> Rc<WindowSlot<V>> {
         self.runtime.window(id).expect("the window is open")
     }

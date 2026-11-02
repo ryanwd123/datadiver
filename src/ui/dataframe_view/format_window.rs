@@ -85,9 +85,21 @@ impl DataFrameView {
             .format_scope()
             .map(|scope| crate::application::conditional_format::rule_columns(&scope.schema))
             .unwrap_or_default();
-        let shown: Vec<&str> = self.session.result.columns.iter().map(|column| column.0.as_str()).collect();
-        columns.sort_by_key(|column| shown.iter().position(|name| *name == column.name).unwrap_or(usize::MAX));
+        let shown: std::collections::HashMap<&str, usize> =
+            self.session.result.columns.iter().enumerate().map(|(index, column)| (column.0.as_str(), index)).collect();
+        columns.sort_by_key(|column| shown.get(column.name.as_str()).copied().unwrap_or(usize::MAX));
         columns
+    }
+
+    /// Redraws the manager's window when what it shows has changed, such as
+    /// after undo or a new result. The grid's other redraws leave it alone.
+    pub(crate) fn refresh_format_window(&self, cx: &mut Cx<Self>) {
+        let Some(window) = &self.format_window else { return };
+        let Some(manager) = &window.manager else { return };
+        let formats = self.session.working.as_ref().map(|view| view.formats.as_slice()).unwrap_or_default();
+        if !manager.shows(formats, &self.format_columns()) {
+            cx.for_window(window.id).redraw();
+        }
     }
 
     /// The manager's window is going away: undo takes the formatting as it

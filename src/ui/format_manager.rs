@@ -163,6 +163,13 @@ impl FormatManager {
     }
 
     /// Format sets worth keeping: blank ones are left out.
+    /// Whether the manager shows `formats` over `columns` already, so
+    /// [`Self::sync_scope`] would change nothing.
+    pub fn shows(&self, formats: &[ConditionalFormat], columns: &[diver_format::Column]) -> bool {
+        *self.columns.borrow() == columns
+            && self.formats.iter().filter(|f| !f.rules.trim().is_empty()).eq(formats.iter())
+    }
+
     fn kept(&self) -> Vec<ConditionalFormat> {
         self.formats.iter().filter(|f| !f.rules.trim().is_empty()).cloned().collect()
     }

@@ -15,6 +15,7 @@ impl View for DataFrameView {
         }
         self.sync_profiles(cx);
         self.render(canvas, cx);
+        self.refresh_format_window(cx);
     }
 
     fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {

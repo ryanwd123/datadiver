@@ -86,6 +86,32 @@ fn m_opens_the_manager_and_duplicates_count_the_filtered_rows_not_the_search() {
 }
 
 #[test]
+fn the_grid_redraws_the_manager_only_when_what_it_shows_changes() {
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    let manager = open_manager(&viewer);
+    manager.input("if duplicate(c) then bold");
+    viewer.settle();
+    manager.render();
+    assert!(!viewer.app.is_dirty(manager.id));
+    // Moving through the grid, as scrolling does, redraws only the grid.
+    viewer.press("down down");
+    assert!(viewer.app.is_dirty(viewer.id));
+    viewer.render();
+    assert!(!viewer.app.is_dirty(manager.id));
+    // The formats changing elsewhere redraw the manager too.
+    viewer.update(|view, _| view.session.edit_definition(|definition| definition.formats.clear()).unwrap());
+    viewer.render();
+    assert!(viewer.app.is_dirty(manager.id));
+    manager.render();
+    let shown = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().formats.clone());
+    assert!(shown.iter().all(|format| format.rules.is_empty()), "{shown:?}");
+    viewer.render();
+    assert!(!viewer.app.is_dirty(manager.id));
+}
+
+#[test]
 fn every_kind_of_mark_paints() {
     let home = tempfile::tempdir().unwrap();
     let path = sales(home.path());

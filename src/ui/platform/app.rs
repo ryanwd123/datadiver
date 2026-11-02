@@ -540,16 +540,26 @@ impl<'a, V: View> Cx<'a, V> {
         self.runtime
     }
 
-    /// Redraws the window, and any other window showing its view.
+    /// Redraws the window, and any other window showing its view except the
+    /// ones it owns. Those show their own part of the view, so the owner's
+    /// frequent redraws, such as while scrolling, don't also wait on theirs;
+    /// the view redraws them with [`Cx::redraw`] when what they show changes.
     pub fn notify(&mut self) {
         let Some(slot) = self.runtime.window(self.window) else {
             return;
         };
         let slots = self.runtime.windows.borrow().clone();
         for other in slots {
-            if Rc::ptr_eq(&other.view, &slot.view) {
+            if Rc::ptr_eq(&other.view, &slot.view) && other.owner != Some(self.window) {
                 other.invalidate();
             }
+        }
+    }
+
+    /// Redraws only this window.
+    pub fn redraw(&mut self) {
+        if let Some(slot) = self.runtime.window(self.window) {
+            slot.invalidate();
         }
     }
 
