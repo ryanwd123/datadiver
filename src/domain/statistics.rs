@@ -247,6 +247,30 @@ mod tests {
     }
 
     #[test]
+    fn list_of_decimals_is_counted_but_not_summed() {
+        let store = DuckDbStore::empty()
+            .unwrap()
+            .materialize_query(
+                "SELECT [1.50, 2.25]::DECIMAL(38,2)[] AS sums UNION ALL SELECT NULL",
+                &[],
+            )
+            .unwrap();
+        let result = ResultSnapshot::from_source(&FrameSnapshot::new(store, 1), 1, 1);
+        let stats = calculate(
+            &result,
+            Selection {
+                anchor: Cell { row: 0, column: 0 },
+                active: Cell { row: 1, column: 0 },
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.numeric_sum, None);
+        assert!(stats.single_numeric_column.is_none());
+        assert_eq!(stats.nulls, 1);
+        assert_eq!(stats.unique, 1);
+    }
+
+    #[test]
     fn text_and_all_null_numeric_selections_have_no_numeric_summary() {
         let result = result();
         let text = calculate(

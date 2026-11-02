@@ -8,7 +8,7 @@ use duckdb::{Connection, appender_params_from_iter, params, params_from_iter, ty
 
 use crate::domain::{
     documents::{Dimension, ScalarKey, ValueFilter},
-    formatting::{numeric_type_name, string_type_name},
+    formatting::{list_element_type, numeric_type_name, string_type_name},
     query::{
         ColumnOperator, ColumnTerm, Comparison, Numeric, Token, parse_condition, parse_number,
         resolve_column,
@@ -2512,27 +2512,14 @@ fn scalar_parameter(value: &ScalarKey) -> Result<(Value, &'static str), String> 
 }
 
 fn is_numeric_type(data_type: &str) -> bool {
-    let kind = data_type.to_ascii_uppercase();
-    [
-        "TINYINT",
-        "SMALLINT",
-        "INTEGER",
-        "BIGINT",
-        "HUGEINT",
-        "UTINYINT",
-        "USMALLINT",
-        "UINTEGER",
-        "UBIGINT",
-        "UHUGEINT",
-        "FLOAT",
-        "DOUBLE",
-        "DECIMAL",
-    ]
-    .iter()
-    .any(|name| kind.starts_with(name))
+    numeric_type_name(data_type)
 }
 
 fn is_searchable_type(data_type: &str) -> bool {
+    // A list or array is searched through its text when its elements could be.
+    if let Some(element) = list_element_type(data_type) {
+        return is_searchable_type(element);
+    }
     let kind = data_type.to_ascii_uppercase();
     is_numeric_type(&kind)
         || ["VARCHAR", "CHAR", "BOOLEAN", "UUID", "ENUM"]

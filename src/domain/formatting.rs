@@ -4,7 +4,17 @@ pub struct NumericFormat {
     pub grouping: bool,
 }
 
+/// The element type of a list or array type such as `DECIMAL(38,2)[]` or
+/// `INTEGER[3]`, which the scalar type checks below must not match by prefix.
+pub fn list_element_type(dtype: &str) -> Option<&str> {
+    let rest = dtype.trim_end().strip_suffix(']')?;
+    rest.rfind('[').map(|bracket| &rest[..bracket])
+}
+
 pub fn numeric_type_name(dtype: &str) -> bool {
+    if list_element_type(dtype).is_some() {
+        return false;
+    }
     let dtype = dtype.to_ascii_uppercase();
     [
         "TINYINT",
@@ -26,6 +36,9 @@ pub fn numeric_type_name(dtype: &str) -> bool {
 }
 
 pub fn string_type_name(dtype: &str) -> bool {
+    if list_element_type(dtype).is_some() {
+        return false;
+    }
     let dtype = dtype.to_ascii_uppercase();
     ["VARCHAR", "CHAR", "ENUM"]
         .iter()
@@ -33,6 +46,9 @@ pub fn string_type_name(dtype: &str) -> bool {
 }
 
 pub fn temporal_type_name(dtype: &str) -> bool {
+    if list_element_type(dtype).is_some() {
+        return false;
+    }
     let dtype = dtype.to_ascii_uppercase();
     ["DATE", "TIME", "TIMESTAMP", "INTERVAL"]
         .iter()
@@ -291,6 +307,18 @@ mod tests {
             "STRUCT(\"ENUM(\" VARCHAR, kind ENUM, n INTEGER)"
         );
         assert_eq!(type_label("MAP(VARCHAR, ENUM('p', 'q'))"), "MAP(VARCHAR, ENUM)");
+    }
+
+    #[test]
+    fn list_types_are_not_scalar_types() {
+        assert_eq!(list_element_type("DECIMAL(38,2)[]"), Some("DECIMAL(38,2)"));
+        assert_eq!(list_element_type("INTEGER[3][]"), Some("INTEGER[3]"));
+        assert_eq!(list_element_type("INTEGER"), None);
+        assert!(numeric_type_name("DECIMAL(38,2)"));
+        assert!(!numeric_type_name("DECIMAL(38,2)[]"));
+        assert!(!string_type_name("VARCHAR[]"));
+        assert!(!temporal_type_name("DATE[2]"));
+        assert!(default_numeric_format("DOUBLE[]").is_none());
     }
 
     #[test]

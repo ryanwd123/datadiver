@@ -16,7 +16,7 @@ use crate::infrastructure::sources::FrameIdentity;
 use duckdb::types::Value;
 use crate::domain::{
     documents::{Dimension, ScalarKey, SortKey, ValueFilter},
-    formatting::{numeric_type_name, string_type_name},
+    formatting::{list_element_type, numeric_type_name, string_type_name},
     query::{
         ColumnOperator, ColumnTerm, Comparison, Numeric, Token, parse_condition, parse_number,
         resolve_column,
@@ -1413,6 +1413,10 @@ fn is_numeric_type(data_type: &str) -> bool {
 }
 
 fn is_searchable_type(data_type: &str) -> bool {
+    // A list or array is searched through its text when its elements could be.
+    if let Some(element) = list_element_type(data_type) {
+        return is_searchable_type(element);
+    }
     let kind = data_type.to_ascii_uppercase();
     is_numeric_type(&kind)
         || ["VARCHAR", "CHAR", "BOOLEAN", "UUID", "ENUM"]
