@@ -433,6 +433,10 @@ impl DataFrameView {
                     return;
                 }
                 match text {
+                    Ok(text) if format.is_html() => {
+                        crate::ui::platform::system::write_clipboard_html(&text, &text);
+                        view.copy_status = Some("Copied".into());
+                    }
                     Ok(text) => {
                         crate::ui::platform::system::write_clipboard(&text);
                         view.copy_status = Some("Copied".into());

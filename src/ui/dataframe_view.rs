@@ -88,6 +88,10 @@ pub(crate) const COPY_FORMATS: &[(CopyFormat, &str)] = &[
     (CopyFormat::JsonRecords, "JSON records"),
     (CopyFormat::JsonColumns, "JSON columns"),
     (CopyFormat::PythonList, "Python list"),
+    (CopyFormat::Html, "Formatted HTML table"),
+    (CopyFormat::HtmlHeaders, "Formatted HTML table with headers"),
+    (CopyFormat::Markdown, "Markdown table"),
+    (CopyFormat::MarkdownHeaders, "Markdown table with headers"),
 ];
 
 #[derive(Clone, Debug)]

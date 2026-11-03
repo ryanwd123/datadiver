@@ -79,6 +79,24 @@ pub use fake::*;
 #[cfg(not(test))]
 pub use native::*;
 
+/// Wraps an HTML fragment in the Windows "HTML Format" clipboard header,
+/// whose offsets count UTF-8 bytes from the start of the data.
+pub fn cf_html(fragment: &str) -> String {
+    const HEADER: &str = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\n\
+         StartFragment:0000000000\r\nEndFragment:0000000000\r\n";
+    let prefix = "<html><head><meta charset=\"utf-8\"></head><body>\r\n<!--StartFragment-->";
+    let suffix = "<!--EndFragment-->\r\n</body></html>";
+    let start_html = HEADER.len();
+    let start_fragment = start_html + prefix.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + suffix.len();
+    format!(
+        "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\n\
+         StartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n\
+         {prefix}{fragment}{suffix}"
+    )
+}
+
 pub fn read_clipboard_text() -> Option<String> {
     match read_clipboard()? {
         ClipboardContent::Text(text) => Some(text),
@@ -116,6 +134,31 @@ mod native {
     }
 
     pub fn write_clipboard(text: &str) {
+        write_clipboard_formats(text, None);
+    }
+
+    /// Copies `html` as rich HTML, for pasting a table into a spreadsheet or
+    /// an email, with `text` for programs that take only plain text.
+    pub fn write_clipboard_html(html: &str, text: &str) {
+        write_clipboard_formats(text, Some(html));
+    }
+
+    /// Copies `bytes` into a movable global block and hands it to the
+    /// clipboard, which owns it from then on.
+    unsafe fn set_clipboard_bytes(format: u32, bytes: &[u8]) {
+        unsafe {
+            if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+                let target = GlobalLock(memory) as *mut u8;
+                if !target.is_null() {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+                    let _ = GlobalUnlock(memory);
+                    let _ = SetClipboardData(format, Some(HANDLE(memory.0)));
+                }
+            }
+        }
+    }
+
+    fn write_clipboard_formats(text: &str, html: Option<&str>) {
         if !open_clipboard() {
             return;
         }
@@ -124,13 +167,15 @@ mod native {
             let wide = text
                 .encode_utf16()
                 .chain(std::iter::once(0))
-                .collect::<Vec<u16>>();
-            if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) {
-                let target = GlobalLock(memory) as *mut u16;
-                if !target.is_null() {
-                    std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
-                    let _ = GlobalUnlock(memory);
-                    let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(memory.0)));
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>();
+            set_clipboard_bytes(CF_UNICODETEXT.0 as u32, &wide);
+            if let Some(html) = html {
+                let format = RegisterClipboardFormatW(w!("HTML Format"));
+                if format != 0 {
+                    let mut bytes = super::cf_html(html).into_bytes();
+                    bytes.push(0);
+                    set_clipboard_bytes(format, &bytes);
                 }
             }
             let _ = CloseClipboard();
@@ -303,6 +348,8 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeSystem {
         pub clipboard: Option<ClipboardContent>,
+        /// The rich HTML copied alongside the text, if any.
+        pub clipboard_html: Option<String>,
         pub opened_urls: Vec<String>,
         pub opened_paths: Vec<PathBuf>,
         /// How many times each dialog was shown.
@@ -323,7 +370,17 @@ pub mod fake {
     }
 
     pub fn write_clipboard(text: &str) {
-        with(|system| system.clipboard = Some(ClipboardContent::Text(text.to_owned())));
+        with(|system| {
+            system.clipboard = Some(ClipboardContent::Text(text.to_owned()));
+            system.clipboard_html = None;
+        });
+    }
+
+    pub fn write_clipboard_html(html: &str, text: &str) {
+        with(|system| {
+            system.clipboard = Some(ClipboardContent::Text(text.to_owned()));
+            system.clipboard_html = Some(html.to_owned());
+        });
     }
 
     pub fn read_clipboard() -> Option<ClipboardContent> {
@@ -358,5 +415,20 @@ pub mod fake {
 
     pub fn choose_color(_owner: Option<HWND>, _initial: u32) -> Option<u32> {
         with(|system| system.color_answers.pop_front().flatten())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cf_html_offsets_point_at_the_document_and_fragment() {
+        let data = super::cf_html("<table>é</table>");
+        let offset = |name: &str| -> usize {
+            let start = data.find(&format!("{name}:")).unwrap() + name.len() + 1;
+            data[start..start + 10].parse().unwrap()
+        };
+        assert_eq!(&data[offset("StartFragment")..offset("EndFragment")], "<table>é</table>");
+        assert!(data[offset("StartHTML")..].starts_with("<html>"));
+        assert_eq!(offset("EndHTML"), data.len());
     }
 }

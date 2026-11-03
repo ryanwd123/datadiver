@@ -1,6 +1,6 @@
 use serde_json::{Map, Number, Value};
 
-use crate::domain::formatting::{default_numeric_format, display_cell};
+use crate::domain::formatting::{default_numeric_format, display_cell, numeric_type_name};
 use crate::domain::frame::ResultSnapshot;
 use crate::domain::selection::Selection;
 
@@ -14,6 +14,18 @@ pub enum CopyFormat {
     JsonRecords,
     JsonColumns,
     PythonList,
+    /// A formatted HTML table, copied as rich HTML and as its markup.
+    Html,
+    HtmlHeaders,
+    /// A formatted Markdown pipe table.
+    Markdown,
+    MarkdownHeaders,
+}
+
+impl CopyFormat {
+    pub fn is_html(self) -> bool {
+        matches!(self, Self::Html | Self::HtmlHeaders)
+    }
 }
 
 /// A file format DuckDB's `COPY ... TO` writes, chosen by the file extension.
@@ -222,8 +234,111 @@ pub fn export(
             }
             output.push(']');
         }
+        CopyFormat::Html | CopyFormat::HtmlHeaders => {
+            let numeric = numeric_columns(&values);
+            output.push_str("<table style=\"border-collapse:collapse\">\n");
+            if format == CopyFormat::HtmlHeaders {
+                output.push_str("<thead><tr>");
+                for (index, &column) in column_indices.iter().enumerate() {
+                    html_cell(&mut output, "th", &result.columns[column].0, numeric[index]);
+                }
+                output.push_str("</tr></thead>\n");
+            }
+            output.push_str("<tbody>\n");
+            for row in &values {
+                output.push_str("<tr>");
+                for (index, (value, dtype, _)) in row.iter().enumerate() {
+                    let text = tsv_value(value.as_deref(), dtype, true);
+                    html_cell(&mut output, "td", &text, numeric[index]);
+                }
+                output.push_str("</tr>\n");
+            }
+            output.push_str("</tbody>\n</table>");
+        }
+        CopyFormat::Markdown | CopyFormat::MarkdownHeaders => {
+            let numeric = numeric_columns(&values);
+            // A pipe table needs a header row, so without headers it is blank.
+            let headers = column_indices
+                .iter()
+                .map(|&column| match format {
+                    CopyFormat::MarkdownHeaders => markdown_text(&result.columns[column].0),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>();
+            markdown_row(&mut output, &headers);
+            let rule = numeric
+                .iter()
+                .map(|&numeric| if numeric { "---:" } else { "---" }.to_owned())
+                .collect::<Vec<_>>();
+            markdown_row(&mut output, &rule);
+            for row in &values {
+                let cells = row
+                    .iter()
+                    .map(|(value, dtype, _)| {
+                        markdown_text(&tsv_value(value.as_deref(), dtype, true))
+                    })
+                    .collect::<Vec<_>>();
+                markdown_row(&mut output, &cells);
+            }
+            output.pop();
+        }
     }
     Ok(output)
+}
+
+/// Which selected columns hold numbers, which tables align right.
+fn numeric_columns(values: &[Vec<(Option<String>, &str, &str)>]) -> Vec<bool> {
+    values
+        .first()
+        .map(|row| {
+            row.iter()
+                .map(|(_, dtype, _)| numeric_type_name(dtype))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn html_cell(output: &mut String, tag: &str, text: &str, numeric: bool) {
+    output.push('<');
+    output.push_str(tag);
+    output.push_str(" style=\"border:1px solid #bbb;padding:2px 6px");
+    if numeric {
+        output.push_str(";text-align:right");
+    }
+    output.push_str("\">");
+    for ch in text.chars() {
+        match ch {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\n' => output.push_str("<br>"),
+            '\r' => {}
+            ch => output.push(ch),
+        }
+    }
+    output.push_str("</");
+    output.push_str(tag);
+    output.push('>');
+}
+
+/// Escapes what would end a cell or the row: pipes, and line breaks, which
+/// become `<br>`, as most Markdown renderers allow inside a table.
+fn markdown_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace("\r\n", "<br>")
+        .replace(['\n', '\r'], "<br>")
+}
+
+fn markdown_row(output: &mut String, cells: &[String]) {
+    output.push('|');
+    for cell in cells {
+        output.push(' ');
+        output.push_str(cell);
+        output.push_str(" |");
+    }
+    output.push('\n');
 }
 
 /// Nulls are blank, so pasting into a spreadsheet leaves the cell empty.
@@ -500,5 +615,36 @@ mod tests {
             export(&result, selection(1, 2), CopyFormat::PythonList).unwrap(),
             "['A', 1]"
         );
+    }
+
+    #[test]
+    fn html_and_markdown_tables_escape_and_align_numbers() {
+        let store = DuckDbStore::from_rows(
+            &[
+                ("a|b".into(), "VARCHAR".into()),
+                ("Count".into(), "BIGINT".into()),
+            ],
+            [
+                vec![DuckValue::Text("<x> & |y|".into()), DuckValue::BigInt(1234)],
+                vec![DuckValue::Null, DuckValue::BigInt(2)],
+            ],
+        )
+        .unwrap();
+        let result = ResultSnapshot::from_source(&FrameSnapshot::new(store, 1), 1, 1);
+        assert_eq!(
+            export(&result, selection(2, 2), CopyFormat::MarkdownHeaders).unwrap(),
+            "| a\\|b | Count |\n| --- | ---: |\n| <x> & \\|y\\| | 1,234 |\n|  | 2 |"
+        );
+        assert_eq!(
+            export(&result, selection(1, 2), CopyFormat::Markdown).unwrap(),
+            "|  |  |\n| --- | ---: |\n| <x> & \\|y\\| | 1,234 |"
+        );
+        let html = export(&result, selection(1, 2), CopyFormat::HtmlHeaders).unwrap();
+        assert!(html.starts_with("<table"), "{html}");
+        assert!(html.contains(">a|b</th>"), "{html}");
+        assert!(html.contains(">&lt;x&gt; &amp; |y|</td>"), "{html}");
+        assert!(html.contains("text-align:right\">1,234</td>"), "{html}");
+        let bare = export(&result, selection(1, 2), CopyFormat::Html).unwrap();
+        assert!(!bare.contains("<th"), "{bare}");
     }
 }

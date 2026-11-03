@@ -44,7 +44,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Ask AI for SQL:** describe what you want and get SQL checked by DuckDB before you run it, using any OpenAI-compatible provider.
 - **Inspect values:** column profiles in the Info dialog, and a cell detail pane for long text and pretty-printed JSON.
 - **Reuse your work:** save views, open favorites with **Ctrl+1–9**, go back and forward through history, undo view changes, and restore the previous session.
-- **Copy and export:** copy cells as TSV, CSV, JSON, or Python lists, or export the displayed result to CSV, Parquet, JSON, or Excel.
+- **Copy and export:** copy cells as TSV, CSV, JSON, Python lists, or HTML and Markdown tables, or export the displayed result to CSV, Parquet, JSON, or Excel.
 - **Look things up:** view actions open a web page, internal site, or program for the active row.
 - **Work from the keyboard:** a searchable command palette, a Helper menu (**Space** or **Ctrl+K**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
 - **Make it comfortable:** themes, grid and editor fonts, font size, and independent windows.
@@ -249,7 +249,7 @@ Views store the source path and the exploration configuration. They reference th
 
 ## Copy and export
 
-**Ctrl+C** copies the selection as TSV. **Ctrl+Shift+C** chooses a format: TSV (raw or formatted), CSV, JSON records, JSON columns, or Python lists.
+**Ctrl+C** copies the selection as TSV. **Ctrl+Shift+C** chooses a format: TSV (raw or formatted), CSV, JSON records, JSON columns, Python lists, or a formatted HTML or Markdown table, with or without headers. An HTML table pastes as a table into Excel, Word, or an email, and as markup into a text editor.
 
 **Export result to file** (**Space E**) writes the rows on screen, matching the search, filters, sort, column order, and hidden columns. The file extension picks the format: `.csv`, `.tsv`, `.parquet`, `.json`, `.ndjson` / `.jsonl`, or `.xlsx`, with `.gz` or `.zst` compression for text formats. A query result cut off at the row limit is rerun without the limit, so the file is complete.
 

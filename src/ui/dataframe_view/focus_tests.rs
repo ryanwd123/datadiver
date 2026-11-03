@@ -248,6 +248,29 @@ fn copy_as_search_is_focused_from_shortcut_and_command() {
 }
 
 #[test]
+fn copy_as_html_copies_rich_html_and_its_markup() {
+    use crate::ui::platform::system::fake;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer_with_repository(repository(home.path()));
+    viewer.focus_grid();
+    viewer.render();
+    viewer.press("ctrl-shift-c");
+    viewer.render();
+    viewer.input("html table with headers");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    let text = clipboard_text().unwrap();
+    assert!(text.starts_with("<table") && text.contains("<th"), "{text}");
+    assert_eq!(fake::with(|system| system.clipboard_html.clone()), Some(text));
+    // A later plain copy drops the HTML, so pasting doesn't bring back the old table.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::CopyAs, cx));
+    viewer.input("raw tsv");
+    viewer.run_until_parked();
+    press(&viewer, "enter");
+    assert_eq!(fake::with(|system| system.clipboard_html.clone()), None);
+}
+
+#[test]
 fn cached_direct_widths_skip_sampling_and_shortcuts_respect_focus() {
     use crate::domain::table_preferences::TablePreferencesPatch;
     let home = tempfile::tempdir().unwrap();
