@@ -133,6 +133,11 @@ impl Checker<'_> {
                 Cx::In(Box::new(a?), list.into_iter().collect::<Option<_>>()?, *negated)
             }
             ExprKind::Call { name, name_span, args } => return self.call(name, name_span, args, &e.span),
+            ExprKind::Index { expr, index } => {
+                let (a, i) = (self.expr(expr), self.expr(index));
+                Cx::Index(Box::new(a?), Box::new(i?))
+            }
+            ExprKind::Field { expr, name, .. } => Cx::Field(Box::new(self.expr(expr)?), name.clone()),
             ExprKind::Error => return None,
         })
     }

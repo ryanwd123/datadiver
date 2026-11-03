@@ -30,6 +30,11 @@ bar(steelblue, fill=gradient)
 
 - `c` is the cell being formatted, `"name"` another column of the same row,
   `'text'` text. Numbers can be `10`, `10%` (0.1) or widths like `2px`.
+- Lists and structs: `c[0]` is a list's first item and `c[-1]` its last
+  (blank past the end); `c.name`, `"col"."field name"` or `c['name']` is a
+  struct's field (blank when there's none). They chain: `c.stops[0].city`.
+  A host that lists a `Column`'s fields and items gets them completed
+  after `.`.
 - Conditions: `= != < <= > >=`, `and or not`, `is [not] null`,
   `[not] between a and b`, `[not] in (a, b)`, `like '%x_'`, `contains`,
   `startswith`, `endswith` (text tests ignore case), `+ - * / %`.

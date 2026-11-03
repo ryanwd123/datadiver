@@ -102,7 +102,28 @@ pub fn complete(text: &str, offset: usize, columns: &[Column]) -> Vec<Completion
     let current = token_at(&tokens, offset).cloned();
     if let Some(token) = &current {
         match token.kind {
-            TokenKind::Column => return quoted_columns(text, token, offset, columns),
+            TokenKind::Column => {
+                // `"col"."fi|`: a quoted field name.
+                let before: Vec<Token> = tokens.iter().filter(|t| t.span.end <= token.span.start).cloned().collect();
+                let field = expected(text, before).into_iter().find_map(|e| match e {
+                    Expect::Field(path) => Some(path),
+                    _ => None,
+                });
+                if let Some(path) = field {
+                    let typed = text[token.span.start + 1..offset].to_lowercase();
+                    let range = if token.terminated { token.span.clone() } else { token.span.start..offset };
+                    return field_items(&path, columns)
+                        .into_iter()
+                        .filter(|item| item.label.to_lowercase().starts_with(&typed))
+                        .map(|mut item| {
+                            item.insert = quote_column(&item.label);
+                            item.range = Some(range.clone());
+                            item
+                        })
+                        .collect();
+                }
+                return quoted_columns(text, token, offset, columns);
+            }
             TokenKind::Str | TokenKind::Comment => return Vec::new(),
             TokenKind::Hex => return picker(&text[token.span.start..offset], token.span.clone()),
             _ => {}
@@ -132,6 +153,7 @@ fn items(expect: &Expect, columns: &[Column]) -> Vec<Completion> {
         Expect::Value { property, index } => value_items(property, *index, columns),
         Expect::Arg { call, index, action: true } => visual_arg_items(call, *index, columns),
         Expect::Arg { call, index, action: false } => function_arg_items(call, *index, columns),
+        Expect::Field(path) => field_items(path, columns),
         Expect::NamedValue { call, name } => match crate::check::named_arg_value(call, name) {
             Some(ArgValue::Expr) | None => expression_items(columns),
             Some(ArgValue::Column) => column_items(columns, true),
@@ -158,8 +180,52 @@ pub(crate) fn kind_name(kind: ValueKind) -> &'static str {
         ValueKind::Date => "date",
         ValueKind::Bool => "true/false",
         ValueKind::List => "list",
+        ValueKind::Struct => "struct",
         ValueKind::Unknown => "column",
     }
+}
+
+/// The fields after `path.`. Below `c`, every struct column's fields are
+/// offered, since rules may format several columns.
+fn field_items(path: &crate::parser::FieldPath, columns: &[Column]) -> Vec<Completion> {
+    let bases: Vec<&Column> = match &path.column {
+        Some(name) => columns
+            .iter()
+            .find(|c| c.name == *name)
+            .or_else(|| columns.iter().find(|c| c.name.eq_ignore_ascii_case(name)))
+            .into_iter()
+            .collect(),
+        None => columns.iter().collect(),
+    };
+    let mut out: Vec<Completion> = Vec::new();
+    for base in bases {
+        let mut column = Some(base);
+        for step in &path.steps {
+            column = column.and_then(|c| match step {
+                Some(name) => c
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .or_else(|| c.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name))),
+                None => c.item.as_deref(),
+            });
+        }
+        for field in column.map(|c| c.fields.as_slice()).unwrap_or_default() {
+            if out.iter().any(|o| o.label == field.name) {
+                continue;
+            }
+            let plain = field.name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                && field.name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+            let insert = if plain { field.name.clone() } else { quote_column(&field.name) };
+            let sort = format!("0{:04}", out.len());
+            out.push(
+                Completion::new(field.name.clone(), CompletionKind::Column, sort)
+                    .insert(insert)
+                    .detail(kind_name(field.kind)),
+            );
+        }
+    }
+    out
 }
 
 fn column_items(columns: &[Column], cell: bool) -> Vec<Completion> {
@@ -513,6 +579,36 @@ mod tests {
         assert_eq!(items[0].insert, "\"region\"");
         assert_eq!(items[0].range, Some(7..12));
         assert!(complete("if c = 'reg", 11, &columns()).is_empty());
+    }
+
+    #[test]
+    fn dots_complete_struct_fields() {
+        let place = Column::new("place", ValueKind::Struct)
+            .with_fields(vec![Column::new("city", ValueKind::Text), Column::new("zip code", ValueKind::Number)]);
+        let columns = vec![
+            Column::new("info", ValueKind::Struct)
+                .with_fields(vec![Column::new("kind", ValueKind::Text), place.clone()]),
+            Column::new("stops", ValueKind::List).with_item(Column::new("", ValueKind::Struct).with_fields(vec![place])),
+            Column::new("sales", ValueKind::Number),
+        ];
+        let at = |text: &str| {
+            let offset = text.find('|').expect("caret");
+            complete(&text.replace('|', ""), offset, &columns)
+        };
+        let labels = |text: &str| at(text).into_iter().map(|c| c.label).collect::<Vec<_>>();
+        assert_eq!(labels("if \"info\".|"), ["kind", "place"]);
+        assert_eq!(labels("if \"info\".place.|"), ["city", "zip code"]);
+        assert_eq!(labels("if \"stops\"[0].|"), ["place"]);
+        assert_eq!(labels("if \"stops\"[0].place.ci|"), ["city", "zip code"]);
+        // `c` could be any of the formatted columns.
+        assert_eq!(labels("if c.|"), ["kind", "place"]);
+        assert!(labels("if \"sales\".|").is_empty());
+        let zip = at("if \"info\".place.z|").into_iter().find(|c| c.label == "zip code").unwrap();
+        assert_eq!(zip.insert, "\"zip code\"");
+        // A quoted field replaces the quotes.
+        let quoted = at("if \"info\".place.\"zi|");
+        assert_eq!(quoted.len(), 1);
+        assert_eq!((quoted[0].insert.as_str(), quoted[0].range.clone()), ("\"zip code\"", Some(16..19)));
     }
 
     #[test]

@@ -16,6 +16,11 @@ pub enum TokenKind {
     Hex,
     LParen,
     RParen,
+    /// `[` and `]`, around a list index.
+    LBracket,
+    RBracket,
+    /// `.` before a struct field.
+    Dot,
     Comma,
     Semi,
     Colon,
@@ -125,6 +130,9 @@ pub fn tokenize(text: &str) -> Vec<Token> {
                     (b'>', _) => (TokenKind::Gt, 1),
                     (b'(', _) => (TokenKind::LParen, 1),
                     (b')', _) => (TokenKind::RParen, 1),
+                    (b'[', _) => (TokenKind::LBracket, 1),
+                    (b']', _) => (TokenKind::RBracket, 1),
+                    (b'.', _) => (TokenKind::Dot, 1),
                     (b',', _) => (TokenKind::Comma, 1),
                     (b';', _) => (TokenKind::Semi, 1),
                     (b':', _) => (TokenKind::Colon, 1),
@@ -218,6 +226,26 @@ mod tests {
                 (Ident, "border"),
                 (Colon, ":"),
                 (Number, "1px"),
+            ]
+        );
+    }
+
+    #[test]
+    fn indexes_and_fields_tokenize() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("c[0].item \"col\".\"a b\" .5"),
+            [
+                (Ident, "c"),
+                (LBracket, "["),
+                (Number, "0"),
+                (RBracket, "]"),
+                (Dot, "."),
+                (Ident, "item"),
+                (Column, "\"col\""),
+                (Dot, "."),
+                (Column, "\"a b\""),
+                (Number, ".5"),
             ]
         );
     }

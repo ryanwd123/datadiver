@@ -37,8 +37,16 @@ fn next_kind(tokens: &[Token], i: usize) -> Option<TokenKind> {
     tokens[i + 1..].iter().find(|t| t.kind != TokenKind::Comment).map(|t| t.kind)
 }
 
+/// Whether the token comes right after a `.`: a struct field's name.
+fn after_dot(tokens: &[Token], i: usize) -> bool {
+    i > 0 && tokens[i - 1].kind == TokenKind::Dot
+}
+
 fn classify(text: &str, tokens: &[Token], i: usize) -> Class {
     let t = &tokens[i];
+    if after_dot(tokens, i) && matches!(t.kind, TokenKind::Ident | TokenKind::Column) {
+        return Class::Column;
+    }
     match t.kind {
         TokenKind::Comment => Class::Comment,
         TokenKind::Str => Class::String,
@@ -113,6 +121,10 @@ pub fn hover(text: &str, offset: usize, columns: &[Column]) -> Option<String> {
     let t = &tokens[i];
     let word = t.text(text);
     let lower = word.to_ascii_lowercase();
+    if after_dot(&tokens, i) && matches!(t.kind, TokenKind::Ident | TokenKind::Column) {
+        let name = if t.kind == TokenKind::Column { unquote(word) } else { word.to_string() };
+        return Some(format!("Field `{name}`\nThe struct field of that name; blank when there's none."));
+    }
     match t.kind {
         TokenKind::Column => {
             let name = unquote(word);
@@ -220,6 +232,10 @@ mod tests {
         assert_eq!(class("solid"), Class::Value);
         assert_eq!(class("dashed"), Class::Value);
         assert_eq!(color_spans("bg: red, text: #00f").len(), 2);
+        // A field named like a color is still a field.
+        let fields = highlight("if c.red[0] > 1 then bold");
+        assert_eq!(fields[2..6].iter().map(|(_, c)| *c).collect::<Vec<_>>(), [Class::Operator, Class::Column, Class::Operator, Class::Number]);
+        assert!(hover("if c.\"red\" > 1", 7, &[]).unwrap().starts_with("Field `red`"));
     }
 
     #[test]

@@ -105,6 +105,11 @@ pub enum ExprKind {
     Between { expr: Box<Expr>, low: Box<Expr>, high: Box<Expr>, negated: bool },
     In { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
     Call { name: String, name_span: Span, args: Vec<Arg> },
+    /// `c[0]`: an item of a list, counting from 0 (from the end when
+    /// negative), or `c['name']`, a struct's field.
+    Index { expr: Box<Expr>, index: Box<Expr> },
+    /// `c.name` or `c."field name"`: a struct's field.
+    Field { expr: Box<Expr>, name: String, name_span: Span },
     /// Where a parse error left a hole.
     Error,
 }

@@ -13,20 +13,37 @@ pub enum ValueKind {
     Bool,
     /// Lists like `[1, 2, 3]`, which a sparkline can draw.
     List,
+    /// Structs like `{'a': 1, 'b': x}`, and maps like `{a=1, b=2}`.
+    Struct,
     #[default]
     Unknown,
 }
 
-/// A column the rules can refer to.
+/// A column the rules can refer to. A struct column may list its fields,
+/// and a list column its items, for completion after `.`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub kind: ValueKind,
+    /// A struct's fields, each a column of its own.
+    pub fields: Vec<Column>,
+    /// What a list holds, named `""`.
+    pub item: Option<Box<Column>>,
 }
 
 impl Column {
     pub fn new(name: impl Into<String>, kind: ValueKind) -> Self {
-        Column { name: name.into(), kind }
+        Column { name: name.into(), kind, fields: Vec::new(), item: None }
+    }
+
+    pub fn with_fields(mut self, fields: Vec<Column>) -> Self {
+        self.fields = fields;
+        self
+    }
+
+    pub fn with_item(mut self, item: Column) -> Self {
+        self.item = Some(Box::new(item));
+        self
     }
 }
 
@@ -38,6 +55,8 @@ pub enum Value {
     Number(f64),
     Text(String),
     List(Vec<Value>),
+    /// Fields in order, by name.
+    Struct(Vec<(String, Value)>),
 }
 
 impl Value {
@@ -52,20 +71,10 @@ impl Value {
                 "false" | "f" | "0" | "no" => Value::Bool(false),
                 _ => Value::Text(text.into()),
             },
-            ValueKind::List => {
-                let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-                let items = inner
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(|item| match parse_number(item) {
-                        Some(n) => Value::Number(n),
-                        None if item.eq_ignore_ascii_case("null") => Value::Null,
-                        None => Value::Text(item.trim_matches(['\'', '"']).into()),
-                    })
-                    .collect();
-                Value::List(items)
-            }
+            ValueKind::List | ValueKind::Struct => match nested::parse(text) {
+                Some(value @ (Value::List(_) | Value::Struct(_))) => value,
+                _ => Value::Text(text.into()),
+            },
             ValueKind::Text | ValueKind::Date | ValueKind::Unknown => Value::Text(text.into()),
         }
     }
@@ -80,7 +89,7 @@ impl Value {
             Value::Number(n) => Some(*n),
             Value::Bool(b) => Some(f64::from(u8::from(*b))),
             Value::Text(t) => parse_number(t),
-            Value::Null | Value::List(_) => None,
+            Value::Null | Value::List(_) | Value::Struct(_) => None,
         }
     }
 
@@ -93,7 +102,43 @@ impl Value {
             Value::List(items) => {
                 Cow::Owned(format!("[{}]", items.iter().map(|v| v.text().into_owned()).collect::<Vec<_>>().join(", ")))
             }
+            Value::Struct(fields) => Cow::Owned(format!(
+                "{{{}}}",
+                fields.iter().map(|(name, v)| format!("'{name}': {}", v.text())).collect::<Vec<_>>().join(", ")
+            )),
         }
+    }
+
+    /// Item `index` of a list, counting from 0; a negative index counts back
+    /// from the end. A text index names a struct's field.
+    pub fn index(&self, index: &Value) -> Value {
+        match (self, index) {
+            (Value::List(items), index) => {
+                let Some(n) = index.number().filter(|n| n.fract() == 0.0) else {
+                    return Value::Null;
+                };
+                let position = if n < 0.0 { items.len() as f64 + n } else { n };
+                if position < 0.0 {
+                    return Value::Null;
+                }
+                items.get(position as usize).cloned().unwrap_or_default()
+            }
+            (Value::Struct(_), Value::Text(name)) => self.field(name),
+            _ => Value::Null,
+        }
+    }
+
+    /// A struct's field, by name; case doesn't count when no field matches exactly.
+    pub fn field(&self, name: &str) -> Value {
+        let Value::Struct(fields) = self else {
+            return Value::Null;
+        };
+        fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .or_else(|| fields.iter().find(|(field, _)| field.eq_ignore_ascii_case(name)))
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
     }
 
     /// Whether a condition holding this value is met.
@@ -104,6 +149,7 @@ impl Value {
             Value::Number(n) => *n != 0.0,
             Value::Text(t) => !t.is_empty(),
             Value::List(items) => !items.is_empty(),
+            Value::Struct(fields) => !fields.is_empty(),
         }
     }
 
@@ -134,6 +180,139 @@ impl Value {
             Value::Bool(b) => Some(format!("b{b}")),
             Value::Text(t) => Some(format!("t{t}")),
             Value::List(_) => Some(format!("l{}", self.text())),
+            Value::Struct(_) => Some(format!("s{}", self.text())),
+        }
+    }
+}
+
+/// Reads lists and structs as DuckDB and Polars write them as text:
+/// `[1, 2, NULL]`, `[a, 'b, c', 'it\'s']`, `{'a': 1, 'b': [x]}`, and maps
+/// as `{k=1, j=2}`. Text is quoted only when it has to be, so an unquoted
+/// `NULL` is a null, and words and numbers stand as they are.
+mod nested {
+    use super::Value;
+
+    pub fn parse(text: &str) -> Option<Value> {
+        let mut reader = Reader { chars: text.trim().chars().collect(), pos: 0 };
+        let value = reader.value()?;
+        reader.skip_space();
+        (reader.pos == reader.chars.len()).then_some(value)
+    }
+
+    struct Reader {
+        chars: Vec<char>,
+        pos: usize,
+    }
+
+    impl Reader {
+        fn peek(&self) -> Option<char> {
+            self.chars.get(self.pos).copied()
+        }
+
+        fn skip_space(&mut self) {
+            while self.peek().is_some_and(char::is_whitespace) {
+                self.pos += 1;
+            }
+        }
+
+        fn eat(&mut self, ch: char) -> bool {
+            self.skip_space();
+            let found = self.peek() == Some(ch);
+            if found {
+                self.pos += 1;
+            }
+            found
+        }
+
+        fn value(&mut self) -> Option<Value> {
+            self.skip_space();
+            match self.peek()? {
+                '[' => {
+                    self.pos += 1;
+                    let mut items = Vec::new();
+                    if self.eat(']') {
+                        return Some(Value::List(items));
+                    }
+                    loop {
+                        items.push(self.value()?);
+                        if self.eat(']') {
+                            return Some(Value::List(items));
+                        }
+                        if !self.eat(',') {
+                            return None;
+                        }
+                    }
+                }
+                '{' => {
+                    self.pos += 1;
+                    let mut fields = Vec::new();
+                    if self.eat('}') {
+                        return Some(Value::Struct(fields));
+                    }
+                    loop {
+                        self.skip_space();
+                        let name = if self.peek() == Some('\'') { self.quoted()? } else { self.word(&[':', '='])? };
+                        if !self.eat(':') && !self.eat('=') {
+                            return None;
+                        }
+                        fields.push((name, self.value()?));
+                        if self.eat('}') {
+                            return Some(Value::Struct(fields));
+                        }
+                        if !self.eat(',') {
+                            return None;
+                        }
+                    }
+                }
+                '\'' => self.quoted().map(Value::Text),
+                _ => {
+                    let word = self.word(&[])?;
+                    Some(if word.eq_ignore_ascii_case("null") {
+                        Value::Null
+                    } else if let Some(n) = word.parse::<f64>().ok().filter(|n| !n.is_nan()) {
+                        Value::Number(n)
+                    } else {
+                        Value::Text(word)
+                    })
+                }
+            }
+        }
+
+        /// `'…'`, with `\'` and `''` for a quote and `\\` for a backslash.
+        fn quoted(&mut self) -> Option<String> {
+            self.pos += 1;
+            let mut out = String::new();
+            loop {
+                let ch = self.peek()?;
+                self.pos += 1;
+                match ch {
+                    '\\' => {
+                        out.push(self.peek()?);
+                        self.pos += 1;
+                    }
+                    '\'' if self.peek() == Some('\'') => {
+                        out.push('\'');
+                        self.pos += 1;
+                    }
+                    '\'' => return Some(out),
+                    ch => out.push(ch),
+                }
+            }
+        }
+
+        /// Unquoted text up to the next `,` or closing bracket at this
+        /// level (or one of `stops`), with the spaces around it trimmed.
+        fn word(&mut self, stops: &[char]) -> Option<String> {
+            let start = self.pos;
+            while let Some(ch) = self.peek() {
+                if matches!(ch, ',' | ']' | '}') || stops.contains(&ch) {
+                    break;
+                }
+                self.pos += 1;
+            }
+            let word: String = self.chars[start..self.pos].iter().collect();
+            let word = word.trim();
+            (!word.is_empty()).then(|| word.to_string())
         }
     }
 }
@@ -218,6 +397,35 @@ mod tests {
             Value::from_text(Some("[1, 2, null]"), ValueKind::List),
             Value::List(vec![Value::Number(1.0), Value::Number(2.0), Value::Null])
         );
+    }
+
+    #[test]
+    fn nested_text_reads_as_lists_and_structs() {
+        let n = Value::Number;
+        let t = |t: &str| Value::Text(t.into());
+        let list = |text: &str| Value::from_text(Some(text), ValueKind::List);
+        assert_eq!(
+            list("[a, 'b, c', 'it\\'s', '', 'NULL', NULL, ' sp', '[x]']"),
+            Value::List(vec![t("a"), t("b, c"), t("it's"), t(""), t("NULL"), Value::Null, t(" sp"), t("[x]")])
+        );
+        assert_eq!(list("[[1, 2], []]"), Value::List(vec![Value::List(vec![n(1.0), n(2.0)]), Value::List(vec![])]));
+        let record = Value::from_text(Some("{'item1': 1.5, 'item 2': 'a, b', 'n': NULL, 'xs': [1, 2]}"), ValueKind::Struct);
+        assert_eq!(record.field("item1"), n(1.5));
+        assert_eq!(record.field("ITEM 2"), t("a, b"));
+        assert_eq!(record.field("n"), Value::Null);
+        assert_eq!(record.field("xs").index(&n(-1.0)), n(2.0));
+        assert_eq!(record.field("missing"), Value::Null);
+        assert_eq!(record.index(&t("item1")), n(1.5));
+        let map = Value::from_text(Some("{k=1, j=two}"), ValueKind::Struct);
+        assert_eq!(map.field("j"), t("two"));
+        let items = list("[10, 20, 30]");
+        assert_eq!(items.index(&n(0.0)), n(10.0));
+        assert_eq!(items.index(&n(-3.0)), n(10.0));
+        assert_eq!(items.index(&n(3.0)), Value::Null);
+        assert_eq!(items.index(&n(-4.0)), Value::Null);
+        assert_eq!(items.index(&n(0.5)), Value::Null);
+        // Text that doesn't read as a list stays text.
+        assert_eq!(list("[1, 2"), t("[1, 2"));
     }
 
     #[test]

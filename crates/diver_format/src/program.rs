@@ -105,6 +105,10 @@ pub enum Cx {
     Aggregate(Aggregate, Col),
     /// The function, its column and its constant argument (n or p).
     Relative(Relative, Col, f64),
+    /// A list's item or a struct's field, by the value of the second.
+    Index(Box<Cx>, Box<Cx>),
+    /// A struct's field.
+    Field(Box<Cx>, String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -245,8 +249,8 @@ impl Program {
                     }
                     _ => add(*col, Need::Position),
                 },
-                Cx::Neg(a) | Cx::Not(a) | Cx::IsNull(a, _) => walk(a, add),
-                Cx::Binary(_, a, b) => {
+                Cx::Neg(a) | Cx::Not(a) | Cx::IsNull(a, _) | Cx::Field(a, _) => walk(a, add),
+                Cx::Binary(_, a, b) | Cx::Index(a, b) => {
                     walk(a, add);
                     walk(b, add);
                 }
@@ -455,6 +459,8 @@ impl Env<'_> {
             Cx::Scalar(f, args) => self.scalar(*f, args),
             Cx::Aggregate(aggregate, col) => self.aggregate(*col, *aggregate).map_or(Value::Null, Value::Number),
             Cx::Relative(f, col, arg) => self.relative(*f, *col, *arg),
+            Cx::Index(a, index) => self.eval(a).index(&self.eval(index)),
+            Cx::Field(a, name) => self.eval(a).field(name),
         }
     }
 

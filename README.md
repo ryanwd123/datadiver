@@ -235,7 +235,7 @@ scale(red, white, green, mid=0);
 bar(steelblue, fill=gradient)
 ```
 
-`c` is the cell, `"name"` another column of the row, and `'text'` text. Pick a preset from **Add a preset** to add its rule, press **Ctrl+Space** for what can come next, type `"` for column names and `#` for colors (with a color picker). Problems are underlined and listed under the rules. Changes show in the grid as you type. Whole-column tests such as duplicates, ranks, averages and color scales count the rows the slicers and filters leave, not a search's. A plain file remembers its formats; a view saves them. The language is described in [crates/diver_format/README.md](crates/diver_format/README.md).
+`c` is the cell, `"name"` another column of the row, and `'text'` text. For list and struct columns, `c[0]` is the first item (`c[-1]` the last), `c.field` or `"name"."field name"` a struct's field, and `.` lists the fields. Pick a preset from **Add a preset** to add its rule, press **Ctrl+Space** for what can come next, type `"` for column names and `#` for colors (with a color picker). Problems are underlined and listed under the rules. Changes show in the grid as you type. Whole-column tests such as duplicates, ranks, averages and color scales count the rows the slicers and filters leave, not a search's. A plain file remembers its formats; a view saves them. The language is described in [crates/diver_format/README.md](crates/diver_format/README.md).
 
 Views store the source path and the exploration configuration. They reference the original source file, so sharing a view also requires making that source available.
 

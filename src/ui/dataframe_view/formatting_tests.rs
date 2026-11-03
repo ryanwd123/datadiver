@@ -214,3 +214,50 @@ fn presets_open_from_a_scrolling_list_and_edits_show_in_the_grid() {
     assert!(top(&manager).is_none());
     assert_eq!(viewer.read(|view| view.session.working.as_ref().unwrap().formats.len()), 1);
 }
+
+#[test]
+fn rules_read_list_items_and_struct_fields_on_both_engines() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("nested.parquet");
+    let file = path.display().to_string().replace('\\', "/");
+    duckdb::Connection::open_in_memory()
+        .unwrap()
+        .execute_batch(&format!(
+            "COPY (SELECT * FROM (VALUES \
+             (1, [5, 1, 9], {{'kind': 'gold', 'place name': 'a, b', 'inner': {{'n': 3}}}}), \
+             (2, [0], {{'kind': 'it''s', 'place name': NULL, 'inner': {{'n': 1}}}}), \
+             (3, NULL, NULL)) t(id, scores, info)) TO '{file}'"
+        ))
+        .unwrap();
+    for engine in crate::infrastructure::store::Engine::ALL {
+        let viewer = Viewer::file(&path);
+        viewer.update(|view, cx| view.set_file_engine(engine, cx));
+        viewer.settle();
+        viewer.update(|view, cx| {
+            view.ensure_working_view();
+            view.session
+                .edit_definition(|definition| {
+                    definition.formats = vec![
+                        crate::domain::documents::ConditionalFormat {
+                            rules: "if c[0] > 1 and c[-1] = 9 then bold".into(),
+                            columns: vec!["scores".into()],
+                        },
+                        crate::domain::documents::ConditionalFormat {
+                            rules: "if c.inner.n + \"scores\"[0] = 8 or c.kind = 'it''s' then bold".into(),
+                            columns: vec!["info".into()],
+                        },
+                        crate::domain::documents::ConditionalFormat {
+                            rules: "if \"info\".\"place name\" = 'a, b' then bold".into(),
+                            columns: vec!["id".into()],
+                        },
+                    ]
+                })
+                .unwrap();
+            view.refresh_formatting(cx);
+        });
+        viewer.render();
+        assert_eq!(bold(&viewer, 1), [true, false, false], "{engine:?}");
+        assert_eq!(bold(&viewer, 2), [true, true, false], "{engine:?}");
+        assert_eq!(bold(&viewer, 0), [true, false, false], "{engine:?}");
+    }
+}

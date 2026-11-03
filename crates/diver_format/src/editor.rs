@@ -115,7 +115,7 @@ impl CompletionProvider for FormatLanguage {
     }
 
     fn trigger_characters(&self) -> Vec<char> {
-        vec!['"', '#', '(', ':', ',', '=']
+        vec!['"', '#', '(', ':', ',', '=', '.']
     }
 
     fn extra_words(&self) -> bool {

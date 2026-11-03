@@ -197,3 +197,50 @@ fn needs_list_what_a_host_must_compute() {
     assert!(needs.contains(&(1, Need::Aggregate(Aggregate::Min))));
     assert!(needs.contains(&(2, Need::Aggregate(Aggregate::Mean))));
 }
+
+#[test]
+fn list_items_and_struct_fields_in_conditions() {
+    let columns = vec![
+        Column::new("scores", ValueKind::List),
+        Column::new("info", ValueKind::Struct),
+    ];
+    let rows = [
+        ("[5, 1, 9]", "{'kind': 'gold', 'place name': 'Oslo', 'inner': {'n': 3}, 'xs': [7]}"),
+        ("[0]", "{'kind': silver, 'place name': NULL, 'inner': {'n': 1}, 'xs': []}"),
+        ("NULL", "NULL"),
+    ];
+    let data: Vec<Vec<Value>> = vec![
+        rows.iter().map(|(list, _)| Value::from_text((*list != "NULL").then_some(*list), ValueKind::List)).collect(),
+        rows.iter().map(|(_, info)| Value::from_text((*info != "NULL").then_some(*info), ValueKind::Struct)).collect(),
+    ];
+    let bold = |rules: &str, target: usize| -> Vec<bool> {
+        let checked = check(rules, &columns);
+        assert!(checked.diagnostics.is_empty(), "{rules}: {:?}", checked.diagnostics);
+        let stats = TableStats::new(&data);
+        (0..rows.len())
+            .map(|r| {
+                let values: Vec<Value> = data.iter().map(|c| c[r].clone()).collect();
+                checked.program.style(target, &ValuesRow { values: &values, index: r }, &stats).bold
+            })
+            .collect()
+    };
+    assert_eq!(bold("if c[0] > 1 then bold", 0), [true, false, false]);
+    assert_eq!(bold("if c[-1] = 9 then bold", 0), [true, false, false]);
+    assert_eq!(bold("if c[5] is null then bold", 0), [true, true, true]);
+    assert_eq!(bold("if c.kind = 'gold' then bold", 1), [true, false, false]);
+    assert_eq!(bold("if \"info\".kind = 'silver' then bold", 0), [false, true, false]);
+    assert_eq!(bold("if c.\"place name\" is null then bold", 1), [false, true, true]);
+    assert_eq!(bold("if c.inner.n + \"scores\"[0] > 7 then bold", 1), [true, false, false]);
+    assert_eq!(bold("if c.xs[0] = 7 and c['kind'] = 'gold' then bold", 1), [true, false, false]);
+    assert_eq!(bold("if (c.inner).n = 1 then bold", 1), [false, true, false]);
+}
+
+#[test]
+fn index_and_field_mistakes_are_reported() {
+    let columns = vec![Column::new("info", ValueKind::Struct)];
+    let messages = |rules: &str| -> Vec<String> {
+        check(rules, &columns).diagnostics.into_iter().map(|d| d.message).collect()
+    };
+    assert_eq!(messages("if c[0 > 1 then bold"), ["expected `]`, found `then`"]);
+    assert_eq!(messages("if c. > 1 then bold"), ["expected a field name after `.`, found `>`"]);
+}

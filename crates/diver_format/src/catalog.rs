@@ -316,7 +316,7 @@ pub const KEYWORDS: &[(&str, &str)] = &[
     ("contains", "True when the text contains the other text, ignoring case."),
     ("startswith", "True when the text starts with the other text, ignoring case."),
     ("endswith", "True when the text ends with the other text, ignoring case."),
-    ("c", "The cell being formatted."),
+    ("c", "The cell being formatted. In a list column `c[0]` is the first item and `c[-1]` the last; in a struct column `c.name` is a field."),
 ];
 
 pub fn keyword(name: &str) -> Option<&'static str> {

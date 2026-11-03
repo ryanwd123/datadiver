@@ -164,13 +164,31 @@ pub fn rendered(value: Expr, dtype: &DataType) -> Expr {
     }
 }
 
+/// Text inside a list or struct, quoted as DuckDB quotes it: only when it
+/// is empty, reads as null, has spaces at an end, or holds a character that
+/// would end the item or the list.
+fn nested_text(text: &str) -> String {
+    let quote = text.is_empty()
+        || text.eq_ignore_ascii_case("null")
+        || text.starts_with(char::is_whitespace)
+        || text.ends_with(char::is_whitespace)
+        || text.contains([':', '=', '"', ',', '\'', '(', ')', '[', ']', '{', '}']);
+    if quote { format!("'{}'", text.replace('\'', "\\'")) } else { text.to_owned() }
+}
+
+/// An item of a list or struct as text: text quoted where needed, nulls as `NULL`.
+fn render_item(value: &AnyValue) -> String {
+    match value {
+        AnyValue::String(text) => nested_text(text),
+        AnyValue::StringOwned(text) => nested_text(text),
+        value => render_value(value).unwrap_or_else(|| "NULL".into()),
+    }
+}
+
 /// One value as text; `None` is null. Matches [`rendered`] for every type.
 pub fn render_value(value: &AnyValue) -> Option<String> {
     let nested = |values: Series| {
-        let items = values
-            .iter()
-            .map(|item| render_value(&item).unwrap_or_else(|| "NULL".into()))
-            .collect::<Vec<_>>();
+        let items = values.iter().map(|item| render_item(&item)).collect::<Vec<_>>();
         format!("[{}]", items.join(", "))
     };
     Some(match value {
@@ -190,11 +208,7 @@ pub fn render_value(value: &AnyValue) -> Option<String> {
                 .iter()
                 .zip(values)
                 .map(|(field, value)| {
-                    format!(
-                        "'{}': {}",
-                        field.name(),
-                        render_value(&value).unwrap_or_else(|| "NULL".into())
-                    )
+                    format!("'{}': {}", field.name().replace('\'', "\\'"), render_item(&value))
                 })
                 .collect::<Vec<_>>();
             format!("{{{}}}", entries.join(", "))
@@ -755,5 +769,25 @@ mod tests {
             rendered_frame.column("l").unwrap().get(0).unwrap().str_value(),
             "[1, 2]"
         );
+    }
+
+    /// Text inside lists and structs is quoted as DuckDB quotes it.
+    #[test]
+    fn nested_text_is_quoted_like_duckdb() {
+        let texts = ["a", "b, c", "it's", "", "NULL", " sp", "a b", "a:b", "[x]"];
+        let list = Series::new("".into(), [Series::new("".into(), texts)]);
+        assert_eq!(
+            render_value(&list.get(0).unwrap()).as_deref(),
+            Some("[a, 'b, c', 'it\\'s', '', 'NULL', ' sp', a b, 'a:b', '[x]']")
+        );
+        let duckdb = duckdb::Connection::open_in_memory().unwrap();
+        let expected: String = duckdb
+            .query_row(
+                "SELECT CAST(['a', 'b, c', 'it''s', '', 'NULL', ' sp', 'a b', 'a:b', '[x]'] AS VARCHAR)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(render_value(&list.get(0).unwrap()), Some(expected));
     }
 }

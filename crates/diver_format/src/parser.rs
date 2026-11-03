@@ -29,6 +29,37 @@ pub enum Expect {
     Arg { call: String, index: usize, action: bool },
     /// The value after `name=` in a formatting call.
     NamedValue { call: String, name: String },
+    /// A field name after `.`, below what `path` reaches.
+    Field(FieldPath),
+}
+
+/// Where a `.` is: below the cell or a column, through fields and list items.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldPath {
+    /// The column; `None` is the cell.
+    pub column: Option<String>,
+    /// `Some(name)` for a field, `None` for a list item.
+    pub steps: Vec<Option<String>>,
+}
+
+impl FieldPath {
+    fn of(expr: &Expr) -> Option<FieldPath> {
+        match &expr.kind {
+            ExprKind::Cell => Some(FieldPath { column: None, steps: Vec::new() }),
+            ExprKind::Column(name) => Some(FieldPath { column: Some(name.clone()), steps: Vec::new() }),
+            ExprKind::Field { expr, name, .. } => {
+                let mut path = FieldPath::of(expr)?;
+                path.steps.push(Some(name.clone()));
+                Some(path)
+            }
+            ExprKind::Index { expr, .. } => {
+                let mut path = FieldPath::of(expr)?;
+                path.steps.push(None);
+                Some(path)
+            }
+            _ => None,
+        }
+    }
 }
 
 pub struct Parsed {
@@ -641,7 +672,46 @@ impl Parser<'_> {
         self.primary()
     }
 
+    /// A value and the list indexes and struct fields after it: `c[0].name`.
     fn primary(&mut self) -> Expr {
+        let start = self.here();
+        let mut expr = self.operand();
+        if expr.kind == ExprKind::Error {
+            return expr;
+        }
+        loop {
+            match self.kind() {
+                Some(TokenKind::LBracket) => {
+                    self.bump();
+                    let index = self.expr();
+                    if !self.eat(TokenKind::RBracket) {
+                        self.error(format!("expected `]`, found {}", self.found()));
+                    }
+                    let kind = ExprKind::Index { expr: Box::new(expr), index: Box::new(index) };
+                    expr = Expr { kind, span: start..self.prev_end() };
+                }
+                Some(TokenKind::Dot) => {
+                    self.bump();
+                    let Some(token) = self.peek().cloned().filter(|t| matches!(t.kind, TokenKind::Ident | TokenKind::Column))
+                    else {
+                        if let Some(path) = FieldPath::of(&expr) {
+                            self.note(Expect::Field(path));
+                        }
+                        self.error(format!("expected a field name after `.`, found {}", self.found()));
+                        return Expr { kind: ExprKind::Error, span: start..self.prev_end() };
+                    };
+                    self.bump();
+                    let text = token.text(self.text);
+                    let name = if token.kind == TokenKind::Column { unquote(text) } else { text.to_string() };
+                    let kind = ExprKind::Field { expr: Box::new(expr), name, name_span: token.span.clone() };
+                    expr = Expr { kind, span: start..self.prev_end() };
+                }
+                _ => return expr,
+            }
+        }
+    }
+
+    fn operand(&mut self) -> Expr {
         let start = self.here();
         let error = |end: usize| Expr { kind: ExprKind::Error, span: start..end };
         let Some(token) = self.peek().cloned() else {
@@ -754,6 +824,7 @@ fn symbol(kind: TokenKind) -> Option<&'static str> {
         TokenKind::RParen => ")",
         TokenKind::Comma => ",",
         TokenKind::Semi => ";",
+        TokenKind::RBracket => "]",
         TokenKind::Colon => ":",
         _ => return None,
     })

@@ -14,7 +14,7 @@ use diver_format::stats::Position;
 use diver_format::{Aggregate, CellStyle, Column, Program, Row, Stats, Value, ValueKind};
 
 use crate::domain::documents::ConditionalFormat;
-use crate::domain::formatting::{numeric_type_name, string_type_name, temporal_type_name};
+use crate::domain::formatting::{list_element_type, numeric_type_name, string_type_name, temporal_type_name};
 use crate::infrastructure::store::{CachedRow, ColumnSchema, Store, ViewQuery};
 
 /// The rows statistics are taken over, and the columns of the store holding them.
@@ -44,6 +44,8 @@ pub fn value_kind(sql_type: &str) -> ValueKind {
         ValueKind::Date
     } else if upper.starts_with("BOOL") {
         ValueKind::Bool
+    } else if upper.starts_with("STRUCT") || upper.starts_with("MAP") {
+        ValueKind::Struct
     } else if string_type_name(&upper) {
         ValueKind::Text
     } else {
@@ -53,7 +55,22 @@ pub fn value_kind(sql_type: &str) -> ValueKind {
 
 /// The columns rules can name, from a store's schema.
 pub fn rule_columns(schema: &[ColumnSchema]) -> Vec<Column> {
-    schema.iter().map(|column| Column::new(column.name.clone(), value_kind(&column.sql_type))).collect()
+    schema.iter().map(|column| rule_column(column.name.clone(), &column.sql_type)).collect()
+}
+
+/// A column of `sql_type`, with a list's item and a struct's fields, for
+/// completion after `c[0].` and `"name".`.
+fn rule_column(name: String, sql_type: &str) -> Column {
+    let column = Column::new(name, value_kind(sql_type));
+    if let Some(item) = list_element_type(sql_type) {
+        return column.with_item(rule_column(String::new(), item));
+    }
+    match diver_sql::struct_fields(sql_type) {
+        Some(fields) => column.with_fields(
+            fields.into_iter().map(|field| rule_column(field.name, field.data_type.as_deref().unwrap_or(""))).collect(),
+        ),
+        None => column,
+    }
 }
 
 /// Statistics known so far. Columns are indices into the store's schema.
@@ -406,5 +423,13 @@ mod tests {
         assert_eq!(value_kind("TIMESTAMP"), ValueKind::Date);
         assert_eq!(value_kind("INTEGER[]"), ValueKind::List);
         assert_eq!(value_kind("BOOLEAN"), ValueKind::Bool);
+        assert_eq!(value_kind("STRUCT(a INTEGER)"), ValueKind::Struct);
+        assert_eq!(value_kind("STRUCT(a INTEGER)[]"), ValueKind::List);
+        assert_eq!(value_kind("MAP(VARCHAR, INTEGER)"), ValueKind::Struct);
+        let column = rule_column("info".into(), "STRUCT(kind VARCHAR, \"stops\" STRUCT(city VARCHAR)[])");
+        assert_eq!(column.fields[0], Column::new("kind", ValueKind::Text));
+        let stops = &column.fields[1];
+        assert_eq!((stops.name.as_str(), stops.kind), ("stops", ValueKind::List));
+        assert_eq!(stops.item.as_ref().unwrap().fields[0].name, "city");
     }
 }
