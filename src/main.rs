@@ -141,6 +141,7 @@ fn main() {
                             | "action-menu"
                             | "slicer-search"
                             | "slicer-values"
+                            | "paste-filter"
                             | "search-columns"
                             | "editor:aggregation-completion"
                             | "editor:group-completion"

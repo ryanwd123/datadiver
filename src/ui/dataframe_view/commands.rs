@@ -158,6 +158,10 @@ impl DataFrameView {
             }
             CommandId::FilterToValue => self.filter_active_value(false, cx),
             CommandId::ExcludeValue => self.filter_active_value(true, cx),
+            CommandId::PasteFilter => {
+                let slicer = self.slicer_sidebar.focused_list(self.focus);
+                self.open_paste_filter(slicer, cx);
+            }
             CommandId::DrillDown => self.drill_down(false, cx),
             CommandId::DrillDownNewWindow => self.drill_down(true, cx),
             CommandId::CellDetail => self.toggle_cell_detail(cx),
@@ -466,6 +470,11 @@ impl DataFrameView {
                 return;
             }
         };
+        self.add_value_filters(filters, cx);
+    }
+
+    /// Applies value filters to the view, starting a table draft if needed.
+    pub(crate) fn add_value_filters(&mut self, filters: Vec<ValueFilter>, cx: &mut Cx<Self>) {
         self.ensure_working_view();
         let mut changed = false;
         let mut failed = None;
@@ -541,7 +550,7 @@ impl DataFrameView {
     }
 
     /// What a value filter on the result's `column` compares.
-    fn value_filter_target(&self, column: usize) -> Result<Dimension, String> {
+    pub(crate) fn value_filter_target(&self, column: usize) -> Result<Dimension, String> {
         let name = || Dimension::Column(self.session.result.columns[column].0.clone());
         match self.session.working.as_ref().map(|view| &view.view) {
             Some(ViewKind::Sql(_)) => match self.sql_filters_unavailable() {
@@ -1258,9 +1267,17 @@ impl DataFrameView {
     /// Applies what the slicer cards reported since the last call.
     pub(crate) fn drain_slicer_events(&mut self, cx: &mut Cx<Self>) {
         for event in self.slicer_sidebar.take_events() {
-            if event == SlicerEvent::FocusGrid {
-                self.focus_grid(cx);
-                continue;
+            match &event {
+                SlicerEvent::FocusGrid => {
+                    self.focus_grid(cx);
+                    continue;
+                }
+                SlicerEvent::Paste(column) => {
+                    let column = column.clone();
+                    self.open_paste_filter(Some(column), cx);
+                    continue;
+                }
+                _ => {}
             }
             let changed = self.session.working.as_ref().is_some_and(|definition| match &event {
                 SlicerEvent::Select { column, selected } => definition
@@ -1276,7 +1293,7 @@ impl DataFrameView {
                     .iter()
                     .any(|card| &card.column == column && card.condition.as_ref() != Some(text)),
                 SlicerEvent::Remove(column) => definition.slicers.iter().any(|card| &card.column == column),
-                SlicerEvent::FocusGrid => false,
+                SlicerEvent::FocusGrid | SlicerEvent::Paste(_) => false,
             });
             if !changed {
                 continue;
@@ -1298,7 +1315,7 @@ impl DataFrameView {
                         card.condition = Some(text.clone());
                     }
                 }
-                SlicerEvent::FocusGrid => {}
+                SlicerEvent::FocusGrid | SlicerEvent::Paste(_) => {}
             });
             self.autosave_table_preferences(cx);
             self.schedule_search(self.session.search_text.clone(), cx);

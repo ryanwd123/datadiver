@@ -244,6 +244,7 @@ pub enum ActionId {
     SpaceReload,
     FilterToValue,
     ExcludeValue,
+    PasteFilter,
     DrillDown,
     DrillDownNewWindow,
     CellDetail,
@@ -1167,6 +1168,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::Grid,
         command: Some(CommandId::ExcludeValue),
         default_bindings: &["-"],
+    },
+    ActionSpec {
+        id: ActionId::PasteFilter,
+        category: ActionCategory::DataExploration,
+        name: "Filter by pasted values",
+        context: KeyContext::Application,
+        command: Some(CommandId::PasteFilter),
+        default_bindings: &["ctrl-shift-v"],
     },
     ActionSpec {
         id: ActionId::DrillDown,

@@ -10,6 +10,7 @@ pub mod formatting;
 pub mod keystroke;
 pub mod frame;
 pub mod layout;
+pub mod pasted;
 pub mod pivot;
 pub mod query;
 pub mod schema;

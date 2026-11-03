@@ -20,6 +20,8 @@ pub enum SlicerEvent {
     Remove(String),
     /// Escape in a value list: focus goes back to the grid.
     FocusGrid,
+    /// Ctrl+V in a value list: filter the card by the clipboard's values.
+    Paste(String),
     /// A condition card's text was committed.
     Condition {
         column: String,
@@ -396,6 +398,30 @@ impl SlicerSidebar {
         });
     }
 
+    /// How many of `pasted` a value card lists, or `None` without the card.
+    pub fn pasted_matches(&self, column: &str, pasted: &[String]) -> Option<usize> {
+        let card = self.cards.iter().find(|card| card.column == column && card.condition.is_none())?;
+        Some(slicers::pasted_selection(card, pasted, false).1)
+    }
+
+    /// Selects a value card's values named in `pasted`, or with `exclude`
+    /// every other value. Returns how many pasted values the card has.
+    pub fn select_pasted(&mut self, column: &str, pasted: &[String], exclude: bool) -> Option<usize> {
+        let card = self
+            .cards
+            .iter_mut()
+            .find(|card| card.column == column && card.condition.is_none())?;
+        let (selected, matched) = slicers::pasted_selection(card, pasted, exclude);
+        if matched > 0 {
+            card.selected = selected;
+            self.events.push(SlicerEvent::Select {
+                column: column.to_owned(),
+                selected: card.selected.clone(),
+            });
+        }
+        Some(matched)
+    }
+
     fn press(&mut self, column: &str, index: usize, additive: bool) {
         let Some(card) = self.cards.iter_mut().find(|card| card.column == column) else {
             return;
@@ -585,6 +611,10 @@ impl SlicerSidebar {
             }
             "a" if m.control && !m.alt && !m.shift => {
                 self.select_visible(column);
+                true
+            }
+            "v" if m.control && !m.alt && !m.shift => {
+                self.events.push(SlicerEvent::Paste(column.to_owned()));
                 true
             }
             "delete" | "backspace" if plain && !m.shift => {

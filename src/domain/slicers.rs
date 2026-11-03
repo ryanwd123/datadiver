@@ -199,6 +199,31 @@ pub fn select_visible(card: &SlicerCard, visible: &[usize]) -> Vec<ScalarKey> {
         .collect()
 }
 
+/// The selection that keeps the card's values named in `pasted`, or with
+/// `exclude` every other value, and how many pasted values the card has.
+/// A value matches its label exactly or, failing that, ignoring case.
+pub fn pasted_selection(card: &SlicerCard, pasted: &[String], exclude: bool) -> (Vec<ScalarKey>, usize) {
+    let exact: std::collections::HashSet<&str> = pasted.iter().map(String::as_str).collect();
+    let folded: std::collections::HashSet<String> = pasted.iter().map(|value| value.to_lowercase()).collect();
+    let mut found = std::collections::HashSet::new();
+    let mut selected = Vec::new();
+    for value in &card.values {
+        let label = value.label.to_lowercase();
+        let named = exact.contains(value.label.as_str()) || folded.contains(&label);
+        if named {
+            found.insert(label);
+        }
+        if named != exclude {
+            selected.push(value.key.clone());
+        }
+    }
+    let matched = pasted
+        .iter()
+        .filter(|value| found.contains(&value.to_lowercase()))
+        .count();
+    (selected, matched)
+}
+
 pub fn click_selection(card: &SlicerCard, index: usize, toggle: bool) -> Vec<ScalarKey> {
     let Some(value) = card.values.get(index) else {
         return card.selected.clone();
@@ -329,6 +354,32 @@ mod tests {
             drag_selection(&card, &all, 0, 1, true, &initial),
             ["4", "0", "1"].map(|value| ScalarKey::Signed(value.into()))
         );
+    }
+
+    #[test]
+    fn pasted_values_select_matching_labels_or_every_other_value() {
+        let card = SlicerCard {
+            sql: false,
+            condition: None,
+            bounds: None,
+            column: "region".into(),
+            values: ["East", "North", "South", "West"]
+                .into_iter()
+                .map(|label| SlicerValue {
+                    key: ScalarKey::String(label.into()),
+                    label: label.into(),
+                    available: label != "West",
+                })
+                .collect(),
+            selected: vec![],
+            error: None,
+        };
+        let pasted: Vec<String> = ["north", "West", "Mars"].map(String::from).into();
+        let keys = |labels: &[&str]| labels.iter().map(|label| ScalarKey::String((*label).into())).collect::<Vec<_>>();
+        // Matching ignores case, and selects values with no rows too.
+        assert_eq!(pasted_selection(&card, &pasted, false), (keys(&["North", "West"]), 2));
+        assert_eq!(pasted_selection(&card, &pasted, true), (keys(&["East", "South"]), 2));
+        assert_eq!(pasted_selection(&card, &["Mars".into()], false), (Vec::new(), 0));
     }
 
     #[test]

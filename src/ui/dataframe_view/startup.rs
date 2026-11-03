@@ -392,6 +392,13 @@ impl DataFrameView {
                 }
                 self.focus = focus;
             }
+            "paste-filter" => {
+                self.open_paste_filter(None, cx);
+                // Sample values rather than whatever the clipboard holds.
+                if let Some(super::dialogs::Dialog::PasteFilter(dialog)) = &mut self.dialog {
+                    dialog.values = ["North", "East", "South West", "Central", "Islands"].map(String::from).into();
+                }
+            }
             "theme" | "theme-editor" => self.open_theme_editor(cx),
             "space" => self.dispatch_command(CommandId::Space, cx),
             "cache-drop" => self.set_cache_drop_open(true, cx),

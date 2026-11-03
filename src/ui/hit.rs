@@ -102,6 +102,8 @@ pub enum Button {
     // Cell detail.
     CellDetailCopy,
     CellDetailClose,
+    /// Keep (`false`) or exclude (`true`) pasted values.
+    PasteFilterMode(bool),
     // Group, pivot, and aggregation editors.
     PanelCustom,
     PanelRevert,

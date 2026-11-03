@@ -102,6 +102,7 @@ pub enum Dialog {
     Theme(ThemeEditor),
     Actions(ActionsEditor),
     AiSettings(AiSettingsEditor),
+    PasteFilter(super::paste_filter::PasteFilterDialog),
 }
 
 impl Dialog {
@@ -119,6 +120,9 @@ impl Dialog {
             Dialog::Theme(_) => "Theme Editor".into(),
             Dialog::Actions(_) => "View actions".into(),
             Dialog::AiSettings(_) => "AI providers".into(),
+            Dialog::PasteFilter(dialog) => {
+                if dialog.exclude { "Exclude pasted values".into() } else { "Filter to pasted values".into() }
+            }
         }
     }
 
@@ -136,6 +140,10 @@ impl Dialog {
                     Button::DialogOk,
                     if confirm.danger { ButtonStyle::Danger } else { ButtonStyle::Primary },
                 ),
+                ("Cancel", Button::DialogCancel, ButtonStyle::Outline),
+            ],
+            Dialog::PasteFilter(_) => vec![
+                ("Apply", Button::DialogOk, ButtonStyle::Primary),
                 ("Cancel", Button::DialogCancel, ButtonStyle::Outline),
             ],
             Dialog::Theme(_) => vec![
@@ -1223,6 +1231,7 @@ impl DataFrameView {
                 }
                 outcome.handled
             }
+            Some(Dialog::PasteFilter(_)) => return self.paste_filter_key(event, cx),
             Some(Dialog::Confirm(confirm)) => {
                 if event.is("enter") {
                     let action = confirm.action.clone();
@@ -1369,7 +1378,7 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.type_text(typed, focus),
             Some(Dialog::Actions(editor)) => editor.type_text(typed, focus),
             Some(Dialog::AiSettings(editor)) => editor.type_text(typed, focus),
-            Some(Dialog::Information(_) | Dialog::Help(_) | Dialog::Confirm(_)) => false,
+            Some(Dialog::Information(_) | Dialog::Help(_) | Dialog::Confirm(_) | Dialog::PasteFilter(_)) => false,
         };
         cx.notify();
         used
@@ -1400,9 +1409,15 @@ impl DataFrameView {
                             self.close_dialog(cx);
                         }
                     }
+                    Some(Dialog::PasteFilter(_)) => self.apply_paste_filter(cx),
                     _ => {}
                 }
                 return;
+            }
+            Hit::Button(Button::PasteFilterMode(exclude)) => {
+                if let Some(Dialog::PasteFilter(dialog)) = &mut self.dialog {
+                    dialog.exclude = *exclude;
+                }
             }
             Hit::Button(Button::ThemeReset) => {
                 if let Some(Dialog::Theme(form)) = &mut self.dialog {
@@ -1532,7 +1547,7 @@ impl DataFrameView {
                     self.handle_ai_settings_events(test, cx);
                     return;
                 }
-                Some(Dialog::Help(_) | Dialog::Confirm(_)) | None => {}
+                Some(Dialog::Help(_) | Dialog::Confirm(_) | Dialog::PasteFilter(_)) | None => {}
             },
         }
         let before = self.focus;
@@ -1558,7 +1573,7 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.mouse_drag(pos),
             Some(Dialog::Actions(editor)) => editor.mouse_drag(pos),
             Some(Dialog::AiSettings(editor)) => editor.mouse_drag(pos),
-            Some(Dialog::Confirm(_)) | None => {}
+            Some(Dialog::Confirm(_) | Dialog::PasteFilter(_)) | None => {}
         }
     }
 
@@ -1575,7 +1590,7 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.mouse_up(),
             Some(Dialog::Actions(editor)) => editor.mouse_up(),
             Some(Dialog::AiSettings(editor)) => editor.mouse_up(),
-            Some(Dialog::Confirm(_)) | None => {}
+            Some(Dialog::Confirm(_) | Dialog::PasteFilter(_)) | None => {}
         }
     }
 
@@ -1620,6 +1635,7 @@ impl DataFrameView {
             Dialog::Actions(_) => (720.0, 48.0),
             Dialog::AiSettings(_) => (760.0, 48.0),
             Dialog::SlicerPicker(_) | Dialog::Save { .. } | Dialog::Confirm(_) => (520.0, 96.0),
+            Dialog::PasteFilter(_) => (640.0, 96.0),
         };
         let width = width.min(window_width - 16.0).max(200.0);
         let content_width = width - 2.0 * padding;
@@ -1650,6 +1666,7 @@ impl DataFrameView {
             Dialog::Theme(form) => form.height(&fonts).min((window_height - 210.0).clamp(100.0, 650.0)),
             Dialog::Actions(editor) => editor.height(&fonts, content_width),
             Dialog::AiSettings(editor) => editor.height(&fonts, content_width),
+            Dialog::PasteFilter(dialog) => dialog.height(&fonts),
         }
         .min(max_content);
         let height = title_height + content_height + footer_height + 2.0 * padding;
@@ -1765,6 +1782,13 @@ impl DataFrameView {
                 canvas.push_clip(content);
                 editor.paint(canvas, content, &fonts, focus);
                 canvas.pop_clip();
+            }
+            Dialog::PasteFilter(dialog) => {
+                let matches = match &dialog.target {
+                    super::paste_filter::PasteTarget::Slicer(column) => self.slicer_sidebar.pasted_matches(column, &dialog.values),
+                    super::paste_filter::PasteTarget::Column { .. } => None,
+                };
+                dialog.paint(canvas, content, &fonts, matches);
             }
         }
         if !footer.is_empty() {

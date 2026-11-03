@@ -59,6 +59,7 @@ mod focus_tests;
 mod formatting_tests;
 mod input;
 mod navigation;
+mod paste_filter;
 #[cfg(test)]
 mod navigation_tests;
 mod performance;
@@ -291,6 +292,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::AddSlicer,
     CommandId::FilterToValue,
     CommandId::ExcludeValue,
+    CommandId::PasteFilter,
     CommandId::DrillDown,
     CommandId::DrillDownNewWindow,
     CommandId::CellDetail,

@@ -120,6 +120,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | G / A / P / O | Group By / Aggregations / Pivot By / Order By |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
+| Ctrl+Shift+V | Keep or exclude rows by values on the clipboard |
 | Enter | Drill down from a query cell to its source rows |
 | Shift+Enter | Drill down in a new window |
 | U / R | Back / forward |
@@ -208,8 +209,11 @@ Slicers work from the keyboard. **Ctrl+L** moves through the cards (**Tab** and 
 | Enter | Select only the value under the cursor |
 | Shift+Up / Shift+Down | Select a range from where the cursor started |
 | Ctrl+A | Select every listed value |
+| Ctrl+V or Ctrl+Shift+V | Select the values on the clipboard |
 | Delete | Clear the card |
 | / or any character | Open the card's filter and type into it (Down returns to the values) |
+
+To filter by a list from somewhere else, such as a column copied from Excel, press **Ctrl+Shift+V** on a cell of the column to filter. An overlay names the column and counts the values on the clipboard, one per line or cell. Press **Ctrl+V** (or **Enter**) to keep the rows with those values, or first **-** (or **Tab**) to exclude them instead. The values must match the cells as the grid shows them. In a focused value card, **Ctrl+V** opens the same overlay for the card: it selects the values whose labels match, ignoring case, and says how many pasted values the card does not have.
 
 Slicers, condition cards, the SQL filter, and `=` / `-` filters all narrow source rows, before grouping in a query. Search narrows the displayed rows. In a query, search and sort apply to the result.
 

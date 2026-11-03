@@ -63,6 +63,7 @@ pub enum CommandId {
     ShowAllColumns,
     FilterToValue,
     ExcludeValue,
+    PasteFilter,
     DrillDown,
     DrillDownNewWindow,
     CellDetail,
@@ -511,6 +512,12 @@ pub const COMMANDS: &[Command] = &[
         key: "exclude_value",
         label: "Exclude selected values",
         default_binding: Some("-"),
+    },
+    Command {
+        id: CommandId::PasteFilter,
+        key: "paste_filter",
+        label: "Filter by pasted values",
+        default_binding: Some("ctrl-shift-v"),
     },
     Command {
         id: CommandId::DrillDown,

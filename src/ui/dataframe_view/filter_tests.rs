@@ -890,3 +890,92 @@ fn value_keys_filter_each_selected_column_and_exclusions_join() {
     assert_eq!(filter_labels(&viewer), ["region ≠ East", "region is not null"]);
     assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into()), Some("North".into())]);
 }
+
+fn paste_filter_open(viewer: &Viewer) -> bool {
+    viewer.read(|view| matches!(view.dialog, Some(super::dialogs::Dialog::PasteFilter(_))))
+}
+
+#[test]
+fn pasted_values_filter_the_active_column_from_an_overlay() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("data.csv");
+    std::fs::write(&path, "region,n\nNorth,10\nSouth,20\nEast,30\nWest,40\nNorth,50\n").unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path));
+    // Cells copied from Excel: one per line, with a blank line and a repeat.
+    fake::write_clipboard("North\r\nEast\r\n\r\nNorth\r\n");
+    press_on_cell(&viewer, 0, 0, "ctrl-shift-v");
+    assert!(paste_filter_open(&viewer));
+    viewer.read(|view| match &view.dialog {
+        Some(super::dialogs::Dialog::PasteFilter(dialog)) => assert_eq!(dialog.values, ["North", "East"]),
+        _ => unreachable!(),
+    });
+    // The overlay waits for Ctrl+V, which reads the clipboard again.
+    fake::write_clipboard("North\r\nSouth\r\n");
+    viewer.press("ctrl-v");
+    viewer.run_until_parked();
+    assert!(!paste_filter_open(&viewer));
+    assert!(viewer.grid_focused());
+    assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into()), Some("North".into())]);
+    assert_eq!(
+        viewer.read(|view| view.session.value_filters()[0].label()),
+        "region in (North, South)"
+    );
+    // `-` switches to excluding, and Enter applies the values shown.
+    command(&viewer, CommandId::ClearFilters);
+    press_on_cell(&viewer, 0, 0, "ctrl-shift-v");
+    viewer.press("-");
+    viewer.press("enter");
+    viewer.run_until_parked();
+    assert_eq!(column_values(&viewer), [Some("East".into()), Some("West".into())]);
+    // Escape leaves without filtering.
+    press_on_cell(&viewer, 0, 0, "ctrl-shift-v");
+    viewer.press("escape");
+    assert!(!paste_filter_open(&viewer));
+    assert_eq!(viewer.read(|view| view.session.value_filters().len()), 1);
+}
+
+#[test]
+fn pasted_values_select_slicer_values_and_report_the_missing_ones() {
+    use crate::domain::documents::ScalarKey;
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("data.csv");
+    std::fs::write(&path, "region,n\nNorth,10\nSouth,20\nEast,30\nWest,40\n").unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path));
+    viewer.update(|view, cx| view.add_slicer("region".into(), cx));
+    viewer.run_until_parked();
+    let selected = || {
+        viewer.read(|view| view.session.working.as_ref().unwrap().slicers[0].selected.clone())
+    };
+    // Ctrl+V in a focused value card opens the overlay for that card.
+    viewer.focus_grid();
+    viewer.render();
+    viewer.press("ctrl-l");
+    fake::write_clipboard("north\r\nwest\r\nMars\r\n");
+    viewer.render();
+    viewer.press("ctrl-v");
+    assert!(paste_filter_open(&viewer));
+    viewer.press("enter");
+    viewer.run_until_parked();
+    assert_eq!(selected(), [ScalarKey::String("North".into()), ScalarKey::String("West".into())]);
+    assert_eq!(column_values(&viewer), [Some("North".into()), Some("West".into())]);
+    assert_eq!(status(&viewer).as_deref(), Some("2 of 3 pasted values found in region · 1 not found"));
+    assert_eq!(viewer.read(|view| view.slicer_sidebar.focused_list(view.focus)).as_deref(), Some("region"));
+    // Ctrl+Shift+V does the same from the card, and can exclude.
+    viewer.press("ctrl-shift-v");
+    viewer.press("-");
+    viewer.press("ctrl-v");
+    viewer.run_until_parked();
+    assert_eq!(selected(), [ScalarKey::String("East".into()), ScalarKey::String("South".into())]);
+    // No matching values leaves the selection alone.
+    fake::write_clipboard("Mars\r\n");
+    viewer.press("ctrl-v");
+    viewer.press("ctrl-v");
+    viewer.run_until_parked();
+    assert_eq!(selected().len(), 2);
+    assert_eq!(
+        viewer.read(|view| view.error.clone()).as_deref(),
+        Some("region has none of the 1 pasted values")
+    );
+}
