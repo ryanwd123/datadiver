@@ -98,9 +98,16 @@ fn object(stmt: &SyntaxNode) -> Option<DocumentObject> {
                     .children()
                     .filter(|c| c.kind() == SyntaxKind::COLUMN_DEF)
                     .filter_map(|c| {
-                        ast::child_of_kind(&c, SyntaxKind::NAME).and_then(|n| ast::first_name(&n))
+                        let name = ast::child_of_kind(&c, SyntaxKind::NAME)
+                            .and_then(|n| ast::first_name(&n))?;
+                        Some(match ast::child_of_kind(&c, SyntaxKind::TYPE_NAME) {
+                            Some(t) => ColumnSource::Typed {
+                                name,
+                                data_type: scope::ColumnType::Text(scope::type_text(&t)),
+                            },
+                            None => ColumnSource::Named(name),
+                        })
                     })
-                    .map(ColumnSource::Named)
                     .collect(),
             ),
             None => query

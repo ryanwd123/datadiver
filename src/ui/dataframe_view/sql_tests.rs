@@ -839,6 +839,40 @@ fn sql_alias_of_a_file_completes_its_columns_once_described() {
 }
 
 #[test]
+fn sql_struct_fields_complete_after_a_dot() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let file = data.path().join("cars.parquet").display().to_string().replace('\\', "/");
+    duckdb::Connection::open_in_memory()
+        .unwrap()
+        .execute_batch(&format!(
+            "COPY (SELECT 4 AS cylinders, 30.0 AS mpg, {{'maker': 'A', 'year': 1970}} AS info) TO '{file}'"
+        ))
+        .unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    // A struct built in a CTE: its fields come from the text.
+    let text = format!(
+        "with stats as (\n    from '{file}' a\n    SELECT a.cylinders, {{'item1': avg(a.mpg), 'item2': sum(a.mpg)}} as st, a.info\n    GROUP BY ALL\n)\nselect s.st\nfrom stats s;"
+    );
+    let at = text.find("s.st\n").unwrap() + 4;
+    place(&viewer, &text, at..at);
+    viewer.input(".");
+    viewer.advance_clock(Duration::from_millis(300));
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(completion_labels(&viewer).unwrap(), ["item1", "item2"]);
+    press(&viewer, "escape");
+    // A struct column of the file, passed on by the CTE: from its described type.
+    viewer.input(", s.info.");
+    viewer.advance_clock(Duration::from_millis(300));
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(completion_labels(&viewer).unwrap(), ["maker", "year"]);
+}
+
+#[test]
 fn sql_path_completion_lists_search_roots_and_tab_accepts_into_folders() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

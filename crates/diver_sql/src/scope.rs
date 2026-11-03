@@ -4,6 +4,8 @@
 //! The walk goes outward from the position through the enclosing query
 //! blocks and statements; inner blocks shadow outer ones.
 
+use std::sync::Arc;
+
 use rowan::TextSize;
 
 use crate::ast::{self, AstNode, Cte, FromItem, Query, SelectCore, SelectItem, StarExpr};
@@ -67,6 +69,8 @@ pub enum Columns {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColumnSource {
     Named(Name),
+    /// A column whose type the text tells, or lets the catalog tell.
+    Typed { name: Name, data_type: ColumnType },
     /// `*` over these relations, expanded through the catalog, without
     /// the excluded columns and the first `skip` (which column aliases renamed).
     Star {
@@ -77,6 +81,20 @@ pub enum ColumnSource {
     },
     /// An expression without an alias; DuckDB names it after the expression text.
     Unnamed(String),
+}
+
+/// Where a column's type comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnType {
+    /// A DuckDB type as written, as `INTEGER` or `STRUCT(a INTEGER, b)`. A
+    /// struct literal's fields have no type unless they are themselves typed.
+    Text(String),
+    /// The type of the column `path` names (`t.col`, `col`, `t.col.field`)
+    /// among `relations`, the relations of the query block it was written in.
+    Of {
+        relations: Arc<Vec<VisibleRelation>>,
+        path: Vec<Name>,
+    },
 }
 
 impl VisibleRelation {
@@ -161,16 +179,20 @@ impl Scope {
     /// The relations `qualifier` refers to, innermost first; only the
     /// innermost depth that has a match counts, so inner aliases shadow outer ones.
     pub fn resolve(&self, qualifier: &[Name]) -> Vec<&VisibleRelation> {
-        let matches: Vec<&VisibleRelation> = self
-            .relations
-            .iter()
-            .filter(|r| r.matches_qualifier(qualifier))
-            .collect();
-        let Some(depth) = matches.iter().map(|r| r.depth).min() else {
-            return matches;
-        };
-        matches.into_iter().filter(|r| r.depth == depth).collect()
+        resolve_in(&self.relations, qualifier)
     }
+}
+
+/// The relations of `relations` that `qualifier` refers to, as [`Scope::resolve`].
+pub fn resolve_in<'a>(relations: &'a [VisibleRelation], qualifier: &[Name]) -> Vec<&'a VisibleRelation> {
+    let matches: Vec<&VisibleRelation> = relations
+        .iter()
+        .filter(|r| r.matches_qualifier(qualifier))
+        .collect();
+    let Some(depth) = matches.iter().map(|r| r.depth).min() else {
+        return matches;
+    };
+    matches.into_iter().filter(|r| r.depth == depth).collect()
 }
 
 /// A visible CTE. Lists of them go innermost first, so the CTEs a body can
@@ -605,8 +627,9 @@ impl Walker {
                     return Columns::Known(vec![star_of(relations)]);
                 }
                 let mut out = Vec::new();
+                let shared = Arc::new(relations);
                 for item in core.select_items() {
-                    out.push(item_column(&item, &relations));
+                    out.push(item_column(&item, &shared));
                 }
                 Columns::Known(out)
             }
@@ -642,9 +665,12 @@ fn star_of(relations: Vec<VisibleRelation>) -> ColumnSource {
 }
 
 /// The column a select item produces.
-fn item_column(item: &SelectItem, relations: &[VisibleRelation]) -> ColumnSource {
+fn item_column(item: &SelectItem, relations: &Arc<Vec<VisibleRelation>>) -> ColumnSource {
     if let Some(name) = item.output_name() {
-        return ColumnSource::Named(name);
+        return match item.expr().and_then(|expr| expr_type(&expr, relations)) {
+            Some(data_type) => ColumnSource::Typed { name, data_type },
+            None => ColumnSource::Named(name),
+        };
     }
     let Some(expr) = item.expr() else {
         return ColumnSource::Unnamed(String::new());
@@ -682,6 +708,88 @@ fn star_column(star: &StarExpr, relations: &[VisibleRelation]) -> ColumnSource {
         rename: star.rename(),
         skip: 0,
     }
+}
+
+/// The type of an expression, where the text tells it: a cast, a struct
+/// literal or `struct_pack`, or a column reference, whose type the catalog
+/// may know.
+fn expr_type(expr: &SyntaxNode, relations: &Arc<Vec<VisibleRelation>>) -> Option<ColumnType> {
+    if expr.kind() == SyntaxKind::COLUMN_REF {
+        let path = expr.children().find_map(ast::Path::cast)?.parts();
+        return Some(ColumnType::Of {
+            relations: relations.clone(),
+            path,
+        });
+    }
+    text_type(expr).map(ColumnType::Text)
+}
+
+/// A type name's text with its spacing collapsed: `STRUCT(a INT)`.
+pub(crate) fn type_text(node: &SyntaxNode) -> String {
+    node.text().to_string().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The type an expression has on its own, as DuckDB writes types.
+fn text_type(expr: &SyntaxNode) -> Option<String> {
+    match expr.kind() {
+        SyntaxKind::CAST_EXPR => ast::child_of_kind(expr, SyntaxKind::TYPE_NAME).map(|t| type_text(&t)),
+        SyntaxKind::PAREN_EXPR => expr.first_child().and_then(|inner| text_type(&inner)),
+        SyntaxKind::STRUCT_EXPR => {
+            let fields = expr
+                .children()
+                .filter(|c| c.kind() == SyntaxKind::STRUCT_FIELD)
+                .filter_map(|field| {
+                    let mut parts = field.children();
+                    let key = parts.next()?;
+                    let name = match key.kind() {
+                        SyntaxKind::LITERAL => {
+                            let text = key.text().to_string();
+                            let inner = text.strip_prefix('\'')?.strip_suffix('\'')?;
+                            inner.replace("''", "'")
+                        }
+                        SyntaxKind::COLUMN_REF => key
+                            .children()
+                            .find_map(ast::Path::cast)?
+                            .parts()
+                            .pop()?
+                            .text,
+                        _ => return None,
+                    };
+                    Some((name, parts.next().and_then(|value| text_type(&value))))
+                });
+            Some(struct_type(fields))
+        }
+        SyntaxKind::CALL_EXPR => {
+            let callee = expr.children().find_map(ast::Path::cast)?.parts();
+            if !callee.last()?.matches("struct_pack") {
+                return None;
+            }
+            let args = ast::child_of_kind(expr, SyntaxKind::ARG_LIST)?;
+            let fields = args
+                .children()
+                .filter(|c| c.kind() == SyntaxKind::NAMED_ARG)
+                .filter_map(|arg| {
+                    let name = ast::first_name(&ast::child_of_kind(&arg, SyntaxKind::NAME)?)?;
+                    let value = arg.children().filter(|c| c.kind() != SyntaxKind::NAME).last();
+                    Some((name.text, value.and_then(|value| text_type(&value))))
+                });
+            Some(struct_type(fields))
+        }
+        _ => None,
+    }
+}
+
+fn struct_type(fields: impl Iterator<Item = (String, Option<String>)>) -> String {
+    let fields: Vec<String> = fields
+        .map(|(name, data_type)| {
+            let name = crate::items::quote_if_needed(&name);
+            match data_type {
+                Some(data_type) => format!("{name} {data_type}"),
+                None => name,
+            }
+        })
+        .collect();
+    format!("STRUCT({})", fields.join(", "))
 }
 
 /// Applies `t(a, b)` column aliases: they rename the first columns.

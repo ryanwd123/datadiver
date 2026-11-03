@@ -1099,3 +1099,71 @@ SELECT nextval(|", "s.ser").as_deref(),
         Some("'s.ser'")
     );
 }
+
+/// Labels and details after `.` on a struct, against a table with struct columns.
+fn struct_fields_at(sql: &str) -> Vec<(String, Option<String>)> {
+    let catalog = diver_sql::MockCatalog::new()
+        .table("cars", &["mpg DOUBLE", "cylinders INTEGER"])
+        .table("events", &["id INTEGER", "info STRUCT(kind VARCHAR, \"place name\" STRUCT(city VARCHAR, zip INTEGER))"]);
+    let (text, offset) = common::split_cursor(sql);
+    diver_sql::complete_with(&text, offset, &catalog)
+        .into_iter()
+        .filter(|i| i.kind == diver_sql::ItemKind::Column)
+        .map(|i| (i.label, i.detail))
+        .collect()
+}
+
+fn field(name: &str, detail: Option<&str>) -> (String, Option<String>) {
+    (name.to_string(), detail.map(str::to_string))
+}
+
+#[test]
+fn struct_literal_fields_complete_through_a_cte() {
+    let sql = "with stats as (
+        from cars a
+        SELECT
+            a.cylinders,
+            {'item1':avg(a.mpg), 'item2':sum(a.mpg)} as st
+        GROUP BY ALL
+)
+select
+    s.st.|
+from stats s;";
+    assert_eq!(struct_fields_at(sql), [field("item1", None), field("item2", None)]);
+    // unqualified, and through struct_pack with a nested literal
+    let sql = "with stats as (select struct_pack(k := 1, inner := {'x': 1::BIGINT}) p from cars)
+select p.inner.| from stats";
+    assert_eq!(struct_fields_at(sql), [field("x", Some("BIGINT"))]);
+    // the CTE's other columns keep the catalog's types
+    let sql = "with stats as (select a.cylinders, {'n': 1} st from cars a) select s.| from stats s";
+    assert_eq!(
+        struct_fields_at(sql),
+        [field("cylinders", Some("INTEGER")), field("st", Some("STRUCT(n)"))]
+    );
+}
+
+#[test]
+fn catalog_struct_columns_complete_their_fields() {
+    let fields = struct_fields_at("select e.info.| from events e");
+    assert_eq!(
+        fields,
+        [
+            field("kind", Some("VARCHAR")),
+            field("\"place name\"", Some("STRUCT(city VARCHAR, zip INTEGER)")),
+        ]
+    );
+    assert_eq!(
+        struct_fields_at("select info.\"place name\".| from events"),
+        [field("city", Some("VARCHAR")), field("zip", Some("INTEGER"))]
+    );
+    // through a CTE that passes the column on, and a star
+    assert_eq!(
+        struct_fields_at("with x as (select e.info from events e), y as (from x) select info.| from y")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["kind", "\"place name\""]
+    );
+    // not a struct: nothing
+    assert_eq!(struct_fields_at("select e.id.| from events e"), []);
+}

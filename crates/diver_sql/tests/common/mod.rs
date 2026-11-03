@@ -128,6 +128,7 @@ fn render_relation(r: &VisibleRelation) -> String {
                 .iter()
                 .map(|c| match c {
                     diver_sql::ColumnSource::Named(n) => n.text.clone(),
+                    diver_sql::ColumnSource::Typed { name, .. } => name.text.clone(),
                     diver_sql::ColumnSource::Star { .. } => "*".into(),
                     diver_sql::ColumnSource::Unnamed(t) => format!("<{t}>"),
                 })

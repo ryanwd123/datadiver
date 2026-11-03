@@ -47,8 +47,8 @@ pub use format::format_sql;
 pub use highlight::{HighlightClass, highlight, highlight_with};
 pub use hover::{Hover, hover};
 pub use items::{
-    CompletionItem, ItemKind, Quoting, items, items_with, needs_quotes, quote, quote_if_needed,
-    relation_columns,
+    CompletionItem, ItemKind, Quoting, column_type, items, items_with, needs_quotes, quote,
+    quote_if_needed, relation_columns, struct_fields,
 };
 pub use lexer::{Token, tokenize};
 pub use navigate::{OutlineItem, OutlineKind, definition, is_renamable, outline, references};
@@ -60,7 +60,7 @@ pub use query::{
 pub use refactor::{
     collapse_star, expand_star, group_by, in_list, join_on, keyword_case, one_line_string, values_table,
 };
-pub use scope::{ColumnSource, Columns, RelationSource, Scope, VisibleRelation, file_relations};
+pub use scope::{ColumnSource, ColumnType, Columns, RelationSource, Scope, VisibleRelation, file_relations};
 pub use signature::{SignatureHelp, signature_help, signature_help_with};
 pub use syntax_kind::{
     DuckSql, Kw, KwCategory, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken,

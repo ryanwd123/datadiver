@@ -6,7 +6,7 @@ use rowan::TextRange;
 use crate::catalog::{Catalog, ColumnInfo, TableKind};
 use crate::complete::{CompletionContext, Expected, FunctionKind, Name, StringNameKind, eq_fold};
 use crate::document::{DocumentObject, ObjectKind};
-use crate::scope::{ColumnSource, Columns, RelationSource, VisibleRelation};
+use crate::scope::{ColumnSource, ColumnType, Columns, RelationSource, VisibleRelation, resolve_in};
 use crate::{Kw, KwCategory, SyntaxKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -332,7 +332,21 @@ impl Items<'_> {
             }
             return;
         }
-        for r in scope.resolve(qualifier) {
+        let relations = scope.resolve(qualifier);
+        if relations.is_empty() {
+            // `s.st.|` or `st.|`: the fields of a struct column.
+            let data_type = column_type(&scope.relations, qualifier, catalog, objects, 0).or_else(|| {
+                let (column, fields) = qualifier.split_first()?;
+                let implicit = catalog.implicit_columns();
+                let c = implicit.iter().find(|c| column.matches(&c.name))?;
+                field_type(c.data_type.clone()?, fields)
+            });
+            for field in data_type.as_deref().and_then(struct_fields).unwrap_or_default() {
+                self.name(&field.name, ItemKind::Column, field.data_type, rank::COLUMN);
+            }
+            return;
+        }
+        for r in relations {
             let detail = r.name().map(|n| n.text);
             for c in relation_columns(r, catalog, objects, 0) {
                 self.name(
@@ -523,6 +537,10 @@ fn columns_of(
                         name: n.text.clone(),
                         data_type: None,
                     }),
+                    ColumnSource::Typed { name, data_type } => out.push(ColumnInfo {
+                        name: name.text.clone(),
+                        data_type: resolve_type(data_type, catalog, objects, depth + 1),
+                    }),
                     ColumnSource::Unnamed(_) => {}
                     ColumnSource::Star {
                         relations,
@@ -551,6 +569,193 @@ fn columns_of(
             out
         }
     }
+}
+
+fn resolve_type(
+    data_type: &ColumnType,
+    catalog: &dyn Catalog,
+    objects: &[DocumentObject],
+    depth: u32,
+) -> Option<String> {
+    match data_type {
+        ColumnType::Text(text) => Some(text.clone()),
+        ColumnType::Of { relations, path } => column_type(relations, path, catalog, objects, depth),
+    }
+}
+
+/// The type of what `path` names among `relations`: `t.col`, `col`, or a
+/// struct field below either, as `t.col.field`. A relation qualifier is
+/// tried before a column of the same name, as DuckDB binds them.
+pub fn column_type(
+    relations: &[VisibleRelation],
+    path: &[Name],
+    catalog: &dyn Catalog,
+    objects: &[DocumentObject],
+    depth: u32,
+) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    for split in (0..path.len().min(4)).rev() {
+        let (qualifier, rest) = path.split_at(split);
+        let Some((column, fields)) = rest.split_first() else {
+            continue;
+        };
+        let candidates: Vec<&VisibleRelation> = if qualifier.is_empty() {
+            let mut all: Vec<&VisibleRelation> = relations.iter().collect();
+            all.sort_by_key(|r| r.depth);
+            all
+        } else {
+            resolve_in(relations, qualifier)
+        };
+        for r in candidates {
+            if let Some(found) = find_column(&r.source, &r.columns, &column.text, catalog, objects, depth) {
+                return field_type(found?, fields);
+            }
+        }
+    }
+    None
+}
+
+/// The type of column `name` of a relation: `None` when it has no such
+/// column, `Some(None)` when it has one of an unknown type. Only the column
+/// asked for is looked into, so a chain of CTEs costs one lookup per level.
+fn find_column(
+    source: &RelationSource,
+    columns: &Columns,
+    name: &str,
+    catalog: &dyn Catalog,
+    objects: &[DocumentObject],
+    depth: u32,
+) -> Option<Option<String>> {
+    if depth > 8 {
+        return None;
+    }
+    let Columns::Known(list) = columns else {
+        let all = columns_of(source, columns, catalog, objects, depth + 1);
+        return all.into_iter().find(|c| eq_fold(&c.name, name)).map(|c| c.data_type);
+    };
+    for c in list {
+        match c {
+            ColumnSource::Named(n) if n.matches(name) => return Some(None),
+            ColumnSource::Typed { name: n, data_type } if n.matches(name) => {
+                return Some(resolve_type(data_type, catalog, objects, depth + 1));
+            }
+            ColumnSource::Star { skip, .. } if *skip > 0 => {
+                let one = Columns::Known(vec![c.clone()]);
+                if let Some(found) = columns_of(source, &one, catalog, objects, depth + 1)
+                    .into_iter()
+                    .find(|c| eq_fold(&c.name, name))
+                {
+                    return Some(found.data_type);
+                }
+            }
+            ColumnSource::Star {
+                relations,
+                exclude,
+                rename,
+                ..
+            } => {
+                let original = match rename.iter().find(|(_, new)| new.matches(name)) {
+                    Some((old, _)) => old.text.as_str(),
+                    // renamed to something else, so not here under this name
+                    None if rename.iter().any(|(old, _)| old.matches(name)) => continue,
+                    None => name,
+                };
+                if exclude.iter().any(|e| e.matches(original)) {
+                    continue;
+                }
+                for r in relations {
+                    if let Some(found) = find_column(&r.source, &r.columns, original, catalog, objects, depth + 1) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The type of the struct field `fields` names below a column of type `data_type`.
+fn field_type(data_type: String, fields: &[Name]) -> Option<String> {
+    let mut data_type = data_type;
+    for field in fields {
+        data_type = struct_fields(&data_type)?
+            .into_iter()
+            .find(|f| field.matches(&f.name))?
+            .data_type?;
+    }
+    Some(data_type)
+}
+
+/// The fields of a struct type, as DuckDB writes it:
+/// `STRUCT(a INTEGER, "b c" STRUCT(d VARCHAR))`. Fields may leave out their
+/// type. Not a struct, or a list of structs: `None`.
+pub fn struct_fields(data_type: &str) -> Option<Vec<ColumnInfo>> {
+    let text = data_type.trim();
+    let keyword = text.get(..6)?;
+    if !keyword.eq_ignore_ascii_case("struct") {
+        return None;
+    }
+    let inner = text[6..].trim_start().strip_prefix('(')?.strip_suffix(')')?;
+    let mut parts = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0i32, false, 0);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            ',' if !quoted && depth == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quoted {
+        return None;
+    }
+    parts.push(&inner[start..]);
+    let mut fields = Vec::new();
+    for part in parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (name, rest) = if let Some(after) = part.strip_prefix('"') {
+            let mut name = String::new();
+            let mut chars = after.char_indices().peekable();
+            let mut end = after.len();
+            while let Some((i, ch)) = chars.next() {
+                if ch == '"' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                        chars.next();
+                        name.push('"');
+                        continue;
+                    }
+                    end = i + 1;
+                    break;
+                }
+                name.push(ch);
+            }
+            (name, &after[end..])
+        } else {
+            let end = part.find(char::is_whitespace).unwrap_or(part.len());
+            (part[..end].to_string(), &part[end..])
+        };
+        let rest = rest.trim();
+        fields.push(ColumnInfo {
+            name,
+            data_type: (!rest.is_empty()).then(|| rest.to_string()),
+        });
+    }
+    Some(fields)
 }
 
 /// Whether DuckDB needs `name` quoted: anything but plain words, and reserved
@@ -583,6 +788,28 @@ pub fn quote_if_needed(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn struct_fields_read_duckdb_struct_types() {
+        let fields = struct_fields("STRUCT(a INTEGER, \"b, \"\"c\"\"\" STRUCT(d VARCHAR, e INTEGER[]), f)").unwrap();
+        let fields: Vec<(&str, Option<&str>)> = fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.data_type.as_deref()))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                ("a", Some("INTEGER")),
+                ("b, \"c\"", Some("STRUCT(d VARCHAR, e INTEGER[])")),
+                ("f", None)
+            ]
+        );
+        assert_eq!(struct_fields("struct (x DOUBLE)").unwrap()[0].name, "x");
+        assert_eq!(struct_fields("STRUCT(a INTEGER)[]"), None);
+        assert_eq!(struct_fields("STRUCT(a INTEGER)[3]"), None);
+        assert_eq!(struct_fields("INTEGER"), None);
+        assert_eq!(struct_fields("MAP(VARCHAR, INTEGER)"), None);
+    }
 
     #[test]
     fn quoting() {
