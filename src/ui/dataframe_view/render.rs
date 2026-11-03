@@ -19,6 +19,10 @@ impl DataFrameView {
         }
         self.drain_grid_events(cx);
         self.sync_notices(cx);
+        // A removed slicer card, or a closed filter, takes its focus with it.
+        if self.slicer_sidebar.lost_focus(self.focus) {
+            self.focus_grid(cx);
+        }
         canvas.clear(colors::BACKGROUND);
         if self.keymap_editor.is_some() {
             let fonts = self.fonts.clone();

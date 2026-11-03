@@ -759,6 +759,11 @@ fn slicer_picker_filters_by_identity_and_cards_filter_clear_remove() {
     viewer.settle();
     assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
     assert_eq!(picked_slicers(&viewer)[0].selected.len(), 2);
+    // The click focused the card; Tab stays among the cards, and from the
+    // grid it reaches the search box.
+    viewer.press("tab");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("sales"));
+    viewer.press("escape");
     viewer.press("tab");
     assert!(viewer.search_focused());
     click_button(&viewer, Button::SlicerRemove("sales".into()));
@@ -2983,13 +2988,27 @@ fn slicer_value_shown(viewer: &Viewer, column: &str, index: usize) -> bool {
         .is_some()
 }
 
+fn focused_slicer(viewer: &Viewer) -> Option<String> {
+    viewer.read(|view| view.slicer_sidebar.focused_list(view.focus))
+}
+
+fn selected_keys(viewer: &Viewer, column: &str) -> Vec<crate::domain::documents::ScalarKey> {
+    picked_slicers(viewer)
+        .into_iter()
+        .find(|card| card.column == column)
+        .map(|card| card.selected)
+        .unwrap_or_default()
+}
+
 #[test]
-fn ctrl_l_cycles_slicer_inputs_and_ctrl_d_returns_to_the_grid() {
+fn ctrl_l_cycles_slicer_cards_and_ctrl_d_returns_to_the_grid() {
     let home = tempfile::tempdir().unwrap();
     let viewer = slicer_cards(&home);
-    // From the grid, the first card's value filter opens and takes the typing.
+    // From the grid, the first card's values take focus, and typing opens
+    // the card's filter.
     viewer.focus_grid();
     press(&viewer, "ctrl-l");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("region"));
     viewer.input("No");
     assert!(slicer_value_shown(&viewer, "region", 0));
     assert!(!slicer_value_shown(&viewer, "region", 1));
@@ -2997,13 +3016,86 @@ fn ctrl_l_cycles_slicer_inputs_and_ctrl_d_returns_to_the_grid() {
     press(&viewer, "ctrl-l");
     viewer.input(">15");
     press(&viewer, "ctrl-l");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("flag"));
     viewer.settle();
     assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
     // After the last card, focus wraps to the first, whose filter text stays.
     press(&viewer, "ctrl-l");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("region"));
     assert!(slicer_value_shown(&viewer, "region", 0));
     assert!(!slicer_value_shown(&viewer, "region", 1));
     viewer.press("ctrl-d");
+    assert!(viewer.grid_focused());
+}
+
+#[test]
+fn slicer_values_take_keys_to_move_select_and_leave() {
+    use crate::domain::documents::ScalarKey;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = slicer_cards(&home);
+    let north = ScalarKey::String("North".into());
+    let south = ScalarKey::String("South".into());
+    viewer.focus_grid();
+    press(&viewer, "ctrl-l");
+    // Space toggles the value under the cursor, which starts on the first.
+    press(&viewer, "space");
+    viewer.settle();
+    assert_eq!(selected_keys(&viewer, "region"), std::slice::from_ref(&north));
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    press(&viewer, "down");
+    press(&viewer, "space");
+    assert_eq!(selected_keys(&viewer, "region"), [north, south.clone()]);
+    // Enter keeps only the value under the cursor.
+    press(&viewer, "enter");
+    assert_eq!(selected_keys(&viewer, "region"), [south]);
+    // Shift extends from the cursor.
+    press(&viewer, "shift-up");
+    assert_eq!(selected_keys(&viewer, "region").len(), 2);
+    press(&viewer, "delete");
+    assert!(selected_keys(&viewer, "region").is_empty());
+    // Grid keys do not reach the grid while a slicer has focus.
+    press(&viewer, "=");
+    assert!(viewer.read(|view| view.session.value_filters().is_empty()));
+    // Tab moves between cards; Escape returns to the grid.
+    press(&viewer, "tab");
+    let sales = viewer.read(|view| view.slicer_sidebar.input_for("sales"));
+    assert_eq!(viewer.read(|view| view.focus), sales);
+    press(&viewer, "shift-tab");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("region"));
+    press(&viewer, "escape");
+    assert!(viewer.grid_focused());
+    // A click on a value focuses its card, with the cursor on that value.
+    viewer.click_at(slicer_value(&viewer, "flag", 1).center());
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("flag"));
+    press(&viewer, "space");
+    assert!(selected_keys(&viewer, "flag").is_empty());
+    viewer.press("ctrl-d");
+    assert!(viewer.grid_focused());
+}
+
+#[test]
+fn slicer_filter_hands_focus_to_its_values_and_a_removed_card_to_the_grid() {
+    use crate::domain::documents::ScalarKey;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = slicer_cards(&home);
+    viewer.focus_grid();
+    press(&viewer, "ctrl-l");
+    press(&viewer, "/");
+    viewer.input("so");
+    press(&viewer, "enter");
+    assert_eq!(selected_keys(&viewer, "region"), [ScalarKey::String("South".into())]);
+    // Down goes to the values, and `/` back to the open filter.
+    press(&viewer, "down");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("region"));
+    press(&viewer, "/");
+    assert!(focused_slicer(&viewer).is_none());
+    // Escape in the filter closes it and keeps focus on the card.
+    press(&viewer, "escape");
+    assert_eq!(focused_slicer(&viewer).as_deref(), Some("region"));
+    assert!(slicer_value_shown(&viewer, "region", 0));
+    click_button(&viewer, Button::SlicerRemove("region".into()));
+    viewer.settle();
+    viewer.render();
     assert!(viewer.grid_focused());
 }
 

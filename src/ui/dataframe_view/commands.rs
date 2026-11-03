@@ -1061,7 +1061,7 @@ impl DataFrameView {
             .as_ref()
             .is_some_and(|definition| !definition.slicers.is_empty());
         let mut focus = self.focus;
-        if !has_slicers || !self.slicer_sidebar.focus_next_input(&mut focus) {
+        if !has_slicers || !self.slicer_sidebar.focus_next_card(false, &mut focus) {
             self.copy_status = Some("No slicers to focus. Use Add slicer to add one".into());
             cx.notify();
             return;
@@ -1258,6 +1258,10 @@ impl DataFrameView {
     /// Applies what the slicer cards reported since the last call.
     pub(crate) fn drain_slicer_events(&mut self, cx: &mut Cx<Self>) {
         for event in self.slicer_sidebar.take_events() {
+            if event == SlicerEvent::FocusGrid {
+                self.focus_grid(cx);
+                continue;
+            }
             let changed = self.session.working.as_ref().is_some_and(|definition| match &event {
                 SlicerEvent::Select { column, selected } => definition
                     .slicers
@@ -1272,6 +1276,7 @@ impl DataFrameView {
                     .iter()
                     .any(|card| &card.column == column && card.condition.as_ref() != Some(text)),
                 SlicerEvent::Remove(column) => definition.slicers.iter().any(|card| &card.column == column),
+                SlicerEvent::FocusGrid => false,
             });
             if !changed {
                 continue;
@@ -1293,6 +1298,7 @@ impl DataFrameView {
                         card.condition = Some(text.clone());
                     }
                 }
+                SlicerEvent::FocusGrid => {}
             });
             self.autosave_table_preferences(cx);
             self.schedule_search(self.session.search_text.clone(), cx);

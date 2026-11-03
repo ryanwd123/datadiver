@@ -563,7 +563,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::FocusSlicers,
         key: "focus_slicers",
-        label: "Focus next slicer input",
+        label: "Focus next slicer card",
         default_binding: Some("ctrl-l"),
     },
     Command {

@@ -405,7 +405,9 @@ impl DataFrameView {
             self.focus = focus;
             return true;
         }
-        self.slicer_sidebar.type_text(typed, focus)
+        let handled = self.slicer_sidebar.type_text(typed, &mut focus);
+        self.focus = focus;
+        handled
     }
 
     fn mouse_down(&mut self, pos: Point, button: MouseButton, modifiers: Modifiers, clicks: u32, hit: Option<&Hit>, cx: &mut Cx<Self>) {

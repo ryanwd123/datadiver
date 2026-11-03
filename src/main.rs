@@ -140,6 +140,7 @@ fn main() {
                             | "ai-providers"
                             | "action-menu"
                             | "slicer-search"
+                            | "slicer-values"
                             | "search-columns"
                             | "editor:aggregation-completion"
                             | "editor:group-completion"

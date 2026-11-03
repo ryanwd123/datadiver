@@ -1500,7 +1500,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         id: ActionId::FocusSlicers,
         category: ActionCategory::Navigation,
-        name: "Focus next slicer input",
+        name: "Focus next slicer card",
         context: KeyContext::Application,
         command: Some(CommandId::FocusSlicers),
         default_bindings: &["ctrl-l"],

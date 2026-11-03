@@ -18,6 +18,8 @@ pub enum SlicerEvent {
     },
     Clear(String),
     Remove(String),
+    /// Escape in a value list: focus goes back to the grid.
+    FocusGrid,
     /// A condition card's text was committed.
     Condition {
         column: String,
@@ -40,6 +42,16 @@ struct CardSearch {
     input: Editor,
 }
 
+/// A value card's list, which takes keys while it has focus.
+struct ValueList {
+    column: String,
+    id: WidgetId,
+    /// The value the keys act on, by index into the card's values.
+    cursor: Option<usize>,
+    /// Where a Shift selection started.
+    anchor: Option<usize>,
+}
+
 /// A condition card's text input.
 struct ConditionInput {
     column: String,
@@ -48,6 +60,9 @@ struct ConditionInput {
     /// The card text last copied into, or committed from, the input.
     synced: String,
 }
+
+/// The height of a value card's row.
+const ROW_HEIGHT: f32 = 28.0;
 
 const CONDITION_PLACEHOLDER: &str = ">=10 <100 · 2024-01..2024-06 · a..m · -30d..today";
 const SQL_PLACEHOLDER: &str = "amount > 100 AND region = 'North'";
@@ -58,6 +73,12 @@ pub struct SlicerSidebar {
     drag: Option<Drag>,
     searches: Vec<CardSearch>,
     conditions: Vec<ConditionInput>,
+    lists: Vec<ValueList>,
+    /// Inputs and lists removed with their card or filter, so focus held by
+    /// one can go back to the grid.
+    dropped: Vec<WidgetId>,
+    /// A card to scroll into view at the next paint, by column.
+    reveal: Option<String>,
     /// Column names offered after `"` in condition and SQL cards.
     columns: Vec<String>,
     dialect: diver_sql::Dialect,
@@ -99,8 +120,14 @@ impl SlicerSidebar {
     }
 
     pub fn set_cards(&mut self, cards: Vec<SlicerCard>) {
-        self.searches
-            .retain(|search| cards.iter().any(|card| card.column == search.column));
+        let dropped = &mut self.dropped;
+        self.searches.retain(|search| {
+            let kept = cards.iter().any(|card| card.column == search.column);
+            if !kept {
+                dropped.push(search.input.id);
+            }
+            kept
+        });
         self.cards = cards;
         self.drag = None;
         self.sync_conditions();
@@ -110,17 +137,40 @@ impl SlicerSidebar {
         self.cards.is_empty()
     }
 
-    /// Creates inputs for new condition cards and copies card text into inputs
-    /// whose text changed elsewhere, such as Clear filters.
+    /// Creates inputs for new condition cards and lists for new value cards,
+    /// and copies card text into inputs whose text changed elsewhere, such as
+    /// Clear filters.
     fn sync_conditions(&mut self) {
         let cards = &self.cards;
+        let dropped = &mut self.dropped;
         self.conditions.retain(|input| {
-            cards
+            let kept = cards
                 .iter()
-                .any(|card| card.column == input.column && card.condition.is_some())
+                .any(|card| card.column == input.column && card.condition.is_some());
+            if !kept {
+                dropped.push(input.input.id);
+            }
+            kept
+        });
+        self.lists.retain(|list| {
+            let kept = cards
+                .iter()
+                .any(|card| card.column == list.column && card.condition.is_none());
+            if !kept {
+                dropped.push(list.id);
+            }
+            kept
         });
         for card in &self.cards {
             let Some(text) = &card.condition else {
+                if !self.lists.iter().any(|list| list.column == card.column) {
+                    self.lists.push(ValueList {
+                        column: card.column.clone(),
+                        id: WidgetId::new(),
+                        cursor: None,
+                        anchor: None,
+                    });
+                }
                 continue;
             };
             if let Some(input) = self
@@ -193,13 +243,18 @@ impl SlicerSidebar {
     }
 
     /// Shows or hides a card's filter; hiding it clears the filter.
+    /// Closing it moves focus it held to the card's list.
     fn toggle_search(&mut self, column: &str, focus: &mut Option<WidgetId>) {
         if let Some(index) = self
             .searches
             .iter()
             .position(|search| search.column == column)
         {
-            self.searches.remove(index);
+            let search = self.searches.remove(index);
+            self.dropped.push(search.input.id);
+            if *focus == Some(search.input.id) {
+                self.focus_list(column, focus);
+            }
             return;
         }
         let input = Editor::single_line().with_placeholder("Filter values");
@@ -219,40 +274,100 @@ impl SlicerSidebar {
             .or_else(|| self.search(column).map(|search| search.input.id))
     }
 
+    fn list(&self, column: &str) -> Option<&ValueList> {
+        self.lists.iter().find(|list| list.column == column)
+    }
+
+    fn list_mut(&mut self, column: &str) -> Option<&mut ValueList> {
+        self.lists.iter_mut().find(|list| list.column == column)
+    }
+
     pub fn contains(&self, id: WidgetId) -> bool {
         self.conditions.iter().any(|input| input.input.id == id)
             || self.searches.iter().any(|search| search.input.id == id)
+            || self.lists.iter().any(|list| list.id == id)
     }
 
-    /// Moves focus to the next card's input, wrapping after the last card. A
-    /// value card's filter opens to take focus, and closes again when focus
-    /// moves on while it is empty. Returns false when there are no cards.
-    pub fn focus_next_input(&mut self, focus: &mut Option<WidgetId>) -> bool {
+    /// Whether `focus` was on an input or list that has gone with its card or
+    /// filter since the last call.
+    pub fn lost_focus(&mut self, focus: Option<WidgetId>) -> bool {
+        let lost = focus.is_some_and(|id| self.dropped.contains(&id) && !self.contains(id));
+        self.dropped.clear();
+        lost
+    }
+
+    /// The value card whose list has focus.
+    pub fn focused_list(&self, focus: Option<WidgetId>) -> Option<String> {
+        let id = focus?;
+        self.lists
+            .iter()
+            .find(|list| list.id == id)
+            .map(|list| list.column.clone())
+    }
+
+    /// Focuses a value card's list, putting the cursor on its first shown
+    /// value when the cursor is not on a shown one.
+    fn focus_list(&mut self, column: &str, focus: &mut Option<WidgetId>) {
+        self.sync_conditions();
+        let visible = self.visible(column);
+        let Some(list) = self.list_mut(column) else {
+            return;
+        };
+        if list.cursor.is_none_or(|cursor| !visible.contains(&cursor)) {
+            list.cursor = visible.first().copied();
+            list.anchor = None;
+        }
+        *focus = Some(list.id);
+    }
+
+    /// The card holding focus, by position in the cards.
+    fn focused_card(&self, focus: Option<WidgetId>) -> Option<usize> {
+        let id = focus?;
+        self.cards.iter().position(|card| {
+            self.input_id(&card.column) == Some(id) || self.list(&card.column).is_some_and(|list| list.id == id)
+        })
+    }
+
+    /// Moves focus to the next card, or with `back` the previous one,
+    /// wrapping around. A condition card focuses its text and a value card
+    /// its list; an empty value filter closes as focus moves on. Returns
+    /// false when there are no cards.
+    pub fn focus_next_card(&mut self, back: bool, focus: &mut Option<WidgetId>) -> bool {
         if self.cards.is_empty() {
             return false;
         }
         self.sync_conditions();
-        let current = self
-            .cards
-            .iter()
-            .position(|card| self.input_id(&card.column).is_some_and(|id| Some(id) == *focus));
-        let next = current.map_or(0, |index| (index + 1) % self.cards.len());
+        let count = self.cards.len();
+        let current = self.focused_card(*focus);
+        let next = match current {
+            None if back => count - 1,
+            None => 0,
+            Some(index) if back => (index + count - 1) % count,
+            Some(index) => (index + 1) % count,
+        };
         if let Some(index) = current.filter(|&index| index != next) {
             let column = self.cards[index].column.clone();
-            self.blur(focus.unwrap());
+            if let Some(id) = *focus {
+                self.blur(id);
+            }
             if self.cards[index].condition.is_none()
                 && self
                     .search(&column)
                     .is_some_and(|search| search.input.text().is_empty())
             {
-                self.searches.retain(|search| search.column != column);
+                let mut closed = None;
+                self.toggle_search(&column, &mut closed);
             }
         }
         let column = self.cards[next].column.clone();
-        match self.input_id(&column) {
-            Some(id) => *focus = Some(id),
-            None => self.toggle_search(&column, focus),
+        if self.cards[next].condition.is_some() {
+            if let Some(id) = self.input_id(&column) {
+                *focus = Some(id);
+            }
+        } else {
+            self.focus_list(&column, focus);
         }
+        self.reveal = Some(column);
         true
     }
 
@@ -364,26 +479,136 @@ impl SlicerSidebar {
                 let column = condition.column.clone();
                 self.commit_condition(&column);
             }
+            if !outcome.handled && Self::is_tab(event) {
+                return self.focus_next_card(event.modifiers.shift, focus);
+            }
             return outcome.handled;
         }
         if let Some(index) = self.searches.iter().position(|search| search.input.id == id) {
+            let column = self.searches[index].column.clone();
             if event.is("escape") {
-                let column = self.searches[index].column.clone();
                 self.toggle_search(&column, focus);
+                return true;
+            }
+            if event.is("down") {
+                self.focus_list(&column, focus);
                 return true;
             }
             let outcome = self.searches[index].input.key(event);
             if outcome.submit {
-                let column = self.searches[index].column.clone();
                 self.select_visible(&column);
             }
+            if !outcome.handled && Self::is_tab(event) {
+                return self.focus_next_card(event.modifiers.shift, focus);
+            }
             return outcome.handled;
+        }
+        if let Some(index) = self.lists.iter().position(|list| list.id == id) {
+            let column = self.lists[index].column.clone();
+            return self.list_key(&column, event, focus);
         }
         false
     }
 
-    pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
-        let Some(id) = focus else {
+    fn is_tab(event: &KeyEvent) -> bool {
+        let m = event.modifiers;
+        event.key == "tab" && !m.control && !m.alt && !m.platform
+    }
+
+    /// Keys in a focused value list: arrows move the cursor, Shift extends
+    /// the selection, Space toggles a value, Enter selects only it, and
+    /// typing opens the card's filter.
+    fn list_key(&mut self, column: &str, event: &KeyEvent, focus: &mut Option<WidgetId>) -> bool {
+        let m = event.modifiers;
+        let plain = !m.control && !m.alt && !m.platform;
+        let visible = self.visible(column);
+        let Some(list) = self.list(column) else {
+            return false;
+        };
+        let (cursor, anchor) = (list.cursor.filter(|cursor| visible.contains(cursor)), list.anchor);
+        let position = cursor.and_then(|cursor| visible.iter().position(|&index| index == cursor));
+        let page = self
+            .value_scrolls
+            .get(column)
+            .map_or(1, |(_, area, _)| ((area.h / ROW_HEIGHT).floor() as usize).saturating_sub(1).max(1));
+        let last = visible.len().saturating_sub(1);
+        let target = match event.key.as_str() {
+            "up" => Some(position.map_or(0, |position| position.saturating_sub(1))),
+            "down" => Some(position.map_or(0, |position| (position + 1).min(last))),
+            "pageup" => Some(position.map_or(0, |position| position.saturating_sub(page))),
+            "pagedown" => Some(position.map_or(0, |position| (position + page).min(last))),
+            "home" => Some(0),
+            "end" => Some(last),
+            _ => None,
+        };
+        if let Some(target) = target.filter(|_| plain) {
+            let Some(&value) = visible.get(target) else {
+                return true;
+            };
+            let anchor = if m.shift {
+                let anchor = anchor.or(cursor).unwrap_or(value);
+                if let Some(card) = self.cards.iter_mut().find(|card| card.column == column) {
+                    card.selected = slicers::drag_selection(card, &visible, anchor, value, false, &card.selected);
+                    self.events.push(SlicerEvent::Select {
+                        column: column.to_owned(),
+                        selected: card.selected.clone(),
+                    });
+                }
+                Some(anchor)
+            } else {
+                None
+            };
+            if let Some(list) = self.list_mut(column) {
+                list.cursor = Some(value);
+                list.anchor = anchor;
+            }
+            if let Some((scroll, area, _)) = self.value_scrolls.get_mut(column) {
+                scroll.reveal(target as f32 * ROW_HEIGHT, ROW_HEIGHT, area.h);
+            }
+            return true;
+        }
+        match event.key.as_str() {
+            "space" | "enter" if plain && !m.shift => {
+                if let Some(cursor) = cursor
+                    && let Some(card) = self.cards.iter_mut().find(|card| card.column == column)
+                {
+                    card.selected = slicers::click_selection(card, cursor, event.key == "space");
+                    self.events.push(SlicerEvent::Select {
+                        column: column.to_owned(),
+                        selected: card.selected.clone(),
+                    });
+                }
+                if let Some(list) = self.list_mut(column) {
+                    list.anchor = None;
+                }
+                true
+            }
+            "a" if m.control && !m.alt && !m.shift => {
+                self.select_visible(column);
+                true
+            }
+            "delete" | "backspace" if plain && !m.shift => {
+                self.events.push(SlicerEvent::Clear(column.to_owned()));
+                true
+            }
+            "escape" if plain && !m.shift => {
+                self.events.push(SlicerEvent::FocusGrid);
+                true
+            }
+            "tab" if plain => self.focus_next_card(m.shift, focus),
+            _ => {
+                let Some(typed) = event.typed().filter(|typed| !typed.trim().is_empty()) else {
+                    return false;
+                };
+                let typed = typed.to_owned();
+                self.type_into_filter(column, &typed, focus);
+                true
+            }
+        }
+    }
+
+    pub fn type_text(&mut self, typed: &str, focus: &mut Option<WidgetId>) -> bool {
+        let Some(id) = *focus else {
             return false;
         };
         if let Some(condition) = self.conditions.iter_mut().find(|input| input.input.id == id) {
@@ -395,7 +620,27 @@ impl SlicerSidebar {
             search.input.type_text(typed);
             return true;
         }
+        if let Some(column) = self.focused_list(*focus)
+            && !typed.trim().is_empty()
+        {
+            self.type_into_filter(&column, typed, focus);
+            return true;
+        }
         false
+    }
+
+    /// Opens a value card's filter, if it is closed, and types `typed` into
+    /// it; `/` only opens it.
+    fn type_into_filter(&mut self, column: &str, typed: &str, focus: &mut Option<WidgetId>) {
+        if self.search(column).is_none() {
+            self.toggle_search(column, focus);
+        }
+        if let Some(search) = self.searches.iter_mut().find(|search| search.column == column) {
+            if typed != "/" {
+                search.input.type_text(typed);
+            }
+            *focus = Some(search.input.id);
+        }
     }
 
     pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, modifiers: crate::ui::platform::Modifiers, focus: &mut Option<WidgetId>) -> bool {
@@ -403,6 +648,15 @@ impl SlicerSidebar {
             Hit::Slicer(SlicerHit::Value { column, index }) => {
                 let (column, index) = (column.clone(), *index);
                 self.press(&column, index, modifiers.control);
+                if let Some(list) = self.list_mut(&column) {
+                    list.cursor = Some(index);
+                    list.anchor = None;
+                }
+                self.focus_list(&column, focus);
+            }
+            Hit::Slicer(SlicerHit::Values(column)) => {
+                let column = column.clone();
+                self.focus_list(&column, focus);
             }
             Hit::Slicer(SlicerHit::Bar(column)) => {
                 let column = column.clone();
@@ -569,10 +823,21 @@ impl SlicerSidebar {
             let heights = card_heights(&counts, available);
             let area = rect(inner.x + column as f32 * (column_width + 8.0), inner.y, column_width, inner.h);
             let content = heights.iter().sum::<f32>() + 8.0 * heights.len().saturating_sub(1) as f32;
+            let revealed = self.reveal.as_ref().and_then(|reveal| {
+                let position = cards.iter().position(|&index| &self.cards[index].column == reveal)?;
+                let start = heights[..position].iter().sum::<f32>() + 8.0 * position as f32;
+                Some((start, heights[position]))
+            });
+            if revealed.is_some() {
+                self.reveal = None;
+            }
             let scroll_offset = {
                 let (scroll, stored_area, stored_content) = &mut self.column_scrolls[column];
                 *stored_area = area;
                 *stored_content = content;
+                if let Some((start, height)) = revealed {
+                    scroll.reveal(start, height.min(area.h), area.h);
+                }
                 scroll.clamp(area.h, content);
                 scroll.offset
             };
@@ -625,8 +890,15 @@ impl SlicerSidebar {
     }
 
     fn paint_value_card(&mut self, canvas: &mut Canvas<Hit>, card: &SlicerCard, card_rect: Rect, fonts: &Fonts, focus: Option<WidgetId>, line: f32) {
+        let list = self.list(&card.column);
+        let list_focused = list.is_some_and(|list| focus == Some(list.id));
+        let cursor = list.and_then(|list| list.cursor).filter(|_| list_focused);
         canvas.fill_rounded(card_rect, 6.0, colors::BACKGROUND);
-        canvas.stroke_rounded(card_rect, 6.0, colors::BORDER, 1.0);
+        if list_focused {
+            canvas.stroke_rounded(card_rect, 6.0, colors::FOCUS, 2.0);
+        } else {
+            canvas.stroke_rounded(card_rect, 6.0, colors::BORDER, 1.0);
+        }
         let search_open = self.search(&card.column).is_some();
         let mut top = card_rect.y + Self::card_header(canvas, card_rect, &card.column, card, Some(search_open), fonts);
         if let Some(search) = self.searches.iter_mut().find(|search| search.column == card.column) {
@@ -640,7 +912,7 @@ impl SlicerSidebar {
         }
         let values = rect(card_rect.x + 1.0, top, card_rect.w - 2.0, (card_rect.bottom() - top - 4.0).max(0.0));
         let visible = self.visible(&card.column);
-        let row_height = 28.0;
+        let row_height = ROW_HEIGHT;
         let content = visible.len() as f32 * row_height;
         let (scroll_state, offset) = {
             let entry = self
@@ -673,6 +945,9 @@ impl SlicerSidebar {
                 canvas.fill_rounded(row, 4.0, colors::SELECTED);
             } else if canvas.hovered(row) && card.selectable(index) {
                 canvas.fill_rounded(row, 4.0, colors::HOVER);
+            }
+            if cursor == Some(index) {
+                canvas.stroke_rounded(row, 4.0, colors::FOCUS, 1.0);
             }
             canvas.text(
                 row.inset_xy(8.0, 0.0),

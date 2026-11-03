@@ -103,7 +103,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Ctrl+Shift+R | Reload and reset |
 | Ctrl+F | Focus search |
 | Ctrl+D | Focus data grid |
-| Ctrl+L | Focus next slicer input |
+| Ctrl+L | Focus next slicer card |
 | Ctrl+G | Jump to column |
 | Ctrl+= / Ctrl+- | Increase / decrease font size |
 | Ctrl+N | New window |
@@ -197,7 +197,19 @@ Search words are highlighted in visible cells; column-scoped words are highlight
 
 Two slicer options in **View options** are kept with the file. **Cross filter** greys out values as described above; turning it off shows every value as available and skips those queries, which is faster on big sources. **Available first** lists available values before greyed-out ones.
 
-If a condition or SQL filter has an error, the error shows on its card and the card stops filtering until you fix it. **Ctrl+L** moves through the slicer inputs, and **Ctrl+D** returns to the grid.
+If a condition or SQL filter has an error, the error shows on its card and the card stops filtering until you fix it.
+
+Slicers work from the keyboard. **Ctrl+L** moves through the cards (**Tab** and **Shift+Tab** too, once a card has focus), and clicking a value also focuses its card. **Ctrl+D** or **Esc** returns to the grid. In a value card:
+
+| Key | Action |
+| --- | --- |
+| Up / Down, Page Up / Page Down, Home / End | Move the cursor |
+| Space | Select or unselect the value under the cursor |
+| Enter | Select only the value under the cursor |
+| Shift+Up / Shift+Down | Select a range from where the cursor started |
+| Ctrl+A | Select every listed value |
+| Delete | Clear the card |
+| / or any character | Open the card's filter and type into it (Down returns to the values) |
 
 Slicers, condition cards, the SQL filter, and `=` / `-` filters all narrow source rows, before grouping in a query. Search narrows the displayed rows. In a query, search and sort apply to the result.
 

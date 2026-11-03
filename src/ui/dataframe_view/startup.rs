@@ -8,7 +8,7 @@ use std::rc::Rc;
 use super::*;
 use crate::infrastructure::source_database::LoadMode;
 use crate::ui::font_picker::FontTarget;
-use crate::ui::platform::{Runtime, WindowOptions};
+use crate::ui::platform::{KeyEvent, Runtime, WindowOptions};
 use crate::ui::window_placement;
 
 pub struct ViewerOptions {
@@ -382,6 +382,14 @@ impl DataFrameView {
             "slicer-search" => {
                 let mut focus = self.focus;
                 self.slicer_sidebar.open_first_search("a", &mut focus);
+                self.focus = focus;
+            }
+            "slicer-values" => {
+                self.focus_next_slicer(cx);
+                let mut focus = self.focus;
+                if let Ok(down) = KeyEvent::parse("down") {
+                    self.slicer_sidebar.key(&down, &mut focus);
+                }
                 self.focus = focus;
             }
             "theme" | "theme-editor" => self.open_theme_editor(cx),
