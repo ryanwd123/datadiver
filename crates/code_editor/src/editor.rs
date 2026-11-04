@@ -1416,6 +1416,9 @@ impl State {
                             | Action::ZoomReset,
                         ))
                         | Some(Binding::Command(_)) => return None,
+                        // The text of a plain key comes next as a character,
+                        // which a host drops after a handled key.
+                        _ if !c.ctrl && !c.alt => return Some(KeyResult::Unhandled),
                         _ => {}
                     },
                 }

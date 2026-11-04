@@ -515,6 +515,21 @@ fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
 }
 
 #[test]
+fn go_to_line_and_find_inputs_take_typed_keys() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    place(&viewer, "SELECT 1\nSELECT 2\nSELECT 3", 0..0);
+    // Keys that type text reach the overlay inputs instead of being dropped.
+    press(&viewer, "ctrl-g 3 enter");
+    assert_eq!(panel(&viewer, |panel| panel.editor.cursor()), 18);
+    press(&viewer, "ctrl-f");
+    press(&viewer, "shift-s e l escape");
+    assert_eq!(panel(&viewer, |panel| panel.editor.selected_text()), "SEL");
+    assert_eq!(sql_text(&viewer), "SELECT 1\nSELECT 2\nSELECT 3");
+}
+
+#[test]
 fn sql_editor_keys_follow_the_keymap_and_its_actions_are_commands() {
     use crate::application::keymap::{ActionId, DisabledDefault, KeyContext, UserBinding};
     let home = tempfile::tempdir().unwrap();
