@@ -22,9 +22,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
   and loaded extensions survive a reset.
 - **Settings to consider adding:** default row limit, restore the last session on startup,
   confirm before closing unsaved views, default slicer options for new files.
-- **Preserve order** is applied with `SET preserve_insertion_order`, which is global in DuckDB, so
-  it is one Settings switch for the profile rather than a per-file option. A read with it off
-  still briefly affects queries running in other windows.
 
  
 ## Tier 4: bigger features
