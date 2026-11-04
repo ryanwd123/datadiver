@@ -49,6 +49,8 @@ pub mod history;
 pub mod indent;
 pub mod keymap;
 pub mod lang;
+pub mod markdown;
+mod markdown_view;
 pub mod movement;
 mod platform;
 mod render;

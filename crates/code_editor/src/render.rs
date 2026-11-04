@@ -119,6 +119,10 @@ pub(crate) struct Fonts {
     pub popup: IDWriteTextFormat,
     /// The height of a line of `popup` text.
     pub popup_line_h: f32,
+    /// `popup` wrapping, with lines `popup_line_h` apart, for Markdown.
+    pub popup_text: IDWriteTextFormat,
+    /// The width of a space in `popup_text`.
+    pub char_w_popup: f32,
     typography: IDWriteTypography,
     pub line_h: f32,
     pub char_w: f32,
@@ -186,6 +190,18 @@ impl Fonts {
             popup.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             popup.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             let popup_line_h = (suggest_size * 1.4 * k).round() / k;
+            let popup_text = make(suggest_size, &fam)?;
+            popup_text.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            let probe = dw.CreateTextLayout(&[b' ' as u16], &popup_text, 1e4, 1e4)?;
+            let mut ptm = DWRITE_TEXT_METRICS::default();
+            probe.GetMetrics(&mut ptm)?;
+            let (popup_natural_h, popup_natural_base) = line_metrics(&probe)
+                .first()
+                .map_or((suggest_size * 1.2, suggest_size), |m| (m.height, m.baseline));
+            let popup_base = ((popup_natural_base + (popup_line_h - popup_natural_h) / 2.0) * k).round() / k;
+            popup_text.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, popup_line_h, popup_base)?;
+            let char_w_popup = ptm.widthIncludingTrailingWhitespace;
+            popup_text.SetIncrementalTabStop(char_w_popup * tab.max(1) as f32)?;
 
             let typography = dw.CreateTypography()?;
             for tag in [
@@ -206,6 +222,8 @@ impl Fonts {
                 suggest_center,
                 popup,
                 popup_line_h,
+                popup_text,
+                char_w_popup,
                 typography,
                 line_h,
                 char_w,
@@ -282,6 +300,8 @@ pub(crate) struct Renderer {
     custom: RefCell<HashMap<u32, ID2D1SolidColorBrush>>,
     pub fonts: Option<Rc<Fonts>>,
     cache: HashMap<u64, Rc<LineLayout>>,
+    /// The popups' Markdown, laid out, by text and size.
+    pub(crate) md_cache: RefCell<Vec<(u64, Rc<crate::markdown_view::MdLayout>)>>,
     frame: u32,
 }
 
@@ -296,6 +316,7 @@ impl Renderer {
             custom: RefCell::new(HashMap::new()),
             fonts: None,
             cache: HashMap::new(),
+            md_cache: RefCell::new(Vec::new()),
             frame: 0,
         })
     }
@@ -313,6 +334,7 @@ impl Renderer {
         let f = Rc::new(Fonts::new(&self.shared.dw, &family, size, tab, dpi, popup_size)?);
         self.fonts = Some(f.clone());
         self.cache.clear();
+        self.md_cache.borrow_mut().clear();
         Ok(f)
     }
 
@@ -593,31 +615,6 @@ impl Renderer {
         x
     }
 
-    /// `msg` in lines no wider than `max_w`, broken at spaces, at most
-    /// `max_lines` (the last one ends with `…` when some were cut).
-    pub fn wrap_popup(&self, msg: &str, max_w: f32, max_lines: usize) -> Vec<String> {
-        let mut out = Vec::new();
-        for para in msg.lines() {
-            let mut line = String::new();
-            for word in para.split(' ') {
-                let joined = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
-                if !line.is_empty() && self.popup_x(&joined, joined.len()) > max_w {
-                    out.push(std::mem::replace(&mut line, word.to_string()));
-                } else {
-                    line = joined;
-                }
-            }
-            out.push(line);
-        }
-        if out.len() > max_lines {
-            out.truncate(max_lines);
-            if let Some(last) = out.last_mut() {
-                last.push('\u{2026}');
-            }
-        }
-        out
-    }
-
     /// The byte column of overlay text `s` nearest to x.
     pub fn ui_col_at(&self, s: &str, x: f32) -> usize {
         let Some(l) = self.ui_text(s, false) else { return 0 };
@@ -757,42 +754,55 @@ impl crate::editor::State {
         unsafe { rt.PopAxisAlignedClip() };
     }
 
-    /// Draws the hover message box near the mouse.
+    /// Colors for a code block in a popup: the host language's.
+    fn popup_highlight(&self) -> impl Fn(&str) -> Vec<(std::ops::Range<usize>, Ink)> + '_ {
+        move |code: &str| self.service.as_ref().and_then(|s| s.highlight(code)).unwrap_or_default()
+    }
+
+    /// Draws the hover box near the mouse: its Markdown, wrapped.
     fn paint_tooltip(&self, rt: &ID2D1RenderTarget) {
         let (Some((x, y, msg)), Some(f)) = (&self.tooltip, &self.render.fonts) else { return };
         let r = &self.render;
         let lh = f.popup_line_h;
         let area = self.popup_bounds();
-        let lines = r.wrap_popup(msg, (area.w() - 24.0).clamp(120.0, 40.0 * lh), 24);
-        let tw = lines.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max) + 16.0;
-        let th = lines.len() as f32 * lh + 8.0;
+        let max_w = (area.w() - 24.0).clamp(120.0, 40.0 * lh);
+        let max_h = (area.h() - 24.0).clamp(lh, 30.0 * lh);
+        let highlight = self.popup_highlight();
+        let Some(md) = r.markdown(msg, max_w, max_h, &highlight) else { return };
+        let tw = md.w + 20.0;
+        let th = md.h + 12.0;
         let left = x.min(area.r - tw - 4.0).max(area.l);
         let top = if y + 20.0 + th < area.b { y + 20.0 } else { (y - th - 8.0).max(area.t) };
         r.fill(rt, left + 2.0, top + 2.0, left + tw + 2.0, top + th + 2.0, Ink::Shadow);
         r.fill(rt, left, top, left + tw, top + th, Ink::WidgetBg);
         r.stroke(rt, left + 0.5, top + 0.5, left + tw - 0.5, top + th - 0.5, 1.0, Ink::WidgetBorder);
-        for (i, l) in lines.iter().enumerate() {
-            let ly = top + 4.0 + i as f32 * lh;
-            r.text(rt, l, &f.popup, left + 8.0, ly, left + tw, ly + lh, Ink::WidgetText);
-        }
+        unsafe { rt.PushAxisAlignedClip(&rect(left + 1.0, top + 1.0, left + tw - 1.0, top + th - 1.0), D2D1_ANTIALIAS_MODE_ALIASED) };
+        r.draw_markdown(rt, &md, left + 10.0, top + 6.0, md.w);
+        unsafe { rt.PopAxisAlignedClip() };
     }
 
-    /// Where the signature popup goes, and its documentation lines: above the
-    /// caret line, or below it, or past the suggest list, whichever first
+    /// Where the signature popup goes, and its documentation laid out: above
+    /// the caret line, or below it, or past the suggest list, whichever first
     /// fits in the popup area without covering the suggest list.
-    pub(crate) fn signature_box(&mut self) -> Option<(crate::widgets::Rect, Vec<String>)> {
+    pub(crate) fn signature_box(&mut self) -> Option<(crate::widgets::Rect, Option<Rc<crate::markdown_view::MdLayout>>)> {
         let sig = self.signature.clone()?;
         let ph = self.render.fonts.as_ref()?.popup_line_h;
         let (x, y, lh) = self.caret_point();
         let area = self.popup_bounds();
         let suggest = self.suggest_frame();
         let max_w = (area.w() - 8.0).clamp(80.0, 43.0 * ph);
-        let r = &self.render;
-        let docs = sig.documentation.as_deref().map_or(Vec::new(), |d| r.wrap_popup(d, max_w - 16.0, 3));
-        let label_w = r.popup_x(&sig.label, sig.label.len());
-        let docs_w = docs.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max);
-        let w = (label_w.max(docs_w) + 16.0).min(max_w);
-        let h = ph + 4.0 + docs.len() as f32 * ph + if docs.is_empty() { 0.0 } else { 4.0 };
+        let docs = {
+            let highlight = self.popup_highlight();
+            sig.documentation
+                .as_deref()
+                .filter(|d| !d.trim().is_empty())
+                .and_then(|d| self.render.markdown(d, max_w - 20.0, 8.0 * ph, &highlight))
+        };
+        let label_w = self.render.popup_x(&sig.label, sig.label.len());
+        let docs_w = docs.as_ref().map_or(0.0, |d| d.w);
+        let w = (label_w.max(docs_w) + 20.0).min(max_w);
+        // The label, then a rule and the documentation under it.
+        let h = ph + 4.0 + docs.as_ref().map_or(0.0, |d| d.h + 13.0);
         let l = (x - 8.0).min(area.r - w - 4.0).max(area.l);
         let (above, below) = (y - h - 2.0, y + lh + 2.0);
         let mut tops = vec![above, below];
@@ -819,16 +829,20 @@ impl crate::editor::State {
         r.fill(rt, fr.l, fr.t, fr.r, fr.b, Ink::WidgetBg);
         r.stroke(rt, fr.l + 0.5, fr.t + 0.5, fr.r - 0.5, fr.b - 0.5, 1.0, Ink::WidgetBorder);
         let ph = f.popup_line_h;
-        if let Some(l) = r.ui_layout(&sig.label, &f.popup, fr.r - fr.l - 16.0, ph + 4.0) {
+        if let Some(l) = r.ui_layout(&sig.label, &f.popup, fr.r - fr.l - 20.0, ph + 4.0) {
             if let Some(a) = sig.active.filter(|a| a.end <= sig.label.len() && a.start < a.end) {
                 let (s, e) = (col_to_utf16(&sig.label, a.start), col_to_utf16(&sig.label, a.end));
                 r.color_range(&l, s as u32, e as u32, Ink::ListMatch);
+                let _ = unsafe { l.SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, text_range(s as u32, e as u32)) };
             }
-            r.draw_layout(rt, &l, fr.l + 8.0, fr.t + 2.0, Ink::WidgetText);
+            r.draw_layout(rt, &l, fr.l + 10.0, fr.t + 2.0, Ink::WidgetText);
         }
-        for (i, line) in docs.iter().enumerate() {
-            let ly = fr.t + ph + 4.0 + i as f32 * ph;
-            r.text(rt, line, &f.popup, fr.l + 8.0, ly, fr.r - 4.0, ly + ph, Ink::WidgetDim);
+        if let Some(md) = docs {
+            let rule = (fr.t + ph + 6.0).round() + 0.5;
+            r.line(rt, fr.l + 1.0, rule, fr.r - 1.0, rule, 1.0, Ink::WidgetBorder);
+            unsafe { rt.PushAxisAlignedClip(&rect(fr.l + 1.0, rule, fr.r - 1.0, fr.b - 1.0), D2D1_ANTIALIAS_MODE_ALIASED) };
+            r.draw_markdown(rt, &md, fr.l + 10.0, rule + 6.0, fr.r - fr.l - 20.0);
+            unsafe { rt.PopAxisAlignedClip() };
         }
     }
 

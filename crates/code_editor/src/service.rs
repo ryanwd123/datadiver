@@ -23,7 +23,7 @@ pub struct SignatureHelp {
     pub label: String,
     /// The byte range of the argument being typed, in `label`.
     pub active: Option<Range<usize>>,
-    /// Shown dimmed under the label.
+    /// Markdown shown under the label.
     pub documentation: Option<String>,
 }
 
@@ -40,8 +40,8 @@ pub trait LanguageService {
         Vec::new()
     }
 
-    /// Plain text for the mouse resting at `offset`. Lines are kept and long
-    /// ones wrap.
+    /// Markdown for the mouse resting at `offset`; code blocks get the
+    /// service's own highlighting.
     fn hover(&self, _text: &str, _offset: usize) -> Option<String> {
         None
     }

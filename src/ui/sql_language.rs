@@ -70,23 +70,6 @@ fn ink(class: HighlightClass) -> Option<Ink> {
     })
 }
 
-/// Hover markdown as the editor's plain-text tooltip: code fences, bold and
-/// backticks dropped, list items as bullets.
-pub fn plain_text(markdown: &str) -> String {
-    let lines = markdown
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("```"))
-        .map(|line| {
-            let line = line.replace("**", "").replace('`', "");
-            match line.strip_prefix("- ") {
-                Some(item) => format!("\u{2022} {item}"),
-                None => line,
-            }
-        })
-        .collect::<Vec<_>>();
-    lines.join("\n").trim().to_string()
-}
-
 /// The parameter list of a signature like `round(x DOUBLE, n INTEGER) -> DOUBLE`:
 /// the byte range of each argument.
 fn argument_ranges(signature: &str) -> Vec<Range<usize>> {
@@ -152,7 +135,7 @@ impl LanguageService for SqlLanguage {
 
     fn hover(&self, text: &str, at: usize) -> Option<String> {
         let hover = self.with_catalog(|catalog| diver_sql::hover(text, offset(at), catalog))?;
-        Some(plain_text(&hover.markdown)).filter(|h| !h.is_empty())
+        Some(hover.markdown).filter(|h| !h.trim().is_empty())
     }
 
     fn signature_help(&self, text: &str, at: usize) -> Option<SignatureHelp> {
@@ -178,11 +161,14 @@ impl LanguageService for SqlLanguage {
                 .cloned(),
         };
         let others = help.signatures.len().saturating_sub(1);
-        let documentation = match (help.description, others) {
-            (Some(d), 0) => Some(d),
-            (Some(d), n) => Some(format!("{d}\n(+{n} more signatures)")),
-            (None, 0) => None,
-            (None, n) => Some(format!("(+{n} more signatures)")),
+        let more = match others {
+            0 => None,
+            1 => Some("*+1 more signature*".to_string()),
+            n => Some(format!("*+{n} more signatures*")),
+        };
+        let documentation = match (help.description, more) {
+            (Some(d), Some(more)) => Some(format!("{d}\n\n{more}")),
+            (d, more) => d.or(more),
         };
         Some(SignatureHelp {
             label,
@@ -293,7 +279,7 @@ mod tests {
 
         let text = "SELECT qty FROM orders";
         let hover = language.hover(text, text.find("qty").unwrap() + 1).unwrap();
-        assert!(hover.contains("qty") && !hover.contains('`'), "{hover}");
+        assert!(hover.contains("`qty`"), "{hover}");
 
         let text = "SELECT round(qty, ";
         let help = language.signature_help(text, text.len()).unwrap();
@@ -308,13 +294,5 @@ mod tests {
         let args = argument_ranges(sig).into_iter().map(|r| &sig[r]).collect::<Vec<_>>();
         assert_eq!(args, ["a STRUCT(x INT, y INT)", "b VARCHAR[]"]);
         assert!(argument_ranges("now()").is_empty());
-    }
-
-    #[test]
-    fn markdown_becomes_plain_text() {
-        assert_eq!(
-            plain_text("**SELECT**: rows.\n\n```sql\nSELECT 1\n```\n- `a` INT"),
-            "SELECT: rows.\n\nSELECT 1\n\u{2022} a INT"
-        );
     }
 }

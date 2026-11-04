@@ -93,6 +93,7 @@ fn main() {
                             | "editor:sql-results"
                             | "editor:sql-completion"
                             | "editor:sql-hints"
+                            | "editor:sql-hover"
                             | "editor:sql-error"
                             | "editor:sql-helper"
                             | "editor:sql-ask"

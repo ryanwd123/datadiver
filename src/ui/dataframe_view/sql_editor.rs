@@ -173,6 +173,24 @@ FROM apples a";
             panel.editor.diagnostics();
             focus = Some(panel.editor.id);
         }
+        if target == "editor:sql-hover"
+            && let Some(panel) = &mut self.sql_panel
+        {
+            // Rest the mouse on a keyword once the editor has been laid out.
+            let text = "SELECT color, sum(quantity) AS total\nFROM apples\nGROUP BY color";
+            panel.editor.set_text(text);
+            panel.editor.set_selection(2..2);
+            focus = Some(panel.editor.id);
+            cx.timer(Duration::from_millis(200), |view, cx| {
+                if let Some(panel) = &mut view.sql_panel
+                    && let Some(caret) = panel.editor.caret_rect()
+                {
+                    panel.editor.hover_text(crate::ui::platform::point(caret.x + 2.0, caret.y + caret.h / 2.0));
+                }
+                cx.notify();
+            })
+            .detach();
+        }
         if target == "editor:sql-helper"
             && let Some(panel) = &mut self.sql_panel
         {

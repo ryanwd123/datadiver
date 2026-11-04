@@ -181,7 +181,7 @@ pub(crate) struct State {
     /// Start of a word that had no completions: longer prefixes of it cannot
     /// match either, so typing on in it does not ask again.
     suggest_dead: Option<usize>,
-    /// A hover message shown at (x, y).
+    /// A hover message shown at (x, y), in Markdown.
     pub tooltip: Option<(f32, f32, String)>,
     /// Where the suggest list, signature help and hover text may go, in DIPs
     /// from the editor's top-left; `None` keeps them inside the editor. A host
@@ -1685,7 +1685,8 @@ impl State {
         // A hit past the end of a line is not over its last character.
         let at_end = off == self.doc.buffer.line_end(self.doc.buffer.line_of(off))
             && x - self.view.text_x() + self.view.scroll_x > self.x_of(off) + self.view.char_w;
-        let mut msg = if at_end { None } else { self.decorations.hover_at(off).map(str::to_string) };
+        // Tooltips are Markdown; the problem's message is plain text.
+        let mut msg = if at_end { None } else { self.decorations.hover_at(off).map(crate::markdown::escape) };
         if !at_end
             && self.opts.hover
             && let Some(service) = self.service.clone()
@@ -1693,7 +1694,7 @@ impl State {
             let text = self.snapshot();
             if let Some(h) = service.hover(&text, off).filter(|h| !h.trim().is_empty()) {
                 msg = Some(match msg {
-                    Some(m) => format!("{m}\n\n{h}"),
+                    Some(m) => format!("{m}\n\n---\n\n{h}"),
                     None => h,
                 });
             }
@@ -2484,7 +2485,7 @@ impl State {
     /// Shows `msg` in a tooltip under the caret.
     fn caret_message(&mut self, msg: &str) {
         let (x, y, _) = self.caret_point();
-        self.tooltip = Some((x, y, msg.to_string()));
+        self.tooltip = Some((x, y, crate::markdown::escape(msg)));
         self.invalidate();
     }
 
