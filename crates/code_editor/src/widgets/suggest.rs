@@ -240,12 +240,13 @@ impl Suggest {
     /// The popup rectangle for a caret box at (x, y, line height), inside an
     /// editor of `width` x `height`: below the caret, or above when there is no
     /// room below.
-    pub fn frame(&self, x: f32, y: f32, lh: f32, width: f32, height: f32) -> Rect {
+    /// Below the line at (x, y), or above it when only that fits in `area`.
+    pub fn frame(&self, x: f32, y: f32, lh: f32, area: Rect) -> Rect {
         let n = self.rows.len().min(self.style.max_rows) as f32;
         let h = n * self.style.row_h + 2.0;
-        let w = self.style.width.min(width - 8.0).max(120.0);
-        let l = x.min(width - w - 4.0).max(0.0);
-        let t = if y + lh + h <= height || y - h < 0.0 { y + lh } else { y - h };
+        let w = self.style.width.min(area.w() - 8.0).max(120.0);
+        let l = x.min(area.r - w - 4.0).max(area.l);
+        let t = if y + lh + h <= area.b || y - h < area.t { y + lh } else { y - h };
         Rect::new(l, t, l + w, t + h)
     }
 
@@ -350,10 +351,14 @@ mod tests {
             ..Default::default()
         };
         s.filter("");
-        let below = s.frame(100.0, 50.0, 19.0, 800.0, 600.0);
+        let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let below = s.frame(100.0, 50.0, 19.0, area);
         assert_eq!(below.t, 69.0);
-        let above = s.frame(100.0, 580.0, 19.0, 800.0, 600.0);
+        let above = s.frame(100.0, 580.0, 19.0, area);
         assert!(above.b <= 580.0);
+        // A larger area leaves room below.
+        let spill = s.frame(100.0, 580.0, 19.0, Rect::new(-50.0, -200.0, 800.0, 900.0));
+        assert_eq!(spill.t, 599.0);
         assert_eq!(s.row_at(below, below.t + ROW_H * 1.5), Some(1));
     }
 }

@@ -183,6 +183,10 @@ pub(crate) struct State {
     suggest_dead: Option<usize>,
     /// A hover message shown at (x, y).
     pub tooltip: Option<(f32, f32, String)>,
+    /// Where the suggest list, signature help and hover text may go, in DIPs
+    /// from the editor's top-left; `None` keeps them inside the editor. A host
+    /// sets it to let them spill over the rest of its window.
+    pub popup_area: Option<Rect>,
     /// Where typing goes: the text or one of the overlay inputs.
     pub focus: Focus,
     /// The host's own language features.
@@ -253,6 +257,7 @@ impl State {
             provider: None,
             suggest_dead: None,
             tooltip: None,
+            popup_area: None,
             focus: Focus::Text,
             service: None,
             host_hl: None,
@@ -1253,7 +1258,25 @@ impl State {
         let start = self.suggest.word_start;
         let x = self.x_of(start) + self.view.text_x() - self.view.scroll_x - 1.0;
         let y = self.view.line_y(self.row_of(start));
-        Some(self.suggest.frame(x, y, self.view.line_h, self.view.width, self.view.height))
+        Some(self.suggest.frame(x, y, self.view.line_h, self.popup_bounds()))
+    }
+
+    /// Where popups may go: the host's popup area, or the editor itself.
+    pub fn popup_bounds(&self) -> Rect {
+        self.popup_area.unwrap_or(Rect::new(0.0, 0.0, self.view.width, self.view.height))
+    }
+
+    /// Whether (x, y) is over the suggest list or the signature help.
+    pub fn over_popup(&mut self, x: f32, y: f32) -> bool {
+        self.suggest_frame().is_some_and(|f| f.contains(x, y))
+            || self.signature_box().is_some_and(|(f, _)| f.contains(x, y))
+    }
+
+    /// The suggest list and signature help, the popups that take the mouse.
+    pub fn popup_frames(&mut self) -> Vec<Rect> {
+        let mut out: Vec<Rect> = self.suggest_frame().into_iter().collect();
+        out.extend(self.signature_box().map(|b| b.0));
+        out
     }
 
     /// The offset where a trailing line comment starts before `off`, if any.
@@ -1654,7 +1677,8 @@ impl State {
 
     /// The mouse rested at (x, y): shows a decoration's hover message there.
     pub fn hover(&mut self, x: f32, y: f32) {
-        if self.view.region(x, y) != Region::Text || self.over_widget(x, y) {
+        let inside = x >= 0.0 && y >= 0.0 && x < self.view.width && y < self.view.height;
+        if !inside || self.view.region(x, y) != Region::Text || self.over_widget(x, y) || self.over_popup(x, y) {
             return;
         }
         let off = self.hit(x, y);
@@ -2363,6 +2387,10 @@ impl State {
                 return;
             }
             self.close_suggest();
+        }
+        // The signature help only shows; a click on it leaves the caret.
+        if self.signature_box().is_some_and(|(f, _)| f.contains(x, y)) {
+            return;
         }
         if self.widget_click(x, y) {
             return;
@@ -3543,6 +3571,38 @@ mod suggest_tests {
         fn folding_ranges(&self, text: &str) -> Option<Vec<std::ops::Range<usize>>> {
             Some(text.find('(').zip(text.rfind(')')).map(|(a, e)| a..e + 1).into_iter().collect())
         }
+    }
+
+    #[test]
+    fn popups_spill_into_the_popup_area_without_covering_each_other() {
+        // The caret on the last visible line: no room below inside the editor.
+        let text = (0..19).map(|i| format!("ff{i} ff")).collect::<Vec<_>>().join("
+");
+        let mut st = state(None, &format!("{text}
+f(ff|"));
+        st.set_service(Some(Rc::new(Toy)));
+        st.ensure_fonts();
+        st.view.width = 600.0;
+        st.view.height = st.view.line_h * 20.0;
+        st.run(Action::TriggerParameterHints);
+        st.run(Action::TriggerSuggest);
+        let caret_y = st.caret_point().1;
+        let overlap = |a: Rect, b: Rect| a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+        let suggest = st.suggest_frame().expect("suggestions open");
+        let (sig, _) = st.signature_box().expect("signature open");
+        assert!(suggest.b <= caret_y, "inside the editor the list flips above the line");
+        assert!(!overlap(suggest, sig), "{suggest:?} {sig:?}");
+        assert!(sig.t >= 0.0 && sig.b <= st.view.height);
+
+        // With room below in the host's window, the list goes below the line,
+        // past the editor's bottom edge, and the signature stays above.
+        st.popup_area = Some(Rect::new(-100.0, -300.0, 700.0, st.view.height + 400.0));
+        let suggest = st.suggest_frame().unwrap();
+        let (sig, _) = st.signature_box().unwrap();
+        assert!(suggest.t > caret_y && suggest.b > st.view.height);
+        assert!(sig.b <= caret_y);
+        assert!(!overlap(suggest, sig));
+        assert!(st.over_popup(suggest.l + 1.0, suggest.b - 1.0));
     }
 
     #[test]

@@ -512,6 +512,8 @@ impl FormatManager {
         } else {
             self.preset_list = None;
         }
+        let id = self.editor.id;
+        self.editor.paint_popups(canvas, Hit::CodeEditor(id));
     }
 
     /// The open presets list in `panel`, grouped, scrolling when it's taller.

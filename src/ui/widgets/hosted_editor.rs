@@ -344,12 +344,33 @@ impl HostedEditor {
             (r.w * k).round() as i32,
             (r.h * k).round() as i32,
         );
+        // Popups may cover the whole window, not just the editor; they are
+        // drawn by `paint_popups`.
+        let window = canvas.bounds();
+        self.editor.set_popup_area(Some((
+            (window.x * k).round() as i32,
+            (window.y * k).round() as i32,
+            (window.w * k).round() as i32,
+            (window.h * k).round() as i32,
+        )));
         self.editor.set_focused(focused);
         self.bounds = r;
         let editor = &self.editor;
         canvas.paint_native(|target| editor.paint_into(target));
         canvas.hit_cursor(r, hit.clone(), Cursor::IBeam);
         for (x, y, w, h) in self.editor.arrow_areas() {
+            canvas.hit_cursor(rect(r.x + x, r.y + y, w, h).intersect(&r), hit.clone(), Cursor::Arrow);
+        }
+    }
+
+    /// Draws the suggest list, signature help and hover text over whatever
+    /// was painted since [`Self::paint`], and takes the mouse over them.
+    /// Call it once the rest of the window is drawn.
+    pub fn paint_popups<H: Clone>(&mut self, canvas: &mut Canvas<H>, hit: H) {
+        let editor = &self.editor;
+        canvas.paint_native(|target| editor.paint_popups_into(target));
+        let r = self.bounds;
+        for (x, y, w, h) in self.editor.popup_frames() {
             canvas.hit_cursor(rect(r.x + x, r.y + y, w, h), hit.clone(), Cursor::Arrow);
         }
     }

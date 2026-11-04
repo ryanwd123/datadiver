@@ -762,12 +762,12 @@ impl crate::editor::State {
         let (Some((x, y, msg)), Some(f)) = (&self.tooltip, &self.render.fonts) else { return };
         let r = &self.render;
         let lh = f.popup_line_h;
-        let lines = r.wrap_popup(msg, (self.view.width - 24.0).clamp(120.0, 40.0 * lh), 24);
+        let area = self.popup_bounds();
+        let lines = r.wrap_popup(msg, (area.w() - 24.0).clamp(120.0, 40.0 * lh), 24);
         let tw = lines.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max) + 16.0;
         let th = lines.len() as f32 * lh + 8.0;
-        let (w, h) = (self.view.width, self.view.height);
-        let left = x.min(w - tw - 4.0).max(0.0);
-        let top = if y + 20.0 + th < h { y + 20.0 } else { (y - th - 8.0).max(0.0) };
+        let left = x.min(area.r - tw - 4.0).max(area.l);
+        let top = if y + 20.0 + th < area.b { y + 20.0 } else { (y - th - 8.0).max(area.t) };
         r.fill(rt, left + 2.0, top + 2.0, left + tw + 2.0, top + th + 2.0, Ink::Shadow);
         r.fill(rt, left, top, left + tw, top + th, Ink::WidgetBg);
         r.stroke(rt, left + 0.5, top + 0.5, left + tw - 0.5, top + th - 0.5, 1.0, Ink::WidgetBorder);
@@ -777,21 +777,36 @@ impl crate::editor::State {
         }
     }
 
-    /// Where the signature popup goes, above the caret line (below it at the
-    /// top), and its documentation lines.
+    /// Where the signature popup goes, and its documentation lines: above the
+    /// caret line, or below it, or past the suggest list, whichever first
+    /// fits in the popup area without covering the suggest list.
     pub(crate) fn signature_box(&mut self) -> Option<(crate::widgets::Rect, Vec<String>)> {
         let sig = self.signature.clone()?;
         let ph = self.render.fonts.as_ref()?.popup_line_h;
         let (x, y, lh) = self.caret_point();
-        let max_w = (self.view.width - 8.0).clamp(80.0, 43.0 * ph);
+        let area = self.popup_bounds();
+        let suggest = self.suggest_frame();
+        let max_w = (area.w() - 8.0).clamp(80.0, 43.0 * ph);
         let r = &self.render;
         let docs = sig.documentation.as_deref().map_or(Vec::new(), |d| r.wrap_popup(d, max_w - 16.0, 3));
         let label_w = r.popup_x(&sig.label, sig.label.len());
         let docs_w = docs.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max);
         let w = (label_w.max(docs_w) + 16.0).min(max_w);
         let h = ph + 4.0 + docs.len() as f32 * ph + if docs.is_empty() { 0.0 } else { 4.0 };
-        let l = (x - 8.0).min(self.view.width - w - 4.0).max(0.0);
-        let t = if y - h - 2.0 >= 0.0 { y - h - 2.0 } else { y + lh + 2.0 };
+        let l = (x - 8.0).min(area.r - w - 4.0).max(area.l);
+        let (above, below) = (y - h - 2.0, y + lh + 2.0);
+        let mut tops = vec![above, below];
+        if let Some(s) = suggest {
+            tops.extend([s.t - h - 2.0, s.b + 2.0]);
+        }
+        let fits = |t: &f32| *t >= area.t && *t + h <= area.b;
+        let clear = |t: &f32| suggest.is_none_or(|s| l >= s.r || l + w <= s.l || *t >= s.b || *t + h <= s.t);
+        let t = tops
+            .iter()
+            .copied()
+            .find(|t| fits(t) && clear(t))
+            .or_else(|| tops.iter().copied().find(fits))
+            .unwrap_or(if above >= area.t { above } else { below });
         Some((crate::widgets::Rect::new(l, t, l + w, t + h), docs))
     }
 
@@ -1244,11 +1259,27 @@ impl crate::editor::State {
                 r.fill(rt, x, h - sb + 4.0, x + tw, h, ink);
             }
             self.paint_widgets(rt);
-            self.paint_signature(rt);
-            self.paint_suggest(rt);
-            self.paint_tooltip(rt);
             rt.PopAxisAlignedClip();
         }
         self.render.end_frame(vis.len());
+    }
+
+    /// Paints the signature help, suggest list and hover text, clipped to the
+    /// popup area rather than the editor. Call after [`Self::paint`]; a host
+    /// with a popup area calls it after drawing the rest of its window, so
+    /// the popups land on top.
+    pub(crate) fn paint_popups(&mut self, rt: &ID2D1RenderTarget) {
+        self.ensure_fonts();
+        if self.render.bind(rt).is_err() {
+            return;
+        }
+        let a = self.popup_bounds();
+        unsafe {
+            rt.PushAxisAlignedClip(&rect(a.l, a.t, a.r, a.b), D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+        self.paint_signature(rt);
+        self.paint_suggest(rt);
+        self.paint_tooltip(rt);
+        unsafe { rt.PopAxisAlignedClip() };
     }
 }

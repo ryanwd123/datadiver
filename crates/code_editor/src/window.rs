@@ -64,6 +64,8 @@ struct Hosted {
     w: i32,
     h: i32,
     visible: bool,
+    /// Where popups may go, in host client pixels (x, y, w, h).
+    popup: Option<(i32, i32, i32, i32)>,
 }
 
 pub(crate) struct Shell {
@@ -110,6 +112,15 @@ impl Shell {
                         bottom: h.y + h.h,
                     };
                     let _ = InvalidateRect(Some(h.host), Some(&rc), false);
+                    if let Some((x, y, w, ht)) = h.popup {
+                        let rc = RECT {
+                            left: x,
+                            top: y,
+                            right: x + w,
+                            bottom: y + ht,
+                        };
+                        let _ = InvalidateRect(Some(h.host), Some(&rc), false);
+                    }
                 }
                 None => {
                     let _ = InvalidateRect(Some(self.hwnd.get()), None, false);
@@ -608,6 +619,15 @@ fn place_ime(shell: &Shell, st: &mut State) {
     }
 }
 
+/// A hosted editor's popup area in its own DIPs, from host pixels.
+fn sync_popup_area(h: Hosted, st: &mut State) {
+    let k = st.view.dpi / 96.0;
+    st.popup_area = h.popup.map(|(x, y, w, ht)| {
+        let (l, t) = ((x - h.x) as f32 / k, (y - h.y) as f32 / k);
+        crate::widgets::Rect::new(l, t, l + w as f32 / k, t + ht as f32 / k)
+    });
+}
+
 /// Paints a child-window editor into its own render target.
 fn paint(shell: &Shell, st: &mut State, hwnd: HWND) {
     if st.view.width <= 0.0 || st.view.height <= 0.0 {
@@ -637,6 +657,7 @@ fn paint(shell: &Shell, st: &mut State, hwnd: HWND) {
     unsafe {
         t.BeginDraw();
         st.paint(&t);
+        st.paint_popups(&t);
         if let Err(e) = t.EndDraw(None, None)
             && e.code() == D2DERR_RECREATE_TARGET
         {
@@ -856,7 +877,10 @@ impl Editor {
             self.shell.invalidate();
             (hd.x, hd.y, hd.w, hd.h) = (x, y, w.max(0), h.max(0));
             self.shell.hosted.set(Some(hd));
-            self.with(|s| s.resize(w.max(0) as u32, h.max(0) as u32));
+            self.with(|s| {
+                s.resize(w.max(0) as u32, h.max(0) as u32);
+                sync_popup_area(hd, s);
+            });
             return;
         }
         unsafe {
@@ -951,10 +975,51 @@ impl Editor {
         r
     }
 
+    /// For hosted editors: lets the suggest list, signature help and hover
+    /// text spill outside the editor, anywhere in this rectangle of host
+    /// client pixels (usually the host's whole client area). `None` keeps
+    /// them inside the editor. Hosts that set it draw the popups with
+    /// [`Editor::paint_popups_into`] and send the editor mouse input over
+    /// [`Editor::popup_frames`].
+    pub fn set_popup_area(&self, area: Option<(i32, i32, i32, i32)>) {
+        let Some(mut hd) = self.shell.hosted.get() else { return };
+        let area = area.map(|(x, y, w, h)| (x, y, w.max(0), h.max(0)));
+        if hd.popup == area {
+            return;
+        }
+        self.shell.invalidate();
+        hd.popup = area;
+        self.shell.hosted.set(Some(hd));
+        self.with(|s| sync_popup_area(hd, s));
+    }
+
     /// For hosted editors: draws the editor at its bounds into the host's
     /// render target, between the host's `BeginDraw` and `EndDraw`. The target
-    /// must use the host window's DPI.
+    /// must use the host window's DPI. Its popups are drawn by
+    /// [`Editor::paint_popups_into`].
     pub fn paint_into(&self, rt: &ID2D1RenderTarget) {
+        self.paint_hosted(rt, State::paint);
+    }
+
+    /// For hosted editors: draws the suggest list, signature help and hover
+    /// text, clipped to the popup area. Call it after drawing everything the
+    /// popups should cover.
+    pub fn paint_popups_into(&self, rt: &ID2D1RenderTarget) {
+        self.paint_hosted(rt, State::paint_popups);
+    }
+
+    /// The suggest list and signature help where they are now, as (x, y,
+    /// width, height) in DIPs from the editor's top-left; they can reach
+    /// outside the editor when it has a popup area.
+    pub fn popup_frames(&self) -> Vec<(f32, f32, f32, f32)> {
+        self.with(|s| s.popup_frames())
+            .into_iter()
+            .map(|r| (r.l, r.t, r.w(), r.h()))
+            .collect()
+    }
+
+    /// Runs `paint` with the target's transform moved to the editor's origin.
+    fn paint_hosted(&self, rt: &ID2D1RenderTarget, paint: fn(&mut State, &ID2D1RenderTarget)) {
         let Some(h) = self.shell.hosted.get() else { return };
         if !h.visible || h.w <= 0 || h.h <= 0 {
             return;
@@ -967,6 +1032,7 @@ impl Editor {
         if dpi > 0.0 && dpi != st.view.dpi {
             st.set_dpi(dpi);
             st.resize(h.w.max(0) as u32, h.h.max(0) as u32);
+            sync_popup_area(h, &mut st);
         }
         let k = st.view.dpi / 96.0;
         unsafe {
@@ -978,7 +1044,7 @@ impl Editor {
                 ..old
             };
             rt.SetTransform(&m);
-            st.paint(rt);
+            paint(&mut st, rt);
             rt.SetTransform(&old);
         }
     }

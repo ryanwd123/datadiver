@@ -749,6 +749,8 @@ impl SqlPanel {
 
     /// Completion menus, drawn above everything else.
     pub fn paint_overlay(&mut self, canvas: &mut Canvas<Hit>, fonts: &Fonts, focus: Option<WidgetId>) {
+        let id = self.editor.id;
+        self.editor.paint_popups(canvas, Hit::CodeEditor(id));
         if focus == Some(self.ask_input.id) {
             self.mentions
                 .paint(canvas, self.ask_input.caret_rect(), &fonts.ui, self.ask_input.id);
