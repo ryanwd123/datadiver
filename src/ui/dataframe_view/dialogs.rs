@@ -539,7 +539,6 @@ impl DataFrameView {
         families.dedup();
         let title = match target {
             FontTarget::Grid => "Fonts",
-            FontTarget::Completion => "Completion list font",
             FontTarget::Editor => {
                 // Code reads best in a monospaced font, so those come first.
                 families.sort_by_key(|family| !crate::ui::font_picker::looks_monospaced(family));
@@ -1206,7 +1205,6 @@ impl DataFrameView {
                     match target {
                         FontTarget::Grid => font.family = family,
                         FontTarget::Editor => font.editor_family = family,
-                        FontTarget::Completion => return self.choose_completion_font(family, cx),
                     }
                     self.save_font(font, cx);
                 }

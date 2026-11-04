@@ -369,8 +369,7 @@ impl HostedEditor {
             options.font_family = Some(font.family.to_string());
             options.font_size = font.size;
         }
-        options.suggest_font_family = s.completion_font_family.clone();
-        options.suggest_font_size = s.completion_font_size.map_or(options.font_size, f32::from);
+        options.popup_font_scale = f32::from(s.popup_font_percent.clamp(50, 200)) / 100.0;
         options.suggest_rows = usize::from(s.completion_rows);
         options.quick_suggestions = s.suggest_while_typing;
         options.parameter_hints = s.signature_help;

@@ -11,8 +11,7 @@ use crate::ui::widgets::list::Item;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EditorOption {
     Font,
-    CompletionFont,
-    CompletionFontSize,
+    PopupFontSize,
     CompletionRows,
     SuggestWhileTyping,
     SuggestAfterDot,
@@ -37,10 +36,9 @@ pub(crate) enum EditorOption {
     WheelZoom,
 }
 
-const OPTIONS: [EditorOption; 25] = [
+const OPTIONS: [EditorOption; 24] = [
     EditorOption::Font,
-    EditorOption::CompletionFont,
-    EditorOption::CompletionFontSize,
+    EditorOption::PopupFontSize,
     EditorOption::CompletionRows,
     EditorOption::SuggestWhileTyping,
     EditorOption::SuggestAfterDot,
@@ -65,10 +63,13 @@ const OPTIONS: [EditorOption; 25] = [
     EditorOption::WheelZoom,
 ];
 
+/// Popup font sizes on offer, as percents of the editor's.
+const POPUP_PERCENTS: [u8; 10] = [70, 75, 80, 85, 90, 100, 110, 125, 150, 175];
+
 /// The values a choice row offers, `None` for its default.
 fn choices(option: EditorOption) -> Vec<Option<u8>> {
     match option {
-        EditorOption::CompletionFontSize => std::iter::once(None).chain((9..=24).map(Some)).collect(),
+        EditorOption::PopupFontSize => POPUP_PERCENTS.into_iter().map(Some).collect(),
         EditorOption::CompletionRows => [6, 8, 10, 12, 16, 20, 30].into_iter().map(Some).collect(),
         EditorOption::TabSize => [2, 4, 8].into_iter().map(Some).collect(),
         EditorOption::QuoteNames => vec![Some(0), Some(1)],
@@ -79,7 +80,7 @@ fn choices(option: EditorOption) -> Vec<Option<u8>> {
 /// How a choice row names one of its values.
 fn choice_label(option: EditorOption, value: u8) -> String {
     match option {
-        EditorOption::CompletionFontSize => format!("{value} pt"),
+        EditorOption::PopupFontSize => format!("{value}% of the editor font"),
         EditorOption::QuoteNames => quote_names_label(value == 1).into(),
         _ => value.to_string(),
     }
@@ -118,8 +119,7 @@ fn switch(settings: &mut EditorSettings, option: EditorOption) -> Option<&mut bo
 fn label(option: EditorOption) -> &'static str {
     match option {
         EditorOption::Font => "Editor font",
-        EditorOption::CompletionFont => "Completion list font",
-        EditorOption::CompletionFontSize => "Completion list font size",
+        EditorOption::PopupFontSize => "Completion, signature and hover font size",
         EditorOption::CompletionRows => "Completion list rows",
         EditorOption::SuggestWhileTyping => "Suggest completions while typing",
         EditorOption::SuggestAfterDot => "Suggest after . (columns, tables of a schema)",
@@ -161,11 +161,7 @@ impl DataFrameView {
         let font = |family: &Option<String>, default: &str| family.clone().unwrap_or_else(|| format!("Default · {default}"));
         match option {
             EditorOption::Font => font(&self.font.editor_family, crate::ui::widgets::DEFAULT_EDITOR_FAMILY),
-            EditorOption::CompletionFont => font(&s.completion_font_family, crate::ui::widgets::DEFAULT_FAMILY),
-            EditorOption::CompletionFontSize => match s.completion_font_size {
-                Some(size) => format!("{size} pt"),
-                None => format!("Editor size · {} pt", self.font.size),
-            },
+            EditorOption::PopupFontSize => format!("{}% of the editor font", s.popup_font_percent),
             EditorOption::CompletionRows => s.completion_rows.to_string(),
             EditorOption::TabSize => s.tab_size.to_string(),
             EditorOption::QuoteNames => quote_names_label(s.always_quote_names).into(),
@@ -209,11 +205,10 @@ impl DataFrameView {
         self.close_dialog(cx);
         match option {
             EditorOption::Font => self.open_font_picker(FontTarget::Editor, cx),
-            EditorOption::CompletionFont => self.open_font_picker(FontTarget::Completion, cx),
             _ => {
                 let values = choices(option);
                 let current = match option {
-                    EditorOption::CompletionFontSize => self.editor_settings.completion_font_size,
+                    EditorOption::PopupFontSize => Some(self.editor_settings.popup_font_percent),
                     EditorOption::CompletionRows => Some(self.editor_settings.completion_rows),
                     EditorOption::QuoteNames => Some(u8::from(self.editor_settings.always_quote_names)),
                     _ => Some(self.editor_settings.tab_size),
@@ -242,7 +237,7 @@ impl DataFrameView {
     pub(crate) fn choose_editor_setting(&mut self, option: EditorOption, value: Option<u8>, cx: &mut Cx<Self>) {
         let mut settings = self.editor_settings.clone();
         match option {
-            EditorOption::CompletionFontSize => settings.completion_font_size = value,
+            EditorOption::PopupFontSize => settings.popup_font_percent = value.unwrap_or(100),
             EditorOption::CompletionRows => settings.completion_rows = value.unwrap_or(12),
             EditorOption::TabSize => settings.tab_size = value.unwrap_or(4),
             EditorOption::QuoteNames => settings.always_quote_names = value == Some(1),
@@ -251,14 +246,6 @@ impl DataFrameView {
         self.close_dialog(cx);
         self.save_editor_settings(settings, cx);
         self.open_editor_settings(Some(option), cx);
-    }
-
-    /// The completion list's font from the font picker; back to the options.
-    pub(crate) fn choose_completion_font(&mut self, family: Option<String>, cx: &mut Cx<Self>) {
-        let mut settings = self.editor_settings.clone();
-        settings.completion_font_family = family;
-        self.save_editor_settings(settings, cx);
-        self.open_editor_settings(Some(EditorOption::CompletionFont), cx);
     }
 
     /// Saves the options, applies them here and tells the other windows.

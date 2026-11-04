@@ -34,15 +34,12 @@ impl FontPreferences {
 pub(crate) enum FontTarget {
     Grid,
     Editor,
-    /// The SQL editor's completion list.
-    Completion,
 }
 
 pub(crate) fn default_family(target: FontTarget) -> &'static str {
     match target {
         FontTarget::Grid => DEFAULT_FAMILY,
         FontTarget::Editor => DEFAULT_EDITOR_FAMILY,
-        FontTarget::Completion => DEFAULT_FAMILY,
     }
 }
 

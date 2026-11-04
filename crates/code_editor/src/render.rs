@@ -115,13 +115,17 @@ pub(crate) struct Fonts {
     /// The suggest popup's labels and details, and its centered icons.
     pub suggest: IDWriteTextFormat,
     pub suggest_center: IDWriteTextFormat,
+    /// Signature help and hover text, in the code font at the popup size.
+    pub popup: IDWriteTextFormat,
+    /// The height of a line of `popup` text.
+    pub popup_line_h: f32,
     typography: IDWriteTypography,
     pub line_h: f32,
     pub char_w: f32,
 }
 
 impl Fonts {
-    fn new(dw: &IDWriteFactory, family: &str, size: f32, tab: usize, dpi: f32, suggest: (&str, f32)) -> Result<Fonts> {
+    fn new(dw: &IDWriteFactory, family: &str, size: f32, tab: usize, dpi: f32, popup_size: f32) -> Result<Fonts> {
         unsafe {
             let fam = HSTRING::from(family);
             let make = |size: f32, fam: &HSTRING| {
@@ -163,8 +167,8 @@ impl Fonts {
             ui_center.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             ui_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             ui_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            let (suggest_family, suggest_size) = (HSTRING::from(suggest.0), suggest.1.clamp(6.0, 48.0));
-            let suggest = make(suggest_size, &suggest_family)?;
+            let suggest_size = popup_size.clamp(6.0, 48.0);
+            let suggest = make(suggest_size, &fam)?;
             suggest.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             suggest.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             // Long labels and details end in "…" instead of running past their box.
@@ -174,10 +178,14 @@ impl Fonts {
                 delimiterCount: 0,
             };
             suggest.SetTrimming(&trimming, &dw.CreateEllipsisTrimmingSign(&suggest)?)?;
-            let suggest_center = make(suggest_size, &suggest_family)?;
+            let suggest_center = make(suggest_size, &fam)?;
             suggest_center.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             suggest_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             suggest_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            let popup = make(suggest_size, &fam)?;
+            popup.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            popup.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            let popup_line_h = (suggest_size * 1.4 * k).round() / k;
 
             let typography = dw.CreateTypography()?;
             for tag in [
@@ -196,6 +204,8 @@ impl Fonts {
                 ui_center,
                 suggest,
                 suggest_center,
+                popup,
+                popup_line_h,
                 typography,
                 line_h,
                 char_w,
@@ -297,11 +307,10 @@ impl Renderer {
         size: f32,
         tab: usize,
         dpi: f32,
-        suggest: (Option<&str>, f32),
+        popup_size: f32,
     ) -> Result<Rc<Fonts>> {
         let family = family.unwrap_or(&self.shared.mono).to_string();
-        let suggest = (suggest.0.unwrap_or("Segoe UI"), suggest.1);
-        let f = Rc::new(Fonts::new(&self.shared.dw, &family, size, tab, dpi, suggest)?);
+        let f = Rc::new(Fonts::new(&self.shared.dw, &family, size, tab, dpi, popup_size)?);
         self.fonts = Some(f.clone());
         self.cache.clear();
         Ok(f)
@@ -527,11 +536,13 @@ pub(crate) fn gpu_ready() -> bool {
 }
 
 impl Renderer {
-    /// A layout of overlay text, for measuring and hit testing.
-    fn ui_text(&self, s: &str) -> Option<IDWriteTextLayout> {
+    /// A layout of overlay text (popup text with `popup`), for measuring
+    /// and hit testing.
+    fn ui_text(&self, s: &str, popup: bool) -> Option<IDWriteTextLayout> {
         let f = self.fonts.as_ref()?;
         let wide: Vec<u16> = s.encode_utf16().collect();
-        unsafe { self.shared.dw.CreateTextLayout(&wide, &f.ui, 1e6, 100.0).ok() }
+        let format = if popup { &f.popup } else { &f.ui };
+        unsafe { self.shared.dw.CreateTextLayout(&wide, format, 1e6, 100.0).ok() }
     }
 
     /// A layout of overlay text to color and draw.
@@ -563,7 +574,16 @@ impl Renderer {
 
     /// x of byte `col` in overlay text `s`.
     pub fn ui_x(&self, s: &str, col: usize) -> f32 {
-        let Some(l) = self.ui_text(s) else { return 0.0 };
+        self.text_x(s, col, false)
+    }
+
+    /// Where column `col` of popup text is.
+    pub fn popup_x(&self, s: &str, col: usize) -> f32 {
+        self.text_x(s, col, true)
+    }
+
+    fn text_x(&self, s: &str, col: usize, popup: bool) -> f32 {
+        let Some(l) = self.ui_text(s, popup) else { return 0.0 };
         let i = col_to_utf16(s, col) as u32;
         let (mut x, mut y) = (0.0, 0.0);
         let mut m = DWRITE_HIT_TEST_METRICS::default();
@@ -575,13 +595,13 @@ impl Renderer {
 
     /// `msg` in lines no wider than `max_w`, broken at spaces, at most
     /// `max_lines` (the last one ends with `…` when some were cut).
-    pub fn wrap_ui(&self, msg: &str, max_w: f32, max_lines: usize) -> Vec<String> {
+    pub fn wrap_popup(&self, msg: &str, max_w: f32, max_lines: usize) -> Vec<String> {
         let mut out = Vec::new();
         for para in msg.lines() {
             let mut line = String::new();
             for word in para.split(' ') {
                 let joined = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
-                if !line.is_empty() && self.ui_x(&joined, joined.len()) > max_w {
+                if !line.is_empty() && self.popup_x(&joined, joined.len()) > max_w {
                     out.push(std::mem::replace(&mut line, word.to_string()));
                 } else {
                     line = joined;
@@ -600,7 +620,7 @@ impl Renderer {
 
     /// The byte column of overlay text `s` nearest to x.
     pub fn ui_col_at(&self, s: &str, x: f32) -> usize {
-        let Some(l) = self.ui_text(s) else { return 0 };
+        let Some(l) = self.ui_text(s, false) else { return 0 };
         let (mut trailing, mut inside) = (BOOL(0), BOOL(0));
         let mut m = DWRITE_HIT_TEST_METRICS::default();
         unsafe {
@@ -741,9 +761,10 @@ impl crate::editor::State {
     fn paint_tooltip(&self, rt: &ID2D1RenderTarget) {
         let (Some((x, y, msg)), Some(f)) = (&self.tooltip, &self.render.fonts) else { return };
         let r = &self.render;
-        let lines = r.wrap_ui(msg, (self.view.width - 24.0).clamp(120.0, 520.0), 24);
-        let tw = lines.iter().map(|l| r.ui_x(l, l.len())).fold(0.0, f32::max) + 16.0;
-        let th = lines.len() as f32 * 18.0 + 8.0;
+        let lh = f.popup_line_h;
+        let lines = r.wrap_popup(msg, (self.view.width - 24.0).clamp(120.0, 40.0 * lh), 24);
+        let tw = lines.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max) + 16.0;
+        let th = lines.len() as f32 * lh + 8.0;
         let (w, h) = (self.view.width, self.view.height);
         let left = x.min(w - tw - 4.0).max(0.0);
         let top = if y + 20.0 + th < h { y + 20.0 } else { (y - th - 8.0).max(0.0) };
@@ -751,8 +772,8 @@ impl crate::editor::State {
         r.fill(rt, left, top, left + tw, top + th, Ink::WidgetBg);
         r.stroke(rt, left + 0.5, top + 0.5, left + tw - 0.5, top + th - 0.5, 1.0, Ink::WidgetBorder);
         for (i, l) in lines.iter().enumerate() {
-            let ly = top + 4.0 + i as f32 * 18.0;
-            r.text(rt, l, &f.ui, left + 8.0, ly, left + tw, ly + 18.0, Ink::WidgetText);
+            let ly = top + 4.0 + i as f32 * lh;
+            r.text(rt, l, &f.popup, left + 8.0, ly, left + tw, ly + lh, Ink::WidgetText);
         }
     }
 
@@ -760,15 +781,15 @@ impl crate::editor::State {
     /// top), and its documentation lines.
     pub(crate) fn signature_box(&mut self) -> Option<(crate::widgets::Rect, Vec<String>)> {
         let sig = self.signature.clone()?;
-        self.render.fonts.as_ref()?;
+        let ph = self.render.fonts.as_ref()?.popup_line_h;
         let (x, y, lh) = self.caret_point();
-        let max_w = (self.view.width - 8.0).clamp(80.0, 560.0);
+        let max_w = (self.view.width - 8.0).clamp(80.0, 43.0 * ph);
         let r = &self.render;
-        let docs = sig.documentation.as_deref().map_or(Vec::new(), |d| r.wrap_ui(d, max_w - 16.0, 3));
-        let label_w = r.ui_x(&sig.label, sig.label.len());
-        let docs_w = docs.iter().map(|l| r.ui_x(l, l.len())).fold(0.0, f32::max);
+        let docs = sig.documentation.as_deref().map_or(Vec::new(), |d| r.wrap_popup(d, max_w - 16.0, 3));
+        let label_w = r.popup_x(&sig.label, sig.label.len());
+        let docs_w = docs.iter().map(|l| r.popup_x(l, l.len())).fold(0.0, f32::max);
         let w = (label_w.max(docs_w) + 16.0).min(max_w);
-        let h = 22.0 + docs.len() as f32 * 18.0 + if docs.is_empty() { 0.0 } else { 4.0 };
+        let h = ph + 4.0 + docs.len() as f32 * ph + if docs.is_empty() { 0.0 } else { 4.0 };
         let l = (x - 8.0).min(self.view.width - w - 4.0).max(0.0);
         let t = if y - h - 2.0 >= 0.0 { y - h - 2.0 } else { y + lh + 2.0 };
         Some((crate::widgets::Rect::new(l, t, l + w, t + h), docs))
@@ -782,7 +803,8 @@ impl crate::editor::State {
         r.fill(rt, fr.l + 2.0, fr.t + 2.0, fr.r + 2.0, fr.b + 2.0, Ink::Shadow);
         r.fill(rt, fr.l, fr.t, fr.r, fr.b, Ink::WidgetBg);
         r.stroke(rt, fr.l + 0.5, fr.t + 0.5, fr.r - 0.5, fr.b - 0.5, 1.0, Ink::WidgetBorder);
-        if let Some(l) = r.ui_layout(&sig.label, &f.ui, fr.r - fr.l - 16.0, 22.0) {
+        let ph = f.popup_line_h;
+        if let Some(l) = r.ui_layout(&sig.label, &f.popup, fr.r - fr.l - 16.0, ph + 4.0) {
             if let Some(a) = sig.active.filter(|a| a.end <= sig.label.len() && a.start < a.end) {
                 let (s, e) = (col_to_utf16(&sig.label, a.start), col_to_utf16(&sig.label, a.end));
                 r.color_range(&l, s as u32, e as u32, Ink::ListMatch);
@@ -790,8 +812,8 @@ impl crate::editor::State {
             r.draw_layout(rt, &l, fr.l + 8.0, fr.t + 2.0, Ink::WidgetText);
         }
         for (i, line) in docs.iter().enumerate() {
-            let ly = fr.t + 22.0 + i as f32 * 18.0;
-            r.text(rt, line, &f.ui, fr.l + 8.0, ly, fr.r - 4.0, ly + 18.0, Ink::WidgetDim);
+            let ly = fr.t + ph + 4.0 + i as f32 * ph;
+            r.text(rt, line, &f.popup, fr.l + 8.0, ly, fr.r - 4.0, ly + ph, Ink::WidgetDim);
         }
     }
 

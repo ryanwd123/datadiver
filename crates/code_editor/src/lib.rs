@@ -104,10 +104,10 @@ pub struct Options {
     pub cursor_blinking: bool,
     /// Open the suggest popup while typing words and on trigger characters.
     pub quick_suggestions: bool,
-    /// The suggest popup's font; `None` uses Segoe UI.
-    pub suggest_font_family: Option<String>,
-    /// The suggest popup's font size in DIPs; its rows grow with it.
-    pub suggest_font_size: f32,
+    /// The size of the suggest popup, signature help and hover text as a
+    /// fraction of the code font's (zoom included). They use the code font,
+    /// and the suggest popup's rows grow with it.
+    pub popup_font_scale: f32,
     /// Rows the suggest popup shows before it scrolls.
     pub suggest_rows: usize,
     /// Show the signature of the call being typed after `(` and `,`.
@@ -143,8 +143,7 @@ impl Default for Options {
             mouse_wheel_zoom: true,
             cursor_blinking: true,
             quick_suggestions: true,
-            suggest_font_family: None,
-            suggest_font_size: 13.0,
+            popup_font_scale: 1.0,
             suggest_rows: 12,
             parameter_hints: true,
             hover: true,

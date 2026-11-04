@@ -212,7 +212,7 @@ impl State {
         };
         view.folding = opts.folding;
         let suggest = Suggest {
-            style: suggest::SuggestStyle::for_font(opts.suggest_font_size, opts.suggest_rows),
+            style: suggest::SuggestStyle::for_font(opts.font_size * opts.popup_font_scale, opts.suggest_rows),
             ..Default::default()
         };
         Ok(State {
@@ -285,13 +285,14 @@ impl State {
             return;
         }
         let size = self.opts.font_size * self.zoom;
-        let suggest = (self.opts.suggest_font_family.as_deref(), self.opts.suggest_font_size);
+        let popup = self.popup_font_size();
+        self.suggest.style = suggest::SuggestStyle::for_font(popup, self.opts.suggest_rows);
         if let Ok(f) = self.render.set_font(
             self.opts.font_family.as_deref(),
             size,
             self.opts.tab_size.max(1),
             self.view.dpi,
-            suggest,
+            popup,
         ) {
             let line = self.view.first_line();
             self.view.line_h = f.line_h;
@@ -303,6 +304,11 @@ impl State {
             }
             self.view.clamp_scroll();
         }
+    }
+
+    /// The size of the popups' text: the code font's, zoomed and scaled.
+    fn popup_font_size(&self) -> f32 {
+        (self.opts.font_size * self.zoom * self.opts.popup_font_scale).clamp(6.0, 48.0)
     }
 
     pub fn reset_fonts(&mut self) {
@@ -2913,9 +2919,9 @@ impl State {
         let fonts = o.font_family != self.opts.font_family
             || o.font_size != self.opts.font_size
             || o.tab_size != self.opts.tab_size
-            || o.suggest_font_family != self.opts.suggest_font_family
-            || o.suggest_font_size != self.opts.suggest_font_size;
-        self.suggest.style = suggest::SuggestStyle::for_font(o.suggest_font_size, o.suggest_rows);
+            || o.popup_font_scale != self.opts.popup_font_scale;
+        let popup = (o.font_size * self.zoom * o.popup_font_scale).clamp(6.0, 48.0);
+        self.suggest.style = suggest::SuggestStyle::for_font(popup, o.suggest_rows);
         let diagnostics = o.diagnostics != self.opts.diagnostics;
         if !o.parameter_hints {
             self.close_signature();
@@ -3581,7 +3587,7 @@ mod suggest_tests {
         let off = Options {
             parameter_hints: false,
             diagnostics: false,
-            suggest_font_size: 26.0,
+            popup_font_scale: 26.0 / st.opts.font_size,
             suggest_rows: 5,
             ..st.opts.clone()
         };
@@ -3589,7 +3595,7 @@ mod suggest_tests {
         assert!(st.decorations.is_empty());
         type_in(&mut st, "f(");
         assert_eq!(st.signature, None);
-        // A bigger suggest font makes taller, wider rows.
+        // A bigger popup font makes taller, wider rows.
         assert_eq!(st.suggest.style, suggest::SuggestStyle { row_h: 44.0, max_rows: 5, width: 860.0 });
         st.close_suggest();
         assert_eq!(st.suggest.style.max_rows, 5);

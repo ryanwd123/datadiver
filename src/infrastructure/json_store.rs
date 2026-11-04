@@ -89,10 +89,9 @@ pub struct Settings {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorSettings {
-    /// The completion list's font; `None` uses the interface font.
-    pub completion_font_family: Option<String>,
-    /// Its size; `None` follows the editor's font size.
-    pub completion_font_size: Option<u8>,
+    /// The size of the completion list, signature help and hover text, as a
+    /// percent of the editor's font size. They use the editor's font.
+    pub popup_font_percent: u8,
     /// Rows the completion list shows before it scrolls.
     pub completion_rows: u8,
     pub suggest_while_typing: bool,
@@ -126,8 +125,7 @@ pub struct EditorSettings {
 impl Default for EditorSettings {
     fn default() -> Self {
         Self {
-            completion_font_family: None,
-            completion_font_size: None,
+            popup_font_percent: 100,
             completion_rows: 12,
             suggest_while_typing: true,
             suggest_after_dot: true,
