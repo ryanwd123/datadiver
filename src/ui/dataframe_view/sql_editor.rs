@@ -110,8 +110,8 @@ impl DataFrameView {
             }
         } else if target.starts_with("editor:sql-ask") {
             use crate::domain::ai::{ChatMessage, SqlCheck};
-            // Tall enough to show the proposal and log above the editor.
-            self.sql_editor_height = 760.0;
+            // Tall enough to show the proposal and the log beside the editor.
+            self.sql_editor_height = 520.0;
             if let Some(panel) = &mut self.sql_panel {
                 panel.ask_input.set_text("total quantity per color, largest first");
                 panel.open_ask(&mut focus);

@@ -22,6 +22,9 @@ pub enum Hit {
     /// A scrollable dialog body.
     DialogScroll,
     DialogBar,
+    /// The SQL panel's Ask AI panel, which scrolls.
+    AskScroll,
+    AskBar,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

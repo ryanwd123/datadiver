@@ -726,7 +726,7 @@ impl DataFrameView {
                         false
                     }
                 }
-                Hit::DialogScroll | Hit::DialogBar => self
+                Hit::DialogScroll | Hit::DialogBar | Hit::AskScroll | Hit::AskBar => self
                     .sql_panel
                     .as_mut()
                     .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),

@@ -9,7 +9,7 @@ use crate::infrastructure::json_store::EditorSettings;
 use crate::infrastructure::path_completion::PathRoots;
 use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
-use crate::ui::platform::{Align, Canvas, Color, Font, Point, Rect, TextOptions, point, rect, text};
+use crate::ui::platform::{Align, Canvas, Color, Font, Point, Rect, TextLayout, TextOptions, point, rect, text};
 use crate::ui::widgets::editor::Editor;
 use crate::ui::widgets::hosted_editor::HostedEditor;
 use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors, scroll};
@@ -21,13 +21,13 @@ pub enum SqlPanelEvent {
     Stop,
     Close,
     Ask(SqlAsk),
-    /// The ask strip opened; the view says which provider it will use.
+    /// The ask panel opened; the view says which provider it will use.
     AskOpened,
     /// The Helper button: open the SQL helper menu.
     Helper,
 }
 
-/// The provider a request will go to, shown in the ask strip.
+/// The provider a request will go to, shown in the ask panel.
 #[derive(Clone)]
 pub struct AskProvider {
     pub name: String,
@@ -35,7 +35,7 @@ pub struct AskProvider {
     pub send_data: bool,
 }
 
-/// A request for SQL from the ask strip.
+/// A request for SQL from the ask panel.
 pub struct SqlAsk {
     pub prompt: String,
     /// SQL selected in the editor, to be rewritten.
@@ -97,7 +97,12 @@ pub struct SqlPanel {
     log_scroll: scroll::Scroll,
     log_area: Rect,
     log_height: f32,
-    proposal_scroll: scroll::Scroll,
+    /// The ask panel scrolls when its content is taller than the panel.
+    ask_scroll: scroll::Scroll,
+    ask_area: Rect,
+    ask_content: f32,
+    /// Scroll a new proposal into view on the next paint.
+    reveal_proposal: bool,
     events: Vec<SqlPanelEvent>,
 }
 
@@ -124,7 +129,7 @@ impl SqlPanel {
             error: None,
             startup_script: false,
             ask_open: false,
-            ask_input: Editor::single_line().with_placeholder("Describe the query you want, then Enter"),
+            ask_input: ask_input(),
             mentions: ColumnCompletion::new(ColumnSyntax::Mention),
             ask_provider: None,
             default_catalog: String::new(),
@@ -137,7 +142,10 @@ impl SqlPanel {
             log_scroll: scroll::Scroll::default(),
             log_area: Rect::default(),
             log_height: 0.0,
-            proposal_scroll: scroll::Scroll::default(),
+            ask_scroll: scroll::Scroll::default(),
+            ask_area: Rect::default(),
+            ask_content: 0.0,
+            reveal_proposal: false,
             events: Vec::new(),
         }
     }
@@ -172,7 +180,7 @@ impl SqlPanel {
         id == self.editor.id || id == self.ask_input.id
     }
 
-    /// Shows the ask strip and focuses its prompt.
+    /// Shows the ask panel and focuses its prompt.
     pub fn open_ask(&mut self, focus: &mut Option<WidgetId>) {
         self.ask_open = true;
         let names = self.mention_names();
@@ -231,6 +239,7 @@ impl SqlPanel {
             Ok(proposal) => AskState::Proposal(proposal),
             Err(error) => AskState::Failed(error),
         };
+        self.reveal_proposal = matches!(self.ask, AskState::Proposal(_));
     }
 
     /// Puts the proposal in the editor, selected, so Ctrl+Enter runs just it.
@@ -385,12 +394,23 @@ impl SqlPanel {
                 }
                 return true;
             }
+            // The prompt is multi-line: Enter sends it, Shift+Enter starts a
+            // new line, and Tab never types a tab into it.
+            if key == "enter" && !m.control && !m.alt {
+                if m.shift {
+                    self.ask_input.replace_selection("\n");
+                    self.mentions.refresh(&self.ask_input);
+                } else {
+                    self.submit_ask();
+                }
+                return true;
+            }
+            if key == "tab" {
+                return false;
+            }
             let outcome = self.ask_input.key(event);
             if outcome.handled {
                 self.mentions.refresh(&self.ask_input);
-            }
-            if outcome.submit {
-                self.submit_ask();
             }
             return outcome.handled;
         }
@@ -462,6 +482,11 @@ impl SqlPanel {
                 let bar = rect(self.log_area.right() - scroll::BAR_WIDTH, self.log_area.y, scroll::BAR_WIDTH, self.log_area.h);
                 self.log_scroll.press(pos.y - bar.y, bar.h, self.log_area.h, self.log_height);
             }
+            Hit::AskBar => {
+                let bar = self.ask_bar();
+                self.ask_scroll.press(pos.y - bar.y, bar.h, self.ask_area.h, self.ask_content);
+            }
+            Hit::AskScroll => {}
             _ => return false,
         }
         true
@@ -478,12 +503,17 @@ impl SqlPanel {
             let bar = rect(self.log_area.right() - scroll::BAR_WIDTH, self.log_area.y, scroll::BAR_WIDTH, self.log_area.h);
             self.log_scroll.drag(pos.y - bar.y, bar.h, self.log_area.h, self.log_height);
         }
+        if self.ask_scroll.dragging() {
+            let bar = self.ask_bar();
+            self.ask_scroll.drag(pos.y - bar.y, bar.h, self.ask_area.h, self.ask_content);
+        }
     }
 
     pub fn mouse_up(&mut self) {
         self.editor.mouse_up();
         self.ask_input.mouse_up();
         self.log_scroll.release();
+        self.ask_scroll.release();
     }
 
     /// The pointer moved with no button down; the editor tracks hover.
@@ -509,9 +539,14 @@ impl SqlPanel {
     pub fn wheel(&mut self, hit: &Hit, delta: Point, modifiers: Modifiers, line: f32) -> bool {
         match hit {
             Hit::CodeEditor(id) if *id == self.editor.id => self.editor.wheel(delta, modifiers),
+            Hit::Editor(id, _) if *id == self.ask_input.id => self.ask_input.wheel(delta),
             Hit::DialogScroll | Hit::DialogBar => {
                 self.log_scroll
                     .scroll_by(-delta.y * line * 2.0, self.log_area.h, self.log_height)
+            }
+            Hit::AskScroll | Hit::AskBar => {
+                self.ask_scroll
+                    .scroll_by(-delta.y * line * 2.0, self.ask_area.h, self.ask_content)
             }
             _ => false,
         }
@@ -567,10 +602,15 @@ impl SqlPanel {
             canvas.pop_clip();
             column.skip(height.min(error_rect.h) + 4.0);
         }
+        let mut editor = column.rest();
         if self.ask_open {
-            self.paint_ask(canvas, &mut column, fonts, focus);
+            // The ask panel sits to the right of the editor, which keeps at
+            // least half the width.
+            let width = (editor.w * 0.36).clamp(340.0, 560.0).min(editor.w * 0.5);
+            let (ask, rest) = editor.split_right(width);
+            self.paint_ask(canvas, ask, fonts, focus);
+            editor = rest;
         }
-        let editor = column.rest();
         self.editor_area = editor;
         let id = self.editor.id;
         let focused = focus == Some(id) && self.window_active;
@@ -597,63 +637,54 @@ impl SqlPanel {
         parts
     }
 
-    fn paint_ask(&mut self, canvas: &mut Canvas<Hit>, column: &mut Column, fonts: &Fonts, focus: Option<WidgetId>) {
+    /// The ask panel, beside the editor: a fixed header over a body that
+    /// scrolls. The body is measured first so a new proposal can scroll into
+    /// view in the same frame.
+    fn paint_ask(&mut self, canvas: &mut Canvas<Hit>, area: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
         let font = &fonts.ui;
         let small = &fonts.small;
-        let line = text::line_height(small);
-        let start = column.y;
-        canvas.fill(rect(column.area.x, start, column.area.w, 1.0), colors::BORDER);
-        let inner_x = column.area.x + 12.0;
-        let inner_w = column.area.w - 24.0;
-        let mut y = start + 8.0;
-        let row = rect(inner_x, y, inner_w, Editor::line_box_height(font));
-        let mut items = Row::new(row, 8.0);
-        let label = items.left(text::measure("Ask AI", small).0 + 4.0);
-        canvas.text(label, "Ask AI", small, colors::FOREGROUND, Align::Left);
-        let working = matches!(self.ask, AskState::Working(_));
-        let button_top = row.y + (row.h - button_height(font)) / 2.0;
-        let close = items.right(button_width("Close", font));
-        button(canvas, close.with_h(button_height(font)).offset(0.0, button_top - row.y), "Close", font, ButtonStyle::Outline, true, Hit::Button(Button::AskClose));
-        let generate = items.right(button_width("Generate · Enter", font));
-        button(canvas, generate.with_h(button_height(font)).offset(0.0, button_top - row.y), "Generate · Enter", font, ButtonStyle::Outline, !working, Hit::Button(Button::AskGenerate));
-        let log_label = if self.show_log { "Hide log" } else { "Show log" };
-        let log = items.right(button_width(log_label, font));
-        let log_rect = log.with_h(button_height(font)).offset(0.0, button_top - row.y);
-        button(canvas, log_rect, log_label, font, ButtonStyle::Outline, true, Hit::Button(Button::AskLog));
-        canvas.hit_with(log_rect, Hit::Button(Button::AskLog), crate::ui::platform::Cursor::Arrow, Some("Show each request sent to the AI and each reply"));
-        let input = items.rest();
-        let id = self.ask_input.id;
-        self.ask_input.paint(canvas, input, font, focus == Some(id), |part| Hit::Editor(id, part));
-        y = row.bottom() + 4.0;
-        let mut x = inner_x;
+        let gap = 6.0;
+        let inner_w = (area.w - 24.0 - scroll::BAR_WIDTH).max(40.0);
+        let wrapped = |value: &str, font: &Font| text::layout(value, font, TextOptions::wrapped(inner_w));
+
+        let header_h = button_height(font);
+        let (head, body) = area.split_top(8.0 + header_h + 8.0);
+
+        // Measure, in content coordinates from the body's top.
+        let input_h = (text::line_height(font) * 4.0 + 12.0).round();
+        let mut y = 0.0;
+        let input_y = y;
+        y += input_h + gap;
+        let actions_y = y;
+        y += button_height(font) + gap;
+        let mut texts: Vec<(f32, std::rc::Rc<TextLayout>, Color)> = Vec::new();
         for (part, color) in self.provider_line() {
-            let width = text::measure(&part, small).0;
-            canvas.text(rect(x, y, (inner_x + inner_w - x).max(0.0), line), &part, small, color, Align::Left);
-            x += width + 8.0;
+            let layout = wrapped(&part, small);
+            let height = layout.height;
+            texts.push((y, layout, color));
+            y += height;
         }
-        y += line + 4.0;
+        y += gap;
+        let mut code = None;
+        let mut buttons = Vec::new();
+        let mut proposal_span = None;
         match &self.ask {
-            AskState::Idle => {
-                let text_value = "Type @ to name tables: only those are described, with row, null, and distinct counts. Without @, every table's columns, types, and comments are sent. With SQL selected, describe a change to it.";
-                y += canvas.paragraph(rect(inner_x, y, inner_w, 200.0), text_value, small, colors::MUTED);
-            }
+            AskState::Idle => {}
             AskState::Working(status) => {
-                canvas.text(rect(inner_x, y, inner_w, line), &format!("{status} · Esc cancels"), small, colors::MUTED, Align::Left);
-                y += line;
+                let layout = wrapped(&format!("{status} · Esc cancels"), small);
+                y += layout.height;
+                texts.push((y - layout.height, layout, colors::MUTED));
             }
             AskState::Failed(error) => {
-                y += canvas.paragraph(rect(inner_x, y, inner_w, 200.0), error, small, colors::DANGER);
+                let layout = wrapped(error, small);
+                y += layout.height;
+                texts.push((y - layout.height, layout, colors::DANGER));
             }
             AskState::Proposal(proposal) => {
-                let mono = fonts.mono.clone();
-                let layout = text::layout(&proposal.sql, &mono, TextOptions::default());
-                let height = (layout.height + 8.0).min(260.0);
-                let code = rect(inner_x, y, inner_w, height);
-                canvas.fill_rounded(code, 4.0, colors::STRIPE);
-                self.proposal_scroll.clamp(height - 8.0, layout.height);
-                canvas.push_clip(code.inset(4.0));
-                canvas.draw_layout(&layout, point(code.x + 8.0, code.y + 4.0 - self.proposal_scroll.offset), colors::FOREGROUND);
-                canvas.pop_clip();
+                let start = y;
+                let layout = text::layout(&proposal.sql, &fonts.mono, TextOptions::wrapped((inner_w - 16.0).max(40.0)));
+                let height = layout.height + 8.0;
+                code = Some((y, height, layout));
                 y += height + 4.0;
                 let (check, color) = match &proposal.check {
                     SqlCheck::Passed => ("✓ DuckDB accepts this SQL".to_owned(), colors::MUTED),
@@ -663,29 +694,100 @@ impl SqlPanel {
                     ),
                     SqlCheck::Failed(error) => (format!("DuckDB still rejects it: {error}"), colors::DANGER),
                 };
-                canvas.text(rect(inner_x, y, inner_w, line), &check, small, color, Align::Left);
-                y += line + 4.0;
-                let mut buttons = Row::new(rect(inner_x, y, inner_w, button_height(font)), 8.0);
+                let layout = wrapped(&check, small);
+                let height = layout.height;
+                texts.push((y, layout, color));
+                y += height + 4.0;
+                // The buttons wrap onto another line when the panel is narrow.
+                let mut x = 0.0;
                 for (label, hit, style, enabled) in [
                     ("Insert · Tab", Button::AskInsert, ButtonStyle::Primary, true),
                     ("Insert and run · Ctrl+Enter", Button::AskRun, ButtonStyle::Outline, !self.busy),
                     ("Discard · Esc", Button::AskDiscard, ButtonStyle::Outline, true),
                 ] {
-                    let r = buttons.left(button_width(label, font));
-                    button(canvas, r, label, font, style, enabled, Hit::Button(hit));
+                    let width = button_width(label, font);
+                    if x > 0.0 && x + width > inner_w {
+                        x = 0.0;
+                        y += button_height(font) + gap;
+                    }
+                    buttons.push((rect(x, y, width, button_height(font)), label, hit, style, enabled));
+                    x += width + 8.0;
                 }
                 y += button_height(font);
+                proposal_span = Some((start, y - start));
             }
         }
-        if self.show_log {
-            y += 4.0;
-            let area = rect(inner_x, y, inner_w, 320.0_f32.min((column.area.bottom() - y - 80.0).max(60.0)));
-            self.paint_log(canvas, area, fonts);
-            y = area.bottom();
+        let log = self.show_log.then(|| {
+            y += 8.0;
+            let top = y;
+            let height = (body.h - y - 8.0).max(160.0);
+            y += height;
+            (top, height)
+        });
+        let content = y + 8.0;
+        if self.reveal_proposal
+            && let Some((start, size)) = proposal_span
+        {
+            self.reveal_proposal = false;
+            self.ask_scroll.reveal(start, size + 8.0, body.h);
         }
-        y += 8.0;
-        canvas.fill(rect(column.area.x, y - 1.0, column.area.w, 1.0), colors::BORDER);
-        column.skip(y - start);
+        self.ask_scroll.clamp(body.h, content);
+        self.ask_area = body;
+        self.ask_content = content;
+
+        // Paint.
+        canvas.fill(area, colors::BACKGROUND);
+        canvas.fill(rect(area.x, area.y, 1.0, area.h), colors::BORDER);
+        canvas.hit(head, Hit::AskScroll);
+        let x = area.x + 12.0;
+        let mut items = Row::new(rect(x, head.y + 8.0, inner_w, header_h), 8.0);
+        let title = font.semibold();
+        let label = items.left(text::measure("Ask AI", &title).0 + 4.0);
+        canvas.text(label, "Ask AI", &title, colors::FOREGROUND, Align::Left);
+        let close = items.right(button_width("Close", font));
+        button(canvas, close, "Close", font, ButtonStyle::Outline, true, Hit::Button(Button::AskClose));
+        let log_label = if self.show_log { "Hide log" } else { "Show log" };
+        let log_button = items.right(button_width(log_label, font));
+        button(canvas, log_button, log_label, font, ButtonStyle::Outline, true, Hit::Button(Button::AskLog));
+        canvas.hit_with(log_button, Hit::Button(Button::AskLog), crate::ui::platform::Cursor::Arrow, Some("Show each request sent to the AI and each reply"));
+
+        canvas.push_clip(body);
+        canvas.hit(body, Hit::AskScroll);
+        let top = body.y - self.ask_scroll.offset;
+        let at = |offset: f32, w: f32, h: f32| rect(x, top + offset, w, h);
+
+        let id = self.ask_input.id;
+        self.ask_input
+            .paint(canvas, at(input_y, inner_w, input_h), font, focus == Some(id), |part| Hit::Editor(id, part));
+
+        let working = matches!(self.ask, AskState::Working(_));
+        let mut actions = Row::new(at(actions_y, inner_w, button_height(font)), 8.0);
+        let generate = actions.left(button_width("Generate · Enter", font));
+        button(canvas, generate, "Generate · Enter", font, ButtonStyle::Outline, !working, Hit::Button(Button::AskGenerate));
+        canvas.text(actions.rest(), "Shift+Enter for a new line", small, colors::MUTED, Align::Left);
+
+        for (offset, layout, color) in &texts {
+            canvas.draw_layout(layout, point(x, top + offset), *color);
+        }
+        if let Some((offset, height, layout)) = &code {
+            let block = at(*offset, inner_w, *height);
+            canvas.fill_rounded(block, 4.0, colors::STRIPE);
+            canvas.draw_layout(layout, point(block.x + 8.0, block.y + 4.0), colors::FOREGROUND);
+        }
+        for (r, label, hit, style, enabled) in buttons {
+            button(canvas, r.offset(x, top), label, font, style, enabled, Hit::Button(hit));
+        }
+        if let Some((offset, height)) = log {
+            self.paint_log(canvas, at(offset, inner_w, height), fonts);
+        }
+        canvas.pop_clip();
+        scroll::vertical(canvas, self.ask_bar(), body.h, content, &self.ask_scroll, Hit::AskBar);
+    }
+
+    /// The ask panel's scroll bar, along its right edge.
+    fn ask_bar(&self) -> Rect {
+        let area = self.ask_area;
+        rect(area.right() - scroll::BAR_WIDTH, area.y, scroll::BAR_WIDTH, area.h)
     }
 
     fn paint_log(&mut self, canvas: &mut Canvas<Hit>, area: Rect, fonts: &Fonts) {
@@ -756,4 +858,12 @@ impl SqlPanel {
                 .paint(canvas, self.ask_input.caret_rect(), &fonts.ui, self.ask_input.id);
         }
     }
+}
+
+/// The ask prompt: a few wrapped lines, framed like an input.
+fn ask_input() -> Editor {
+    let mut editor = Editor::multi_line().with_placeholder("Describe the query you want");
+    editor.soft_wrap = true;
+    editor.framed = true;
+    editor
 }
