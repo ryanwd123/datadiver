@@ -567,6 +567,10 @@ impl SlicerSidebar {
             "end" => Some(last),
             _ => None,
         };
+        if matches!(event.key.as_str(), "left" | "right") && plain && !m.shift {
+            self.page_selection(column, &visible, position, event.key == "right");
+            return true;
+        }
         if let Some(target) = target.filter(|_| plain) {
             let Some(&value) = visible.get(target) else {
                 return true;
@@ -634,6 +638,51 @@ impl SlicerSidebar {
                 self.type_into_filter(column, &typed, focus);
                 true
             }
+        }
+    }
+
+    /// Left and Right page through a card one value at a time: an unselected
+    /// value under the cursor becomes the only selection, and a selected one
+    /// hands the selection to the next (or previous) selectable value.
+    fn page_selection(&mut self, column: &str, visible: &[usize], position: Option<usize>, forward: bool) {
+        let Some(card) = self.cards.iter().find(|card| card.column == column) else {
+            return;
+        };
+        let current = position.unwrap_or(0);
+        let Some(&under_cursor) = visible.get(current) else {
+            return;
+        };
+        let selected = card
+            .values
+            .get(under_cursor)
+            .is_some_and(|value| card.selected.contains(&value.key));
+        let target = if position.is_none() || !selected {
+            Some(current)
+        } else if forward {
+            (current + 1..visible.len()).find(|&step| card.selectable(visible[step]))
+        } else {
+            (0..current).rev().find(|&step| card.selectable(visible[step]))
+        };
+        let Some(target) = target.filter(|&target| card.selectable(visible[target])) else {
+            return;
+        };
+        let value = visible[target];
+        let keys = vec![card.values[value].key.clone()];
+        if let Some(card) = self.cards.iter_mut().find(|card| card.column == column)
+            && card.selected != keys
+        {
+            card.selected = keys;
+            self.events.push(SlicerEvent::Select {
+                column: column.to_owned(),
+                selected: card.selected.clone(),
+            });
+        }
+        if let Some(list) = self.list_mut(column) {
+            list.cursor = Some(value);
+            list.anchor = None;
+        }
+        if let Some((scroll, area, _)) = self.value_scrolls.get_mut(column) {
+            scroll.reveal(target as f32 * ROW_HEIGHT, ROW_HEIGHT, area.h);
         }
     }
 

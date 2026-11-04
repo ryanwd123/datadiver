@@ -3074,6 +3074,38 @@ fn slicer_values_take_keys_to_move_select_and_leave() {
 }
 
 #[test]
+fn left_and_right_page_a_single_selection_through_slicer_values() {
+    use crate::domain::documents::ScalarKey;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = slicer_cards(&home);
+    let north = ScalarKey::String("North".into());
+    let south = ScalarKey::String("South".into());
+    viewer.focus_grid();
+    press(&viewer, "ctrl-l");
+    // An unselected value under the cursor becomes the only selection.
+    press(&viewer, "right");
+    viewer.settle();
+    assert_eq!(selected_keys(&viewer, "region"), std::slice::from_ref(&north));
+    // A selected one hands the selection on, and stops at the ends.
+    press(&viewer, "right");
+    viewer.settle();
+    assert_eq!(selected_keys(&viewer, "region"), std::slice::from_ref(&south));
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 1);
+    press(&viewer, "right");
+    assert_eq!(selected_keys(&viewer, "region"), std::slice::from_ref(&south));
+    press(&viewer, "left");
+    viewer.settle();
+    assert_eq!(selected_keys(&viewer, "region"), std::slice::from_ref(&north));
+    // With several selected, the next value becomes the only selection.
+    press(&viewer, "down");
+    press(&viewer, "space");
+    press(&viewer, "up");
+    assert_eq!(selected_keys(&viewer, "region").len(), 2);
+    press(&viewer, "right");
+    assert_eq!(selected_keys(&viewer, "region"), [south]);
+}
+
+#[test]
 fn slicer_filter_hands_focus_to_its_values_and_a_removed_card_to_the_grid() {
     use crate::domain::documents::ScalarKey;
     let home = tempfile::tempdir().unwrap();

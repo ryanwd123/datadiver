@@ -209,6 +209,7 @@ Slicers work from the keyboard. **Ctrl+L** moves through the cards (**Tab** and 
 | Up / Down, Page Up / Page Down, Home / End | Move the cursor |
 | Space | Select or unselect the value under the cursor |
 | Enter | Select only the value under the cursor |
+| Left / Right | Page through the values one at a time: select only the value under the cursor, or, when it is already selected, only the previous or next value |
 | Shift+Up / Shift+Down | Select a range from where the cursor started |
 | Ctrl+A | Select every listed value |
 | Ctrl+V or Ctrl+Shift+V | Select the values on the clipboard |
