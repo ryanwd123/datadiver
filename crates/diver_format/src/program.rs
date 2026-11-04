@@ -172,8 +172,17 @@ pub enum Op {
     Icons(IconsSpec),
     Bar(BarSpec),
     Sparkline(SparkSpec),
+    Display(DisplaySpec),
     HideText,
     Stop,
+}
+
+/// `display(value, format, blank=)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplaySpec {
+    pub value: Cx,
+    pub format: Option<crate::format::Format>,
+    pub blank: Option<Cx>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,6 +289,12 @@ impl Program {
                         range(&mut add, s.by, &[&s.min, &s.mid, &s.max])
                     }
                     Ok(Op::Bar(b)) => range(&mut add, b.by, &[&b.min, &b.max]),
+                    Ok(Op::Display(d)) => {
+                        walk(&d.value, &mut add);
+                        if let Some(blank) = &d.blank {
+                            walk(blank, &mut add);
+                        }
+                    }
                     Ok(Op::Icons(i)) => {
                         let bounds: Vec<&Option<Cx>> = Vec::new();
                         range(&mut add, i.by, &bounds);
@@ -329,6 +344,7 @@ fn apply(env: &Env, ops: &[Op], style: &mut CellStyle) -> bool {
             Op::Icons(spec) => style.icon = env.icons(spec).or(style.icon),
             Op::Bar(spec) => style.bar = env.bar(spec).or(style.bar),
             Op::Sparkline(spec) => style.sparkline = Some(env.sparkline(spec)),
+            Op::Display(spec) => style.display = Some(env.display(spec)),
             Op::HideText => style.hide_text = true,
             Op::Stop => stop = true,
         }
@@ -428,6 +444,17 @@ impl Env<'_> {
             columns => columns.iter().map(|c| self.number(*c)).collect(),
         };
         Sparkline { values, color: spec.color, bars: spec.bars }
+    }
+
+    fn display(&self, spec: &DisplaySpec) -> String {
+        let value = self.eval(&spec.value);
+        if value.is_null() {
+            return spec.blank.as_ref().map(|blank| self.eval(blank).text().into_owned()).unwrap_or_default();
+        }
+        match &spec.format {
+            Some(format) => format.apply(&value),
+            None => value.text().into_owned(),
+        }
     }
 
     fn eval(&self, cx: &Cx) -> Value {

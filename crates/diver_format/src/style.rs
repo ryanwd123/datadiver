@@ -65,6 +65,8 @@ pub struct CellStyle {
     pub icon: Option<Icon>,
     pub bar: Option<Bar>,
     pub sparkline: Option<Sparkline>,
+    /// Text shown in place of the cell's value, from `display(…)`.
+    pub display: Option<String>,
     pub hide_text: bool,
 }
 

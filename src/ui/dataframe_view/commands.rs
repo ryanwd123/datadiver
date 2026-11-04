@@ -671,6 +671,7 @@ impl DataFrameView {
                 format("scale(#f8696b, #ffeb84, #63be7b)", numbers.get(1)),
                 format("if c > 0 then text: #006100, icon: up\nelif c < 0 then text: #c00000, icon: down", numbers.get(2)),
                 format("icons(traffic)", numbers.get(3)),
+                format("display(c / 1000, '$#,##0.0\"K\";($#,##0.0\"K\")')", numbers.get(4)),
             ]
             .into_iter()
             .flatten()

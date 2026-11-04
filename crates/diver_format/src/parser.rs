@@ -442,11 +442,14 @@ impl Parser<'_> {
         let mut args = Vec::new();
         let open = self.prev_end().saturating_sub(1);
         loop {
+            // A formatting call's values are single words, except where it
+            // takes an expression, like `display(c * 10)`.
+            let expression = !action || catalog::takes_expression(name, args.len());
             if self.eof() {
                 self.note(Expect::Arg { call: name.into(), index: args.len(), action });
                 // Formatting calls take values completion lists itself, and
                 // whole-column functions take a column.
-                self.frozen |= action
+                self.frozen |= (action && !expression)
                     || (args.is_empty()
                         && catalog::function(name).is_some_and(|f| f.kind != catalog::FunctionKind::Scalar));
             }
@@ -473,7 +476,7 @@ impl Parser<'_> {
                 let value = self.expr_or_atom(true);
                 Arg { name: Some((arg_name, name_token.span)), value, span: start..self.prev_end() }
             } else {
-                let value = self.expr_or_atom(!action);
+                let value = self.expr_or_atom(expression);
                 Arg { name: None, value, span: start..self.prev_end() }
             };
             args.push(arg);

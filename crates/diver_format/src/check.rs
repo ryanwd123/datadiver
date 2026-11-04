@@ -675,6 +675,30 @@ impl Options<'_, '_, '_> {
                 let bars = self.word("kind", catalog::SPARK_KINDS)? == Some("bars");
                 Some(Op::Sparkline(SparkSpec { columns, color, bars }))
             }
+            "display" => {
+                let Some(value) = positional.first() else {
+                    return self.checker.error(span, "`display` needs a value: display(c[0]) or display(c, '#,##0.00')");
+                };
+                if let Some(extra) = positional.get(2) {
+                    return self.checker.error(&extra.span, "`display` takes a value and a format");
+                }
+                let value = self.checker.expr(value)?;
+                let format = match positional.get(1) {
+                    Some(Expr { kind: ExprKind::Str(text), span }) => match crate::format::Format::parse(text) {
+                        Ok(_) if text.is_empty() => return self.checker.error(span, "the format is empty"),
+                        Ok(format) => Some(format),
+                        Err(message) => return self.checker.error(span, message),
+                    },
+                    Some(e) => {
+                        return self
+                            .checker
+                            .error(&e.span, "the format is text in quotes, like '#,##0.00' or 'YYYY-MM-DD'");
+                    }
+                    None => None,
+                };
+                let blank = self.expr("blank").ok()?;
+                Some(Op::Display(DisplaySpec { value, format, blank }))
+            }
             other => unreachable!("visual {other}"),
         }
     }

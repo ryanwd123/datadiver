@@ -239,7 +239,8 @@ fn rules_read_list_items_and_struct_fields_on_both_engines() {
                 .edit_definition(|definition| {
                     definition.formats = vec![
                         crate::domain::documents::ConditionalFormat {
-                            rules: "if c[0] > 1 and c[-1] = 9 then bold".into(),
+                            rules: "display(c[0] * 1000, '#,##0.0', blank='-'); if c[0] > 1 and c[-1] = 9 then bold"
+                                .into(),
                             columns: vec!["scores".into()],
                         },
                         crate::domain::documents::ConditionalFormat {
@@ -259,5 +260,15 @@ fn rules_read_list_items_and_struct_fields_on_both_engines() {
         assert_eq!(bold(&viewer, 1), [true, false, false], "{engine:?}");
         assert_eq!(bold(&viewer, 2), [true, true, false], "{engine:?}");
         assert_eq!(bold(&viewer, 0), [true, false, false], "{engine:?}");
+        let shown = viewer.read(|view| {
+            let result = &view.session.result;
+            let rows = result.fetch_rows(0, result.row_count()).unwrap();
+            let formatting = view.grid.formatting().unwrap();
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| formatting.style(result.column_indices[1], row, index).display)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(shown, [Some("5,000.0".into()), Some("0.0".into()), Some("-".into())], "{engine:?}");
     }
 }

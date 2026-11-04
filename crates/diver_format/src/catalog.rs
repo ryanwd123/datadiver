@@ -136,6 +136,12 @@ pub const ACTIONS: &[ActionDef] = &[
               or of the list in one list column.",
     },
     ActionDef {
+        name: "display",
+        form: Form::Call,
+        signature: "display(<value>, [<format>], blank=)",
+        doc: "Shows `value` in the cell in place of its own value, like `display(c[0])` or               `display(c * 10, '#,##0.00')`. The format is Excel's: `'0.0%'`, `'$#,##0;($#,##0)'`,               `'YYYY-MM-DD'`, `'mmm d, yyyy'`. `blank` is what shows when the value is blank.",
+    },
+    ActionDef {
         name: "hide_text",
         form: Form::Flag,
         signature: "hide_text",
@@ -151,6 +157,12 @@ pub const ACTIONS: &[ActionDef] = &[
 
 pub fn action(name: &str) -> Option<&'static ActionDef> {
     ACTIONS.iter().find(|a| a.name.eq_ignore_ascii_case(name))
+}
+
+/// Whether positional argument `index` of call action `call` is an
+/// expression rather than a single value.
+pub fn takes_expression(call: &str, index: usize) -> bool {
+    call.eq_ignore_ascii_case("display") && index == 0
 }
 
 /// The named arguments of the call actions, and what each takes.
@@ -177,6 +189,7 @@ pub fn named_args(call: &str) -> &'static [(&'static str, ArgValue, &'static str
             ("color", ArgValue::Color, "The line's color."),
             ("kind", ArgValue::Kind, "line or bars."),
         ],
+        "display" => &[("blank", ArgValue::Expr, "What shows when the value is blank (nothing by default).")],
         _ => &[],
     }
 }

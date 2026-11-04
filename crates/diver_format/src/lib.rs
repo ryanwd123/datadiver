@@ -29,6 +29,7 @@ pub mod complete;
 pub mod draw;
 #[cfg(feature = "editor")]
 pub mod editor;
+pub mod format;
 pub mod help;
 pub mod lexer;
 pub mod parser;

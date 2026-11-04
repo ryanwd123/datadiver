@@ -115,6 +115,11 @@ pub const PRESETS: &[Preset] = &[
     ),
     p("Row sparkline", "Sparklines", "A line through the row's number columns", "sparkline({numbers})"),
     p("List sparkline", "Sparklines", "The cell's own list as bars", "sparkline(c, kind=bars), hide_text"),
+    p("First list item", "Display", "Show a list's first item, keeping the rest for rules", "display(c[0], blank='-')"),
+    p("Thousands", "Display", "Numbers in thousands, like 1,235K", "display(c, '#,##0,\"K\"')"),
+    p("Percent", "Display", "Fractions as percents, like 12.3%", "display(c, '0.0%')"),
+    p("Accounting", "Display", "Negative amounts in parentheses", "display(c, '$#,##0.00;($#,##0.00);\"-\"')"),
+    p("Long date", "Display", "Dates like Mar 15, 2024", "display(c, 'mmm d, yyyy')"),
     p("Zebra rows", "Other", "Shade every other row", "if row() % 2 = 0 then bg: #f2f2f2"),
     p("Bold header-like values", "Other", "Bold and underlined", "bold, underline"),
 ];

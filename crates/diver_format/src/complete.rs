@@ -410,10 +410,12 @@ fn visual_arg_items(call: &str, index: usize, columns: &[Column]) -> Vec<Complet
             .collect(),
         ("icons", 1) => vec![Completion::new("reverse", CompletionKind::Value, "1").detail("high values get the first icon")],
         ("sparkline", _) => column_items(columns, false),
+        ("display", 0) => expression_items(columns),
+        ("display", 1) => format_items(),
         _ => Vec::new(),
     };
     let named_from = match call {
-        "scale" => 2,
+        "scale" | "display" => 2,
         "sparkline" => 1,
         _ => 1,
     };
@@ -421,6 +423,17 @@ fn visual_arg_items(call: &str, index: usize, columns: &[Column]) -> Vec<Complet
         out.extend(named_items(call));
     }
     out
+}
+
+/// Display formats, each in quotes, with what it shows.
+fn format_items() -> Vec<Completion> {
+    crate::format::EXAMPLES
+        .iter()
+        .enumerate()
+        .map(|(i, (format, shows))| {
+            Completion::new(format!("'{format}'"), CompletionKind::Value, format!("1{i:02}")).detail(*shows)
+        })
+        .collect()
 }
 
 fn function_arg_items(call: &str, index: usize, columns: &[Column]) -> Vec<Completion> {
@@ -517,6 +530,15 @@ mod tests {
         let offset = text.find('|').expect("caret");
         let text = text.replace('|', "");
         complete(&text, offset, &columns()).into_iter().map(|c| c.label).collect()
+    }
+
+    #[test]
+    fn display_completes_values_then_formats() {
+        assert!(labels("display(|").contains(&"c".into()));
+        let formats = labels("display(c, |");
+        assert!(formats.contains(&"'#,##0.00'".into()));
+        assert!(formats.contains(&"'YYYY-MM-DD'".into()));
+        assert!(labels("display(c, '0', |").contains(&"blank=".into()));
     }
 
     #[test]

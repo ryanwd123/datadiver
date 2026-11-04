@@ -1595,7 +1595,7 @@ impl GridView {
                             .get(offset)
                             .and_then(|cached| cached.values.get(column_indices[column]))
                             .and_then(Option::as_deref);
-                        let (text, hidden) = cell_preview(value, &dtypes[column], self.formats[column]);
+                        let (mut text, hidden) = cell_preview(value, &dtypes[column], self.formats[column]);
                         let selected = rectangle
                             .as_ref()
                             .is_some_and(|(rows, columns)| rows.contains(&row) && columns.contains(&column));
@@ -1611,6 +1611,10 @@ impl GridView {
                             _ => None,
                         }
                         .filter(|style| !style.is_plain());
+                        // `display(…)` shows other text in place of the value.
+                        if let Some(shown) = style.as_ref().and_then(|style| style.display.as_deref()) {
+                            text = cell_preview(Some(shown), "VARCHAR", None).0;
+                        }
                         let marks = style.as_ref().map(|style| {
                             diver_format::draw::layout(style, diver_format::draw::Rect::new(cell.x, cell.y, cell.w - 1.0, cell.h))
                         });

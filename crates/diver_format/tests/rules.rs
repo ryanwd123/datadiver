@@ -62,6 +62,26 @@ fn comparing_with_another_column_of_the_row() {
 }
 
 #[test]
+fn display_shows_another_value_in_a_format() {
+    let shown = |rules: &str, target: usize| -> Vec<Option<String>> {
+        run(rules, target).into_iter().map(|s| s.display).collect()
+    };
+    let first = shown("display(c[0], blank='-'); if c[0] > 1 then bold", 3);
+    assert_eq!(first, [Some("1".into()), Some("3".into()), Some("-".into()), Some("1".into()), Some("0".into())]);
+    assert!(run("display(c[0]); if c[0] > 1 then bold", 3)[1].bold);
+    let money = shown("display(c * 1000, '$#,##0;($#,##0)')", 1);
+    assert_eq!(money[..3], [Some("$10,000".into()), Some("($5,000)".into()), Some("$30,000".into())]);
+    // A blank value shows nothing unless `blank=` says what.
+    assert_eq!(money[3], Some(String::new()));
+    let named = shown("if c > \"target\" then display(upper(\"name\"))", 1);
+    assert_eq!(named[..2], [Some("ANN".into()), None]);
+    assert!(messages("display()")[0].contains("needs a value"));
+    assert!(messages("display(c, 2)")[0].contains("text in quotes"));
+    assert!(messages("display(c, '0 \"x')")[0].contains("isn't closed"));
+    assert!(messages("display(c, '0', 'x')")[0].contains("a value and a format"));
+}
+
+#[test]
 fn duplicates_and_blanks() {
     let names = run("if duplicate(c) then bg: mistyrose", 0);
     let shaded: Vec<bool> = names.iter().map(|s| s.background.is_some()).collect();

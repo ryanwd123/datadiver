@@ -58,9 +58,17 @@ bar(steelblue, fill=gradient)
 | `bar(…)` | `bar(green, red, fill=gradient, min=, max=, by=)` |
 | `icons(…)` | `icons(arrows, reverse, low=33%, high=67%)` (arrows, triangles, traffic, checks, flags, stars, signal) |
 | `sparkline(…)` | `sparkline("q1", "q2", "q3", color=steelblue, kind=bars)` or `sparkline(c)` for a list column |
+| `display(…)` | `display(c[0])`, `display(c * 10, '#,##0.00')`, `display(c, 'mmm d, yyyy', blank='-')` |
 | `hide_text`, `stop` | `bar(blue), hide_text` |
 
 Colors are the CSS names, `#rgb`, `#rrggbb`, `#rrggbbaa` or `rgb(r, g, b)`.
+
+`display` shows its value in place of the cell's, in an optional Excel
+format: number formats with `0 # ? . , %` and `E+00`, commas after the
+digits to scale by thousands, literals in `"…"` or after `\`, and up to four
+`positive;negative;zero;text` sections (`@` is the text); date formats with
+`yyyy yy mmmm mmm mm m dddd ddd dd d hh h mm ss .000 AM/PM`, where `m`
+after hours or before seconds is minutes. See [`format::EXAMPLES`](src/format.rs).
 
 ## Using it from a host
 
