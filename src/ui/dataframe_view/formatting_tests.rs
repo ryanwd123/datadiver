@@ -272,3 +272,25 @@ fn rules_read_list_items_and_struct_fields_on_both_engines() {
         assert_eq!(shown, [Some("5,000.0".into()), Some("0.0".into()), Some("-".into())], "{engine:?}");
     }
 }
+
+#[test]
+fn pick_a_color_puts_the_chosen_color_in_the_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    viewer.select(0, 1);
+    viewer.render();
+    let manager = open_manager(&viewer);
+    manager.input("if c = 'a' then background ");
+    manager.input("#");
+    manager.render();
+    let labels = manager.read(|view| {
+        view.format_window.as_ref().unwrap().manager.as_ref().unwrap().editor.completion_labels()
+    });
+    assert_eq!(labels.unwrap()[0], "Pick a color…");
+    crate::ui::platform::system::fake::with(|system| system.color_answers.push_back(Some(0x123456)));
+    manager.press("enter");
+    viewer.run_until_parked();
+    let text = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().editor.text());
+    assert_eq!(text, "if c = 'a' then background #123456");
+}

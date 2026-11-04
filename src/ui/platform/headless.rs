@@ -417,3 +417,39 @@ impl<V: View> Drop for TestApp<V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::platform::Canvas;
+
+    #[derive(Default)]
+    struct Counter {
+        updates: usize,
+    }
+
+    impl View for Counter {
+        type Hit = ();
+
+        fn paint(&mut self, _canvas: &mut Canvas<()>, _cx: &mut Cx<Self>) {}
+
+        fn event(&mut self, _event: &Event<()>, _cx: &mut Cx<Self>) -> bool {
+            false
+        }
+    }
+
+    /// A modal dialog runs its own message loop while the view that opened
+    /// it is still borrowed, and every message drains the runtime. Work
+    /// deferred before the dialog must wait for it, not spin the drain.
+    #[test]
+    fn deferred_work_waits_for_a_busy_view_without_spinning() {
+        let app = TestApp::new();
+        let id = app.open(100.0, 100.0, |_| Counter::default());
+        app.update(id, |_, cx| {
+            cx.defer(|view: &mut Counter, _| view.updates += 1);
+            // As the dialog's loop does, with the view still borrowed.
+            assert!(!app.drain(), "nothing could run");
+        });
+        assert_eq!(app.read(id, |view| view.updates), 1);
+    }
+}

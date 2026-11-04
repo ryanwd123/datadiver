@@ -493,7 +493,10 @@ impl<V: View> Runtime<V> {
             let Some(action) = action else {
                 break;
             };
-            ran = true;
+            // An update that waits for a busy view didn't run: counting it
+            // would spin the caller's `while drain()` behind a modal dialog.
+            ran |= !matches!(&action, Action::Update(id, _)
+                if self.window(*id).is_some_and(|slot| slot.view.try_borrow_mut().is_err()));
             match action {
                 Action::Open(request) => open(self, request),
                 Action::Close(id) => close(self, id),
