@@ -9,7 +9,6 @@ use crate::ui::ai_settings::{AiSettingsEditor, AiSettingsEvent};
 use crate::ui::aggregation_editor::AggregationPanel;
 use crate::ui::command_palette::{PALETTE_WIDTH, matches_terms, matching_commands};
 use crate::ui::font_picker::FontTarget;
-use crate::ui::help::HelpDialog;
 use crate::ui::hit::Button;
 use crate::ui::info::InformationPanel;
 use crate::ui::keymap_editor::KeymapEditorEvent;
@@ -93,7 +92,6 @@ pub enum Dialog {
     Save { name: Editor },
     Confirm(ConfirmDialog),
     Information(InformationPanel),
-    Help(HelpDialog),
     Pivot(PivotPanel),
     OrderBy(OrderByPanel),
     Aggregation(AggregationPanel),
@@ -111,7 +109,6 @@ impl Dialog {
             Dialog::Save { .. } => "Save view".into(),
             Dialog::Confirm(confirm) => confirm.title.clone(),
             Dialog::Information(_) => "Information".into(),
-            Dialog::Help(_) => "Help · Keyboard shortcuts".into(),
             Dialog::Pivot(_) => String::new(),
             Dialog::OrderBy(_) => "Order By".into(),
             Dialog::Aggregation(_) => "Aggregations".into(),
@@ -341,11 +338,6 @@ impl DataFrameView {
             },
         )
         .detach();
-    }
-
-    pub(crate) fn open_help(&mut self, cx: &mut Cx<Self>) {
-        let help = HelpDialog::new(&self.keymap);
-        self.open_dialog(Dialog::Help(help), None, cx);
     }
 
     pub(crate) fn open_pivot_panel(&mut self, kind: PivotFieldKind, cx: &mut Cx<Self>) {
@@ -1216,7 +1208,6 @@ impl DataFrameView {
     /// Keys while a dialog is open. Returns whether the dialog used the key.
     pub(crate) fn dialog_key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) -> bool {
         let mut focus = self.focus;
-        let line = text::line_height(&self.fonts.ui);
         let handled = match &mut self.dialog {
             None => return false,
             Some(Dialog::Save { name }) => {
@@ -1246,7 +1237,6 @@ impl DataFrameView {
                     false
                 }
             }
-            Some(Dialog::Help(help)) => !event.modifiers.modified() && help.key(&event.key, line),
             Some(Dialog::Pivot(panel)) => {
                 let result = panel.key(event, &mut focus);
                 if result.close {
@@ -1376,7 +1366,7 @@ impl DataFrameView {
             Some(Dialog::Theme(form)) => form.type_text(typed, focus),
             Some(Dialog::Actions(editor)) => editor.type_text(typed, focus),
             Some(Dialog::AiSettings(editor)) => editor.type_text(typed, focus),
-            Some(Dialog::Information(_) | Dialog::Help(_) | Dialog::Confirm(_) | Dialog::PasteFilter(_)) => false,
+            Some(Dialog::Information(_) | Dialog::Confirm(_) | Dialog::PasteFilter(_)) => false,
         };
         cx.notify();
         used
@@ -1447,11 +1437,6 @@ impl DataFrameView {
                 self.close_dialog(cx);
                 self.open_recovery_palette(cx);
                 return;
-            }
-            Hit::DialogBar => {
-                if let Some(Dialog::Help(help)) = &mut self.dialog {
-                    help.press_bar(pos);
-                }
             }
             _ => match &mut self.dialog {
                 Some(Dialog::Save { name }) => {
@@ -1545,7 +1530,7 @@ impl DataFrameView {
                     self.handle_ai_settings_events(test, cx);
                     return;
                 }
-                Some(Dialog::Help(_) | Dialog::Confirm(_) | Dialog::PasteFilter(_)) | None => {}
+                Some(Dialog::Confirm(_) | Dialog::PasteFilter(_)) | None => {}
             },
         }
         let before = self.focus;
@@ -1562,7 +1547,6 @@ impl DataFrameView {
                     panel.editor.mouse_drag(pos)
                 }
             }
-            Some(Dialog::Help(help)) => help.drag(pos),
             Some(Dialog::Pivot(panel)) => panel.mouse_drag(pos),
             Some(Dialog::Aggregation(panel)) => panel.mouse_drag(pos),
             Some(Dialog::OrderBy(panel)) => panel.mouse_drag(pos),
@@ -1579,7 +1563,6 @@ impl DataFrameView {
         match &mut self.dialog {
             Some(Dialog::Save { name }) => name.mouse_up(),
             Some(Dialog::Information(panel)) => panel.editor.mouse_up(),
-            Some(Dialog::Help(help)) => help.release(),
             Some(Dialog::Pivot(panel)) => panel.mouse_up(),
             Some(Dialog::Aggregation(panel)) => panel.mouse_up(),
             Some(Dialog::OrderBy(panel)) => panel.mouse_up(),
@@ -1595,7 +1578,6 @@ impl DataFrameView {
     pub(crate) fn dialog_wheel(&mut self, hit: &Hit, delta: Point, shift: bool) -> bool {
         let line = text::line_height(&self.fonts.ui);
         match &mut self.dialog {
-            Some(Dialog::Help(help)) => help.wheel(delta, line),
             Some(Dialog::Information(panel)) => panel.wheel(hit, delta, shift, line),
             Some(Dialog::Pivot(panel)) => panel.wheel(hit, delta),
             Some(Dialog::Aggregation(panel)) => panel.wheel(hit, delta),
@@ -1625,7 +1607,6 @@ impl DataFrameView {
                 (window_width * crate::ui::info::DIALOG_FRACTION).max(240.0),
                 window_height * (1.0 - crate::ui::info::DIALOG_FRACTION) / 2.0,
             ),
-            Dialog::Help(_) => (crate::ui::help::HelpLayout::for_viewport(window_width).dialog_width, 24.0),
             Dialog::Pivot(_) | Dialog::Aggregation(_) => (wide, 48.0),
             Dialog::OrderBy(_) => (760.0, 48.0),
             Dialog::Palette(_) => (PALETTE_WIDTH, 24.0),
@@ -1650,7 +1631,6 @@ impl DataFrameView {
                 text::layout(&confirm.message, font, crate::ui::platform::TextOptions::wrapped(content_width)).height
             }
             Dialog::Information(_) => window_height * crate::ui::info::DIALOG_FRACTION - 110.0,
-            Dialog::Help(_) => (window_height - 140.0).max(0.0),
             Dialog::Pivot(panel) => panel.height(&fonts, window_height),
             Dialog::Aggregation(panel) => panel.height(&fonts, window_height),
             Dialog::OrderBy(panel) => panel.height(&fonts, window_height),
@@ -1677,7 +1657,7 @@ impl DataFrameView {
         if !title.is_empty() {
             let title_rect = rect(x + padding, top + padding, content_width, line + 4.0);
             let mut items = Row::new(title_rect, 8.0);
-            let close_label = if matches!(dialog, Dialog::Help(_)) { "Close" } else { "×" };
+            let close_label = "×";
             let close = items.right(button_width(close_label, &fonts.small));
             button(
                 canvas,
@@ -1709,7 +1689,6 @@ impl DataFrameView {
                 canvas.paragraph(content, &confirm.message, font, colors::FOREGROUND);
             }
             Dialog::Information(panel) => panel.paint(canvas, content, &fonts, focus),
-            Dialog::Help(help) => help.paint(canvas, content, &fonts, window_width),
             Dialog::Pivot(panel) => {
                 canvas.push_clip(content);
                 panel.paint(canvas, content, &fonts, focus, window_height);

@@ -51,10 +51,13 @@ mod dialogs;
 mod editor_settings;
 mod file_settings;
 mod format_window;
+mod help_window;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
 mod focus_tests;
+#[cfg(test)]
+mod help_tests;
 #[cfg(test)]
 mod formatting_tests;
 mod input;
@@ -632,6 +635,8 @@ pub struct DataFrameView {
     pub(crate) dialog: Option<Dialog>,
     /// The conditional formatting manager, in a window of its own.
     pub(crate) format_window: Option<format_window::FormatWindow>,
+    /// The help, in a window of its own.
+    pub(crate) help_window: Option<help_window::HelpWindow>,
     /// The focused control; `None` leaves keys to the window.
     pub(crate) focus: Option<WidgetId>,
     window_geometry: Option<WindowGeometry>,
@@ -904,6 +909,7 @@ impl DataFrameView {
             keymap_editor: None,
             dialog: None,
             format_window: None,
+            help_window: None,
             focus: Some(grid_id),
             window_geometry: None,
             geometry_save: None,

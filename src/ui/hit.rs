@@ -22,6 +22,10 @@ pub enum Hit {
     /// A scrollable dialog body.
     DialogScroll,
     DialogBar,
+    /// A tab across the top of the help window.
+    HelpTab(usize),
+    /// A link on the open help page.
+    HelpLink(usize),
     /// The SQL panel's Ask AI panel, which scrolls.
     AskScroll,
     AskBar,

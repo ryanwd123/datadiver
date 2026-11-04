@@ -307,8 +307,13 @@ impl DataFrameView {
             steps.push_back(Step::Sleep(options.capture_delay));
             let exit = options.exit_after.is_none();
             steps.push_back(Step::Run(Box::new(move |view, cx| {
-                // The formatting manager shows in a window of its own.
-                let id = view.format_window.as_ref().map_or(cx.window_id(), |window| window.id);
+                // The formatting manager and the help show in windows of their own.
+                let id = view
+                    .format_window
+                    .as_ref()
+                    .map(|window| window.id)
+                    .or(view.help_window.as_ref().map(|window| window.id))
+                    .unwrap_or(cx.window_id());
                 // Painting borrows the view, so it waits until this step returns.
                 cx.with_runtime(move |runtime| {
                     if let Err(error) = crate::ui::platform::headless::capture(runtime, id, &path) {
@@ -339,6 +344,7 @@ impl DataFrameView {
             | "editor:sql-ask-log" | "editor:sql-ask-mention" => self.capture_sql_editor(target, cx),
             "info" => self.open_information(cx),
             "help" => self.open_help(cx),
+            topic if topic.starts_with("help:") => self.open_help_topic(&topic["help:".len()..], cx),
             "keymap" => self.open_keymap_editor(cx),
             "actions" | "action-menu" => self.capture_actions(target, cx),
             "formatting" | "formatting:presets" | "formatted" => self.capture_formatting(target, cx),

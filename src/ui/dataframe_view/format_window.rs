@@ -154,6 +154,14 @@ impl DataFrameView {
             }
             _ => false,
         };
+        if let Event::Key(key) = event
+            && canonical_keystroke(&key.stroke())
+                .is_ok_and(|stroke| self.keymap.binding_for(&stroke, KeyContext::Application) == Some(ActionId::Help))
+            && let Some(owner) = self.format_window.as_ref().map(|window| window.owner)
+        {
+            self.open_help_topic("formatting", &mut cx.for_window(owner));
+            return true;
+        }
         let Some(window) = self.format_window.as_mut() else { return false };
         let owner = window.owner;
         let Some(manager) = &mut window.manager else { return false };

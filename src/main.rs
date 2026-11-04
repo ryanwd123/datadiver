@@ -85,7 +85,8 @@ fn main() {
             "--show" => {
                 let targets = args.next().expect("--show requires a target");
                 for target in targets.split(',') {
-                    if !matches!(
+                    // help:<page> opens the help on that page.
+                    if !target.starts_with("help:") && !matches!(
                         target,
                         "info"
                             | "editor:sql"

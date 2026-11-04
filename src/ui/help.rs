@@ -5,8 +5,6 @@ use crate::ui::hit::Hit;
 use crate::ui::platform::{Align, Canvas, Font, Point, Rect, TextOptions, point, rect, text};
 use crate::ui::widgets::{Fonts, colors, scroll};
 
-const OUTER_MARGIN: f32 = 24.;
-pub(super) const DIALOG_PADDING: f32 = 24.;
 const COLUMN_GAP: f32 = 24.;
 const MIN_COLUMN_WIDTH: f32 = 420.;
 const SCROLLBAR_GUTTER: f32 = 14.;
@@ -99,17 +97,15 @@ pub(crate) fn sections(keymap: &KeymapFile) -> Vec<HelpSection> {
 }
 
 pub(crate) struct HelpLayout {
-    pub dialog_width: f32,
     pub column_count: usize,
     column_width: f32,
     key_width: f32,
 }
 
 impl HelpLayout {
-    pub fn for_viewport(width: f32) -> Self {
-        let dialog_width = (width - OUTER_MARGIN * 2.).clamp(0., 1500.);
-        // The dialog's border and content padding reduce the usable width.
-        let content_width = (dialog_width - DIALOG_PADDING * 2. - 2. - SCROLLBAR_GUTTER).max(0.);
+    /// Columns for a page `width` wide, which leaves room for its scroll bar.
+    pub fn for_width(width: f32) -> Self {
+        let content_width = (width.min(1450.) - SCROLLBAR_GUTTER).max(0.);
         let column_count = (1..=3)
             .rev()
             .find(|&count| {
@@ -119,7 +115,6 @@ impl HelpLayout {
         let column_width =
             (content_width - COLUMN_GAP * (column_count - 1) as f32) / column_count as f32;
         Self {
-            dialog_width,
             column_count,
             column_width,
             key_width: (column_width * 0.42).min(190.),
@@ -138,8 +133,9 @@ fn distribute_sections(sections: &[HelpSection], count: usize) -> Vec<Vec<&HelpS
     columns
 }
 
-/// The keyboard shortcut reference, laid out in columns that scroll together.
-pub struct HelpDialog {
+/// The keyboard shortcut reference, laid out in columns that scroll together:
+/// the help window's last tab.
+pub struct ShortcutsPage {
     sections: Vec<HelpSection>,
     pub(super) scroll: scroll::Scroll,
     viewport: Rect,
@@ -155,7 +151,7 @@ enum Op {
     Text(String),
 }
 
-impl HelpDialog {
+impl ShortcutsPage {
     pub fn new(keymap: &KeymapFile) -> Self {
         Self {
             sections: sections(keymap),
@@ -326,8 +322,8 @@ impl HelpDialog {
         y
     }
 
-    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, viewport_width: f32) {
-        let layout = HelpLayout::for_viewport(viewport_width);
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts) {
+        let layout = HelpLayout::for_width(r.w);
         let font = &fonts.ui;
         self.viewport = r;
         let columns = distribute_sections(&self.sections, layout.column_count);
@@ -485,23 +481,22 @@ mod tests {
     fn columns_fit_the_content_area_at_each_threshold() {
         for (width, count) in [
             (800., 1),
-            (975., 1),
-            (976., 2),
+            (877., 1),
+            (878., 2),
             (1200., 2),
-            (1419., 2),
-            (1420., 3),
+            (1321., 2),
+            (1322., 3),
             (1920., 3),
         ] {
-            let layout = HelpLayout::for_viewport(width);
-            assert_eq!(layout.column_count, count, "viewport {width}");
-            assert!(layout.dialog_width <= width - 48.);
-            assert!(layout.dialog_width <= 1500.);
+            let layout = HelpLayout::for_width(width);
+            assert_eq!(layout.column_count, count, "width {width}");
+            assert!(layout.column_width * count as f32 <= width);
             assert_eq!(layout.key_width, (layout.column_width * 0.42).min(190.));
             if count > 1 {
                 assert!(layout.column_width >= MIN_COLUMN_WIDTH);
             }
         }
-        assert_eq!(HelpLayout::for_viewport(300.).column_count, 1);
+        assert_eq!(HelpLayout::for_width(300.).column_count, 1);
     }
 
     #[test]

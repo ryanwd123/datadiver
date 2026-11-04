@@ -13,6 +13,10 @@ impl View for DataFrameView {
             self.paint_format_window(canvas, cx);
             return;
         }
+        if self.is_help_window(cx) {
+            self.paint_help_window(canvas, cx);
+            return;
+        }
         self.sync_profiles(cx);
         self.render(canvas, cx);
         self.refresh_format_window(cx);
@@ -21,6 +25,9 @@ impl View for DataFrameView {
     fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {
         if self.is_format_window(cx) {
             return self.format_window_event(event, cx);
+        }
+        if self.is_help_window(cx) {
+            return self.help_window_event(event, cx);
         }
         self.sync_profiles(cx);
         let before = self.focus;
@@ -85,7 +92,7 @@ impl View for DataFrameView {
     }
 
     fn close_requested(&mut self, cx: &mut Cx<Self>) -> bool {
-        if !self.is_format_window(cx) {
+        if !self.is_format_window(cx) && !self.is_help_window(cx) {
             self.prepare_close(cx);
         }
         true
@@ -96,6 +103,10 @@ impl View for DataFrameView {
             self.format_window_closed(cx);
             return;
         }
+        if self.is_help_window(cx) {
+            self.help_window_closed(cx);
+            return;
+        }
         self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
@@ -104,6 +115,9 @@ impl View for DataFrameView {
     fn caret(&self, window: crate::ui::platform::WindowId) -> Option<crate::ui::platform::Rect> {
         if self.format_window.as_ref().is_some_and(|format| format.id == window) {
             return self.format_window_caret(window);
+        }
+        if self.help_window.as_ref().is_some_and(|help| help.id == window) {
+            return None;
         }
         let focus = self.focus?;
         if focus == self.search_input.id {
@@ -132,6 +146,13 @@ impl DataFrameView {
 
     fn key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) -> bool {
         cx.notify();
+        // Help works from anywhere, and opens on the page about what has focus.
+        if let Ok(stroke) = canonical_keystroke(&event.stroke())
+            && self.keymap.binding_for(&stroke, KeyContext::Application) == Some(ActionId::Help)
+        {
+            self.open_help(cx);
+            return true;
+        }
         if let Some(editor) = &mut self.keymap_editor {
             let mut focus = self.focus;
             let handled = editor.key(event, &mut focus);

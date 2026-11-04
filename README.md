@@ -47,6 +47,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Copy and export:** copy cells as TSV, CSV, JSON, Python lists, or HTML and Markdown tables, or export the displayed result to CSV, Parquet, JSON, or Excel.
 - **Look things up:** view actions open a web page, internal site, or program for the active row.
 - **Work from the keyboard:** a searchable command palette, a Helper menu (**Space** or **Ctrl+K**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
+- **Built-in help:** **F1** opens a help window on the page about whatever has focus, with a page for each part of the app and the shortcuts as they are bound now.
 - **Make it comfortable:** themes, grid and editor fonts, font size, and independent windows.
 
 ## Install
@@ -79,7 +80,7 @@ datadiver --rows 10000 --ephemeral
 5. Select cells and press **Ctrl+C** to copy, or **Ctrl+Shift+C** to choose an output format.
 6. Press **Ctrl+S** to save the view for later.
 
-Press **F1** for a list of shortcuts, or **Ctrl+Shift+P** to search every command.
+Press **F1** for help on whatever has focus, or **Ctrl+Shift+P** to search every command.
 
 ## Keyboard shortcuts
 
@@ -282,7 +283,7 @@ SQL runs on DuckDB against the active profile database, and can read files with 
 
 When the script's last statement is a plain query run outside a transaction, the whole result is kept, so slicers, `=` / `-` filters, search, and sort see every row. Other results keep only the rows up to the limit, and slicers and filters explain why they are off.
 
-The editor works like VS Code's: multiple cursors (**Alt+Click**, **Ctrl+Alt+Up/Down**, **Ctrl+D**, **Ctrl+Shift+L**), column selection (**Shift+Alt+drag**), **Alt+Up/Down** to move lines, **Ctrl+/** to comment, **Ctrl+Shift+K** to delete a line, **Ctrl+G** to go to a line, **Ctrl+F** / **Ctrl+H** for find and replace with case, whole word, and regex, folding, bracket matching, and **Ctrl+wheel** to zoom. Right-click for the context menu. **Ctrl+Enter** still runs SQL, and **Ctrl+K** asks AI. These keys are in the keymap editor's **SQL Editor** context, so they can be rebound, and the command palette lists the editor's actions while it is open.
+The editor works like VS Code's: multiple cursors (**Alt+Click**, **Ctrl+Alt+Up/Down**, **Ctrl+D**, **Ctrl+Shift+L**), column selection (**Shift+Alt+drag**), **Alt+Up/Down** to move lines, **Ctrl+/** to comment, **Ctrl+Shift+K** to delete a line, **Ctrl+G** to go to a line, **Ctrl+F** / **Ctrl+H** for find and replace with case, whole word, and regex, folding, bracket matching, and **Ctrl+wheel** to zoom. Right-click for the context menu. **Ctrl+Enter** still runs SQL, **Ctrl+K** opens the SQL Helper menu, and **Ctrl+I** asks AI. These keys are in the keymap editor's **SQL Editor** context, so they can be rebound, and the command palette lists the editor's actions while it is open.
 
 The editor understands DuckDB's SQL as you type:
 
@@ -314,7 +315,7 @@ SET file_search_path = 'C:\data';
 
 ## Ask AI for SQL
 
-In the SQL editor, press **Ctrl+K** (or **Ctrl+I**, or choose **Ask AI for SQL**) to open a prompt above the editor. Describe what you want and press **Enter**. If you select SQL first, the request asks for that selection to be rewritten. DuckDB checks the reply against the database, and errors go back to the model to be fixed, up to twice, before the SQL is shown with DuckDB's verdict. Press **Tab** to insert it at the cursor, **Ctrl+Enter** to insert and run it, or **Escape** to discard it. **Show log** lists every request and reply.
+In the SQL editor, press **Ctrl+I** (or choose **Ask AI for SQL**, or press **Ctrl+K** then **A**) to open a panel beside the editor. Describe what you want and press **Enter**; **Shift+Enter** starts a new line. If you select SQL first, the request asks for that selection to be rewritten. DuckDB checks the reply against the database, and errors go back to the model to be fixed, up to twice, before the SQL is shown with DuckDB's verdict. Press **Tab** to insert it at the cursor, **Ctrl+Enter** to insert and run it, or **Escape** to discard it. **Show log** lists every request and reply.
 
 Type **@** to mention a table. When the prompt names tables, only those are described in detail.
 
@@ -439,7 +440,7 @@ The app can capture its own UI when built with the `snapshots` feature:
 cargo run --features snapshots -- --rows 60 --show info --capture "target\ui\info.png" --ephemeral
 ```
 
-Use `--window 1400x900` to specify capture dimensions and `--capture-delay 1000` to set the capture delay in milliseconds. Other `--show` targets include `editor:sql`, `editor:sql-results`, `editor:sql-completion`, `editor:sql-error`, `editor:sql-ask`, and `ai-providers`.
+Use `--window 1400x900` to specify capture dimensions and `--capture-delay 1000` to set the capture delay in milliseconds. Other `--show` targets include `editor:sql`, `editor:sql-results`, `editor:sql-completion`, `editor:sql-hover`, `editor:sql-error`, `editor:sql-ask`, `ai-providers`, and `help:<page>` for a help page such as `help:search`.
 
 The source is organized into:
 
@@ -447,6 +448,7 @@ The source is organized into:
 - `src/application`: application state, commands, preferences, and editing workflows.
 - `src/infrastructure`: the DuckDB and Polars stores, source reads, persistence, and performance instrumentation.
 - `src/ui`: the table interface, panels, editors, and palettes.
+- `help`: the in-app help pages, in Markdown, built into the exe.
 
 For measured performance results and implementation details, see the [storage comparison](performance/STORAGE.md), [query modes](performance/QUERY_MODES.md), and [table width behavior](performance/TABLE_WIDTHS.md).
 

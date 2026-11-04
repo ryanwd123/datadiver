@@ -309,6 +309,23 @@ pub fn layout(text: &str, font: &Font, options: TextOptions) -> Rc<TextLayout> {
     with(|system| system.layout(text, font, options))
 }
 
+/// How part of a styled layout differs from the layout's font.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunStyle {
+    Bold,
+    Semibold,
+    Italic,
+    Underline,
+    /// Another family and size, such as code inside a paragraph.
+    Font(Font),
+}
+
+/// Lays out `text` with byte ranges styled by `runs`. Not cached: callers
+/// keep the layout while the text and width stay the same.
+pub fn styled_layout(text: &str, font: &Font, options: TextOptions, runs: &[(std::ops::Range<usize>, RunStyle)]) -> Rc<TextLayout> {
+    with(|system| Rc::new(system.styled_layout(text, font, options, runs)))
+}
+
 /// The width and height of `text` on one line.
 pub fn measure(text: &str, font: &Font) -> (f32, f32) {
     let layout = layout(text, font, TextOptions::default());
@@ -493,6 +510,47 @@ impl TextSystem {
             line_count: metrics.lineCount as usize,
             layout_width: if unbounded { width } else { max_width },
         }
+    }
+
+    fn styled_layout(&mut self, text: &str, font: &Font, options: TextOptions, runs: &[(std::ops::Range<usize>, RunStyle)]) -> TextLayout {
+        let mut layout = self.create_layout(text, font, options);
+        if runs.is_empty() {
+            return layout;
+        }
+        for (range, style) in runs {
+            let range = layout.range(range.start, range.end);
+            unsafe {
+                let _ = match style {
+                    RunStyle::Bold => layout.layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range),
+                    RunStyle::Semibold => layout.layout.SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, range),
+                    RunStyle::Italic => layout.layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range),
+                    RunStyle::Underline => layout.layout.SetUnderline(true, range),
+                    RunStyle::Font(other) => {
+                        let family = HSTRING::from(&*other.family);
+                        if let Some(collection) = self.collection_for(&family) {
+                            let _ = layout.layout.SetFontCollection(&collection, range);
+                        }
+                        let _ = layout.layout.SetFontSize(other.size.max(1.0), range);
+                        layout.layout.SetFontFamilyName(&family, range)
+                    }
+                };
+            }
+        }
+        // The styles change the text's size.
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            let _ = layout.layout.GetMetrics(&mut metrics);
+        }
+        layout.width = metrics.widthIncludingTrailingWhitespace;
+        layout.height = metrics.height;
+        layout.line_count = metrics.lineCount as usize;
+        if !options.max_width.is_finite() {
+            unsafe {
+                let _ = layout.layout.SetMaxWidth(layout.width.max(1.0));
+            }
+            layout.layout_width = layout.width;
+        }
+        layout
     }
 
     /// Marks the start of a frame; layouts unused for a few frames are

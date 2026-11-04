@@ -1737,89 +1737,9 @@ fn info_profiles_every_source_row_while_search_narrows_the_grid() {
     );
 }
 
-fn help<R>(viewer: &Viewer, f: impl FnOnce(&crate::ui::help::HelpDialog) -> R) -> R {
-    viewer.read(|view| {
-        let Some(Dialog::Help(help)) = &view.dialog else {
-            panic!("help is open")
-        };
-        f(help)
-    })
-}
-
 fn find(viewer: &Viewer, hit: Hit) -> Rect {
     viewer.render();
     viewer.find(|found| *found == hit).unwrap_or_else(|| panic!("no {hit:?}"))
-}
-
-#[test]
-fn help_font_changes_and_repeated_scrollbar_drags_keep_track_fixed() {
-    let home = tempfile::tempdir().unwrap();
-    let viewer = viewer(&home);
-    viewer.resize(800., 600.);
-    viewer.update(|view, cx| view.open_help(cx));
-    viewer.render();
-    let height = help(&viewer, |help| help.content_height());
-    viewer.update(|view, cx| view.change_font_size(9, cx));
-    viewer.render();
-    assert!(help(&viewer, |help| help.content_height()) > height);
-
-    let track = find(&viewer, Hit::DialogScroll);
-    let bar = find(&viewer, Hit::DialogBar);
-    let mut from = point(bar.center().x, bar.y + 12.);
-    for travel in [60., 60., -90.] {
-        let before = help(&viewer, |help| help.scroll.offset);
-        let to = point(from.x, from.y + travel);
-        viewer.drag(from, to);
-        let after = help(&viewer, |help| help.scroll.offset);
-        assert!(
-            if travel > 0. { after > before } else { after < before },
-            "drag should follow the thumb"
-        );
-        assert_eq!(find(&viewer, Hit::DialogScroll), track);
-        from = to;
-    }
-}
-
-#[test]
-fn help_columns_resize_align_scroll_and_dismiss() {
-    use crate::ui::help::HelpLayout;
-    let home = tempfile::tempdir().unwrap();
-    let viewer = viewer(&home);
-    viewer.resize(1920., 1080.);
-    press(&viewer, "f1");
-    viewer.render();
-    assert!(viewer.has_dialog());
-
-    for (width, height, columns) in [(1920., 1080., 3), (1200., 800., 2), (800., 600., 1)] {
-        viewer.resize(width, height);
-        let dialog = find(&viewer, Hit::Surface);
-        assert_eq!(dialog.w, (width - 48.).min(1500.));
-        assert!(dialog.x >= 24.);
-        assert!(dialog.right() <= width - 24.);
-        let close = find(&viewer, Hit::Button(Button::DialogClose));
-        assert!(close.right() >= dialog.right() - 40.);
-        assert!(close.right() < dialog.right());
-        let body = find(&viewer, Hit::DialogScroll);
-        assert!(body.h <= height - 140.);
-        assert_eq!(HelpLayout::for_viewport(width).column_count, columns);
-        if columns == 1 {
-            let before = help(&viewer, |help| help.scroll.offset);
-            viewer.app.scroll(viewer.id, body.center(), point(0., -10.));
-            viewer.render();
-            assert!(help(&viewer, |help| help.scroll.offset) > before);
-        }
-    }
-
-    viewer.press("escape");
-    assert!(!viewer.has_dialog());
-    viewer.update(|view, cx| {
-        view.change_font_size(9, cx);
-        view.open_help(cx);
-    });
-    let body = find(&viewer, Hit::DialogScroll);
-    assert!(body.h <= 460.);
-    viewer.click(|hit| *hit == Hit::Button(Button::DialogClose));
-    assert!(!viewer.has_dialog());
 }
 
 #[test]
