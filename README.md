@@ -182,6 +182,8 @@ Switch a file with **Query engine** in **View options** (the gear at the end of 
 
 Search words must all appear in a row (any column, case-insensitive). `-word` excludes rows containing it, and `>N`, `<N`, `>=N`, `<=N` match rows where any numeric column compares true.
 
+Separate alternatives with `|`: `new york | kansas` keeps rows containing both "new" and "york", or containing "kansas". Each side works like a whole search of its own. Put a `|` in double quotes to search for it as text.
+
 Scope a term to one column with `column:text` (contains), `column=value` (equals), `column!=value`, or `column>N` / `>=` / `<` / `<=`. Number columns compare numerically, and dates and other types compare as that type, so `"order date">=2024-01-01` works. The column name can be any unique prefix (`reg:north` for `region`); quote names or values with spaces (`name:"john smith"`). `-column:text` excludes, and a name matching no column searches the whole word as text, so `10:30` still finds times.
 
 Compare two columns by putting the second column's name in double quotes after the operator: `"small bags">"large bags"`. Typing `"` lists matching column names; press **Tab** or **Enter** to insert one.

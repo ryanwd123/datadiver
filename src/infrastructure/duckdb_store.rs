@@ -1453,53 +1453,7 @@ impl DuckDbStore {
         let mut predicates = Vec::new();
         let mut parameters = Vec::new();
         for token in &view.tokens {
-            match token {
-                Token::Contains(text) => {
-                    let predicate = self.search_predicate(text, &view.hidden, &mut parameters);
-                    predicates.push(predicate);
-                }
-                Token::Excludes(text) => {
-                    let predicate = self.search_predicate(text, &view.hidden, &mut parameters);
-                    predicates.push(format!("NOT ({predicate})"));
-                }
-                Token::Compare(comparison, number) => {
-                    let predicates_for_columns = self
-                        .columns
-                        .iter()
-                        .filter(|column| {
-                            is_numeric_type(&column.sql_type)
-                                && !view.hidden.contains(&column.name)
-                        })
-                        .map(|column| {
-                            numeric_predicate(column, number, *comparison, &mut parameters)
-                        })
-                        .collect::<Vec<_>>();
-                    predicates.push(if predicates_for_columns.is_empty() {
-                        "FALSE".to_owned()
-                    } else {
-                        format!("({})", predicates_for_columns.join(" OR "))
-                    });
-                }
-                Token::Column(term) => {
-                    let column = resolve_column(
-                        self.columns.iter().map(|column| column.name.as_str()),
-                        &term.column,
-                    )
-                    .map(|index| &self.columns[index]);
-                    let predicate = match (column, term.fallback()) {
-                        (Some(column), _) => self.term_predicate(column, term, &mut parameters)?,
-                        (None, Token::Contains(text) | Token::Excludes(text)) => {
-                            self.search_predicate(&text, &view.hidden, &mut parameters)
-                        }
-                        (None, _) => unreachable!("fallback is a text token"),
-                    };
-                    predicates.push(if term.negated {
-                        format!("NOT ({predicate})")
-                    } else {
-                        predicate
-                    });
-                }
-            }
+            predicates.push(self.token_predicate(token, &view.hidden, &mut parameters)?);
         }
 
         let (filter_sql, filter_values) =
@@ -1526,6 +1480,70 @@ impl DuckDbStore {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok((predicates, parameters, order))
+    }
+
+    /// The SQL condition one search token puts on a row.
+    fn token_predicate(
+        &self,
+        token: &Token,
+        hidden: &[String],
+        parameters: &mut Vec<Value>,
+    ) -> Result<String, String> {
+        Ok(match token {
+            Token::Contains(text) => self.search_predicate(text, hidden, parameters),
+            Token::Excludes(text) => {
+                format!("NOT ({})", self.search_predicate(text, hidden, parameters))
+            }
+            Token::Compare(comparison, number) => {
+                let predicates = self
+                    .columns
+                    .iter()
+                    .filter(|column| {
+                        is_numeric_type(&column.sql_type) && !hidden.contains(&column.name)
+                    })
+                    .map(|column| numeric_predicate(column, number, *comparison, parameters))
+                    .collect::<Vec<_>>();
+                if predicates.is_empty() {
+                    "FALSE".to_owned()
+                } else {
+                    format!("({})", predicates.join(" OR "))
+                }
+            }
+            Token::Column(term) => {
+                let column = resolve_column(
+                    self.columns.iter().map(|column| column.name.as_str()),
+                    &term.column,
+                )
+                .map(|index| &self.columns[index]);
+                let predicate = match (column, term.fallback()) {
+                    (Some(column), _) => self.term_predicate(column, term, parameters)?,
+                    (None, Token::Contains(text) | Token::Excludes(text)) => {
+                        self.search_predicate(&text, hidden, parameters)
+                    }
+                    (None, _) => unreachable!("fallback is a text token"),
+                };
+                if term.negated {
+                    format!("NOT ({predicate})")
+                } else {
+                    predicate
+                }
+            }
+            Token::Any(groups) => {
+                let mut alternatives = Vec::new();
+                for group in groups {
+                    let all = group
+                        .iter()
+                        .map(|token| self.token_predicate(token, hidden, parameters))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    alternatives.push(if all.is_empty() {
+                        "TRUE".to_owned()
+                    } else {
+                        format!("({})", all.join(" AND "))
+                    });
+                }
+                format!("({})", alternatives.join(" OR "))
+            }
+        })
     }
 
     /// SQL rendering a column or row-level expression as the grid displays it.
@@ -3340,6 +3358,9 @@ mod tests {
         assert_eq!(search("order<2024-01-01").unwrap(), [3]);
         // Negation keeps rows whose value is NULL.
         assert_eq!(search("-sales:north").unwrap(), [1, 2, 3]);
+        // `|` keeps rows matching every word of any group.
+        assert_eq!(search("north southfield | west").unwrap(), [0, 3]);
+        assert_eq!(search("qty>20 | -sales:south qty<10").unwrap(), [0, 3]);
         assert_eq!(search("qty!=15").unwrap(), [0, 2, 3]);
         // Unknown columns search the whole word as text.
         assert_eq!(search("o'brien:x").unwrap(), Vec::<i64>::new());

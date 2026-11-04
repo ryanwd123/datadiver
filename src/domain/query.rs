@@ -6,6 +6,9 @@ pub enum Token {
     Compare(Comparison, Numeric),
     /// A term scoped to one column, such as `region:north` or `amount>=10`.
     Column(ColumnTerm),
+    /// `new york | kansas`: rows matching every token of at least one group.
+    /// Groups never contain another `Any`.
+    Any(Vec<Vec<Token>>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,16 +113,48 @@ pub fn resolve_column<'a>(names: impl IntoIterator<Item = &'a str>, wanted: &str
     }
 }
 
+/// Parses the search box. Words must all match, except that `|` outside
+/// quotes separates groups of words, any one of which may match.
 pub fn parse(search: &str) -> Result<Vec<Token>, String> {
-    words(search)
-        .iter()
-        .filter_map(|word| parse_word(word).transpose())
-        .collect()
+    let mut groups = Vec::new();
+    for group in split_alternatives(search) {
+        let tokens = group
+            .iter()
+            .filter_map(|word| parse_word(word).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        // An empty group is `a |` while the next word is still being typed.
+        if !tokens.is_empty() {
+            groups.push(tokens);
+        }
+    }
+    Ok(match groups.len() {
+        0 => Vec::new(),
+        1 => groups.pop().unwrap_or_default(),
+        _ => vec![Token::Any(groups)],
+    })
+}
+
+/// The search's words, split into groups at each `|` outside quotes.
+fn split_alternatives(search: &str) -> Vec<Vec<String>> {
+    let mut groups = vec![Vec::new()];
+    for word in split_words(search, true) {
+        if word == "|" {
+            groups.push(Vec::new());
+        } else if let Some(group) = groups.last_mut() {
+            group.push(word);
+        }
+    }
+    groups
+}
+
+fn words(search: &str) -> Vec<String> {
+    split_words(search, false)
 }
 
 /// Split on whitespace outside double quotes. Quotes stay in the word so
-/// operators inside them can be told apart from real ones.
-fn words(search: &str) -> Vec<String> {
+/// operators inside them can be told apart from real ones. With `split_bars`,
+/// each `|` outside quotes is a word of its own.
+fn split_words(search: &str, split_bars: bool) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -127,7 +162,12 @@ fn words(search: &str) -> Vec<String> {
         if ch == '"' {
             quoted = !quoted;
         }
-        if ch.is_whitespace() && !quoted {
+        if split_bars && ch == '|' && !quoted {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            words.push("|".into());
+        } else if ch.is_whitespace() && !quoted {
             if !current.is_empty() {
                 words.push(std::mem::take(&mut current));
             }
@@ -442,13 +482,20 @@ impl SearchHighlights {
 
 /// Words that rows must contain, for highlighting matches in cells.
 pub fn highlight_terms(search: &str) -> SearchHighlights {
-    let mut highlights = SearchHighlights::default();
-    for token in parse(search).unwrap_or_default() {
+    fn add(highlights: &mut SearchHighlights, token: Token) {
         match token {
             Token::Contains(word) if !word.is_empty() => highlights.all.push(word),
             Token::Column(term) if !term.negated => highlights.scoped.push(term),
+            Token::Any(groups) => groups
+                .into_iter()
+                .flatten()
+                .for_each(|token| add(highlights, token)),
             _ => {}
         }
+    }
+    let mut highlights = SearchHighlights::default();
+    for token in parse(search).unwrap_or_default() {
+        add(&mut highlights, token);
     }
     highlights
 }
@@ -591,6 +638,35 @@ pub fn rank_columns<'a>(names: &[&'a str], typed: &str) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bars_outside_quotes_separate_alternatives() {
+        let contains = |word: &str| Token::Contains(word.into());
+        assert_eq!(
+            parse("new york | kansas").unwrap(),
+            [Token::Any(vec![
+                vec![contains("new"), contains("york")],
+                vec![contains("kansas")],
+            ])]
+        );
+        // Bars need no spaces, and a group still being typed is skipped.
+        assert_eq!(
+            parse("ohio|-iowa |").unwrap(),
+            [Token::Any(vec![
+                vec![contains("ohio")],
+                vec![Token::Excludes("iowa".into())],
+            ])]
+        );
+        assert_eq!(parse("kansas |").unwrap(), [contains("kansas")]);
+        assert_eq!(parse("| |").unwrap(), []);
+        assert_eq!(parse("\"a|b\"").unwrap(), [contains("a|b")]);
+        assert!(parse("x | >wat").is_err());
+        let highlights = highlight_terms("new | state:kansas");
+        assert_eq!(
+            highlights.for_columns(&["state", "city"]),
+            [vec!["new".to_owned(), "kansas".into()], vec!["new".into()]]
+        );
+    }
 
     #[test]
     fn parse_rejects_malformed_and_nonfinite_comparisons() {

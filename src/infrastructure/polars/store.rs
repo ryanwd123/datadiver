@@ -661,43 +661,55 @@ impl PolarsStore {
     fn view_predicate(&self, view: &ViewQuery) -> Result<Option<Expr>, String> {
         let mut predicates = Vec::new();
         for token in &view.tokens {
-            match token {
-                Token::Contains(text) => predicates.push(self.search_predicate(text, &view.hidden)),
-                Token::Excludes(text) => {
-                    predicates.push(self.search_predicate(text, &view.hidden).not())
-                }
-                Token::Compare(comparison, number) => {
-                    let columns = self
-                        .columns
-                        .iter()
-                        .filter(|column| {
-                            is_numeric_type(&column.sql_type) && !view.hidden.contains(&column.name)
-                        })
-                        .map(|column| numeric_predicate(column, number, *comparison).fill_null(lit(false)))
-                        .collect::<Vec<_>>();
-                    predicates.push(any(columns));
-                }
-                Token::Column(term) => {
-                    let column = resolve_column(
-                        self.columns.iter().map(|column| column.name.as_str()),
-                        &term.column,
-                    )
-                    .map(|index| &self.columns[index]);
-                    let predicate = match (column, term.fallback()) {
-                        (Some(column), _) => self.term_predicate(column, term)?,
-                        (None, Token::Contains(text) | Token::Excludes(text)) => {
-                            self.search_predicate(&text, &view.hidden)
-                        }
-                        (None, _) => unreachable!("fallback is a text token"),
-                    };
-                    predicates.push(if term.negated { predicate.not() } else { predicate });
-                }
-            }
+            predicates.push(self.token_predicate(token, &view.hidden)?);
         }
         if let Some(filter) = self.filter_predicate(&view.filters, &view.value_filters)? {
             predicates.push(filter);
         }
         Ok(predicates.into_iter().reduce(Expr::and))
+    }
+
+    /// The condition one search token puts on a row.
+    fn token_predicate(&self, token: &Token, hidden: &[String]) -> Result<Expr, String> {
+        Ok(match token {
+            Token::Contains(text) => self.search_predicate(text, hidden),
+            Token::Excludes(text) => self.search_predicate(text, hidden).not(),
+            Token::Compare(comparison, number) => {
+                let columns = self
+                    .columns
+                    .iter()
+                    .filter(|column| is_numeric_type(&column.sql_type) && !hidden.contains(&column.name))
+                    .map(|column| numeric_predicate(column, number, *comparison).fill_null(lit(false)))
+                    .collect::<Vec<_>>();
+                any(columns)
+            }
+            Token::Column(term) => {
+                let column = resolve_column(
+                    self.columns.iter().map(|column| column.name.as_str()),
+                    &term.column,
+                )
+                .map(|index| &self.columns[index]);
+                let predicate = match (column, term.fallback()) {
+                    (Some(column), _) => self.term_predicate(column, term)?,
+                    (None, Token::Contains(text) | Token::Excludes(text)) => {
+                        self.search_predicate(&text, hidden)
+                    }
+                    (None, _) => unreachable!("fallback is a text token"),
+                };
+                if term.negated { predicate.not() } else { predicate }
+            }
+            Token::Any(groups) => {
+                let mut alternatives = Vec::new();
+                for group in groups {
+                    let all = group
+                        .iter()
+                        .map(|token| self.token_predicate(token, hidden))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    alternatives.push(all.into_iter().reduce(Expr::and).unwrap_or(lit(true)));
+                }
+                alternatives.into_iter().reduce(Expr::or).unwrap_or(lit(true))
+            }
+        })
     }
 
     /// The rows matching `filters` and `value_filters`, with a `rowid` column
@@ -1848,6 +1860,8 @@ mod tests {
         assert_eq!(search(&store, "smith").unwrap(), [0, 1]);
         assert_eq!(search(&store, "c++").unwrap(), [0, 3]);
         assert_eq!(search(&store, "missing").unwrap(), Vec::<i64>::new());
+        assert_eq!(search(&store, "smith c++ | jones").unwrap(), [0, 2]);
+        assert_eq!(search(&store, "brown | employee_id>2 | missing").unwrap(), [0, 3]);
         let sorted = store
             .query_row_ids(&ViewQuery {
                 sort: vec![SortKey {
