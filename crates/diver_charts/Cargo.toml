@@ -1,0 +1,29 @@
+[package]
+name = "diver_charts"
+version = "0.1.0"
+edition = "2024"
+description = "DataDiver's charts: chart descriptions laid out into scenes any backend can draw"
+license = "MIT"
+publish = false
+
+# The layout core has no dependencies, so it can also back the Python package.
+[dependencies]
+
+[dev-dependencies]
+# The gallery demo draws scenes with Direct2D.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-numerics = "0.3.1"

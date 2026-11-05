@@ -1,0 +1,4 @@
+## diver_charts
+The goal of this crate is to make a data visualization library that will be used in the Data Diver app and also will be used as a Python package. 
+
+For the initial app I want to get a feel for what the charts will look like in the Windows Direct Draw or Direct2D, whatever we're using for this Data Diver project. So for starters, just make a demo app that has a bar chart. And then in this app I want to have a demo app that gives — when we eventually build all the different chart types, it'll have basically a gallery with examples of all the chart types and some complex examples as well. 
