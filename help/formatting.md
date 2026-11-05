@@ -74,7 +74,11 @@ The optional format is Excel's, such as `'#,##0.00'`, `'0.0%'`, `'$#,##0;($#,##0
 ## Help while typing
 
 - **Ctrl+Space** lists what can come next.
-- Typing `"` lists column names, `.` lists a struct's fields, and `#` lists colors, with a color picker.
+- Typing `"` lists column names, `.` lists a struct's fields, and `#` lists colors.
 - Problems are underlined and listed under the rules.
 
 A plain file remembers its formats; a view saves them with everything else.
+
+## Picking colors
+
+**Colors ◂** at the top right opens the colors panel (**Hide ▸** puts it away; the window remembers which). With the caret on a `#…` color, the panel shows that color and changing it there changes the rule, so the grid follows as you drag. One drag undoes as one step. Elsewhere, choose a color and press **Insert** to put it at the caret. You can also type a hex in the panel's box, or click a swatch: the colors already in these rules, or the palette.

@@ -4,6 +4,7 @@
 //! at once, so the grid shows it while typing.
 
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use diver_format::editor::FormatLanguage;
@@ -13,21 +14,25 @@ use windows::Win32::Foundation::HWND;
 use crate::domain::documents::ConditionalFormat;
 use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::keys::{KeyEvent, Modifiers};
-use crate::ui::platform::{Align, Canvas, Cursor, Point, Rect, rect, text};
+use crate::ui::platform::{Align, Canvas, Cursor, Point, Rect, point, rect, text};
+use crate::ui::widgets::color_picker::{self, ColorPicker, Swatches};
+use crate::ui::widgets::editor::Editor;
 use crate::ui::widgets::hosted_editor::{HostedEditor, MarkKind};
 use crate::ui::widgets::scroll::{self, Scroll};
 use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
-/// The command "Pick a color…" sends.
-const PICK_COLOR: u32 = 1;
 const LIST_WIDTH: f32 = 240.0;
+/// The colors panel on the right.
+const COLORS_WIDTH: f32 = 252.0;
+/// The color the panel starts on before the rules have one.
+const START_COLOR: u32 = 0x638ec6;
+/// At most this many of the rules' own colors are offered.
+const RULE_SWATCHES: usize = 16;
 /// The presets drop-down, which may be wider than the list it opens from.
 const PRESETS_WIDTH: f32 = 300.0;
 
 pub enum FormatManagerEvent {
     Changed(Vec<ConditionalFormat>),
-    /// Choose a color for the `#…` at the caret (or insert one there).
-    PickColor,
 }
 
 /// Groups and presets as the list shows them.
@@ -68,6 +73,10 @@ pub struct FormatManager {
     pub(crate) presets_open: bool,
     preset_scroll: Scroll,
     preset_list: Option<PresetList>,
+    /// The colors panel: shown, its picker, and the picker's hex input.
+    pub(crate) colors_open: bool,
+    pub(crate) picker: ColorPicker,
+    pub(crate) hex: Editor,
     events: Vec<FormatManagerEvent>,
 }
 
@@ -89,7 +98,10 @@ impl FormatManager {
             None => 0,
         };
         let columns = Rc::new(RefCell::new(columns));
-        let editor = HostedEditor::rules(host, FormatLanguage::new(columns.clone(), PICK_COLOR));
+        let editor = HostedEditor::rules(host, FormatLanguage::new(columns.clone()));
+        let picker = ColorPicker::new(START_COLOR);
+        let mut hex = Editor::single_line();
+        hex.set_text(picker.hex());
         let mut manager = FormatManager {
             formats,
             selected,
@@ -100,6 +112,9 @@ impl FormatManager {
             presets_open: false,
             preset_scroll: Scroll::default(),
             preset_list: None,
+            colors_open: false,
+            picker,
+            hex,
             events: Vec::new(),
         };
         manager.load_selected();
@@ -115,7 +130,7 @@ impl FormatManager {
     }
 
     pub fn contains(&self, id: WidgetId) -> bool {
-        id == self.editor.id
+        id == self.editor.id || id == self.hex.id
     }
 
     /// Takes in formats and columns changed outside the manager, such as by
@@ -179,7 +194,7 @@ impl FormatManager {
         self.events.push(FormatManagerEvent::Changed(self.kept()));
     }
 
-    /// Takes the editor's text and commands, after input reached it.
+    /// Takes the editor's text, after input reached it.
     fn sync(&mut self) {
         if self.editor.take_changed() {
             let text = self.editor.text();
@@ -188,27 +203,68 @@ impl FormatManager {
             }
             self.changed();
         }
-        if self.editor.take_commands().contains(&PICK_COLOR) {
-            self.events.push(FormatManagerEvent::PickColor);
-        }
     }
 
-    /// Puts `hex` in place of the `#…` at the caret, or at the caret.
-    pub fn insert_color(&mut self, hex: &str) {
+    /// The `#…` color the caret is in or right after, and its `0xRRGGBB`.
+    pub fn color_at_caret(&self) -> Option<(Range<usize>, u32)> {
+        let text = self.editor.text();
+        let range = diver_format::hex_at(&text, self.editor.cursor())?;
+        let rgb = parse_rgb(&text[range.clone()])?;
+        Some((range, rgb))
+    }
+
+    /// Puts the picker's color in place of the `#…` at the caret, or at the
+    /// caret, with a space after a word.
+    pub fn insert_color(&mut self, focus: &mut Option<WidgetId>) {
+        let hex = self.picker.hex();
         let text = self.editor.text();
         let caret = self.editor.cursor();
-        let range = diver_format::hex_at(&text, caret).unwrap_or(caret..caret);
-        self.editor.replace(range.clone(), hex);
-        self.editor.set_selection(range.start + hex.len()..range.start + hex.len());
+        let (range, insert) = match diver_format::hex_at(&text, caret) {
+            Some(range) => (range, hex),
+            None if text[..caret].chars().last().is_some_and(|c| c.is_alphanumeric() || c == ':') => {
+                (caret..caret, format!(" {hex}"))
+            }
+            None => (caret..caret, hex),
+        };
+        self.editor.replace(range.clone(), &insert);
+        let end = range.start + insert.len();
+        self.editor.set_selection(end..end);
+        self.focus(focus);
         self.sync();
     }
 
-    /// The `#…` color at the caret, as `0xRRGGBB`, to start a picker on.
-    pub fn color_at_caret(&self) -> Option<u32> {
-        let text = self.editor.text();
-        let range = diver_format::hex_at(&text, self.editor.cursor())?;
-        let color = diver_format::Color::parse_hex(&text[range])?;
-        Some(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b))
+    /// The picker's color changed: the `#…` at the caret follows it, so
+    /// the grid shows it at once, and the hex input shows it unless that's
+    /// where it came from.
+    fn picked(&mut self, from_hex: bool) {
+        if !from_hex {
+            self.hex.set_text(self.picker.hex());
+        }
+        if let Some((range, _)) = self.color_at_caret() {
+            let hex = self.picker.hex();
+            self.editor.adjust(range.clone(), &hex);
+            let end = range.start + hex.len();
+            self.editor.set_selection(end..end);
+            self.sync();
+        }
+    }
+
+    /// The picker shows the color at the caret while nothing is picking.
+    fn follow_caret(&mut self, focus: Option<WidgetId>) {
+        if self.picker.is_dragging() || focus == Some(self.hex.id) {
+            return;
+        }
+        if let Some((_, rgb)) = self.color_at_caret() {
+            self.picker.set_rgb(rgb);
+        }
+        let hex = self.picker.hex();
+        if self.hex.text() != hex {
+            self.hex.set_text(hex);
+        }
+    }
+
+    pub fn toggle_colors(&mut self) {
+        self.colors_open = !self.colors_open;
     }
 
     fn select(&mut self, index: usize, focus: &mut Option<WidgetId>) {
@@ -270,6 +326,25 @@ impl FormatManager {
             self.presets_open = false;
             return true;
         }
+        if *focus == Some(self.hex.id) {
+            // Escape goes back to the rules rather than closing the window.
+            if event.is("escape") {
+                self.focus(focus);
+                return true;
+            }
+            let outcome = self.hex.key(event);
+            if outcome.changed {
+                self.hex_changed();
+            }
+            if outcome.submit {
+                if self.color_at_caret().is_some() {
+                    self.focus(focus);
+                } else {
+                    self.insert_color(focus);
+                }
+            }
+            return outcome.handled || outcome.submit;
+        }
         if *focus != Some(self.editor.id) {
             return false;
         }
@@ -279,12 +354,28 @@ impl FormatManager {
     }
 
     pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        if focus == Some(self.hex.id) {
+            self.hex.type_text(typed);
+            self.hex_changed();
+            return true;
+        }
         if focus != Some(self.editor.id) {
             return false;
         }
         self.editor.type_text(typed);
         self.sync();
         true
+    }
+
+    /// Typing in the hex input: a whole color moves the picker.
+    fn hex_changed(&mut self) {
+        let typed = self.hex.text().trim();
+        let digits = typed.trim_start_matches('#').len();
+        if let Some(rgb) = parse_rgb(typed).filter(|_| digits == 3 || digits == 6)
+            && self.picker.set_rgb(rgb)
+        {
+            self.picked(true);
+        }
     }
 
     pub fn mouse_down(&mut self, hit: Option<&Hit>, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) {
@@ -318,6 +409,22 @@ impl FormatManager {
                 self.focus(focus);
             }
             Hit::Button(Button::FormatPreset(index)) => self.add_preset(*index, focus),
+            Hit::Button(Button::FormatColorsToggle) => self.toggle_colors(),
+            Hit::Button(Button::FormatColorInsert) => self.insert_color(focus),
+            Hit::ColorPicker(id, part) if *id == self.picker.id => {
+                // One gesture, one undo step.
+                self.editor.seal_undo();
+                if self.picker.mouse_down(*part, pos) {
+                    self.picked(false);
+                }
+            }
+            Hit::Editor(id, part) if *id == self.hex.id => {
+                if *focus != Some(self.hex.id) {
+                    self.editor.seal_undo();
+                }
+                self.hex.mouse_down(*part, pos, clicks, modifiers.shift);
+                *focus = Some(self.hex.id);
+            }
             Hit::Button(Button::FormatProblem(index)) => {
                 if let Some(problem) = self.problems.get(*index) {
                     self.editor.set_selection(problem.span.clone());
@@ -335,7 +442,13 @@ impl FormatManager {
     }
 
     pub fn mouse_drag(&mut self, pos: Point) {
-        if self.preset_scroll.dragging()
+        if self.picker.is_dragging() {
+            if self.picker.mouse_drag(pos) {
+                self.picked(false);
+            }
+        } else if self.hex.is_dragging() {
+            self.hex.mouse_drag(pos);
+        } else if self.preset_scroll.dragging()
             && let Some(list) = self.preset_list
         {
             self.preset_scroll.drag(pos.y - list.track.y, list.track.h, list.viewport, list.content);
@@ -346,6 +459,8 @@ impl FormatManager {
 
     pub fn mouse_up(&mut self) {
         self.preset_scroll.release();
+        self.picker.mouse_up();
+        self.hex.mouse_up();
         self.editor.mouse_up();
     }
 
@@ -373,6 +488,7 @@ impl FormatManager {
         let heading = small.semibold();
         let mut row = Row::new(r, 16.0);
         let list = row.left(LIST_WIDTH);
+        let panel = self.colors_open.then(|| row.right(COLORS_WIDTH));
         let main = row.rest();
 
         // Presets open as a list over the window from a button above the sets.
@@ -435,7 +551,14 @@ impl FormatManager {
 
         // The selected set: its columns, rules and problems.
         let mut column = Column::new(main, 6.0);
-        canvas.text(column.next(small_line), "APPLY TO COLUMNS", &heading, colors::MUTED, Align::Left);
+        let headings = column.next(small_line);
+        canvas.text(headings, "APPLY TO COLUMNS", &heading, colors::MUTED, Align::Left);
+        if panel.is_none() {
+            let label = "Colors ◂";
+            let width = button_width(label, small);
+            let toggle = rect(main.right() - width, headings.y - 4.0, width, button_height(small));
+            button(canvas, toggle, label, small, ButtonStyle::Ghost, true, Hit::Button(Button::FormatColorsToggle));
+        }
         let applied = self.formats.get(self.selected).map(|f| f.columns.clone()).unwrap_or_default();
         let chip_height = (small_line + 8.0).round();
         let names: Vec<String> = self.columns.borrow().iter().map(|c| c.name.clone()).collect();
@@ -500,11 +623,15 @@ impl FormatManager {
         }
         canvas.text(
             column.next(small_line),
-            "c is the cell · \"name\" another column · 'text' · ; separates rules · # picks a color · Ctrl+Space completes · Esc closes",
+            "c is the cell · \"name\" another column · 'text' · ; separates rules · Ctrl+Space completes · Esc closes",
             small,
             colors::MUTED,
             Align::Left,
         );
+
+        if let Some(panel) = panel {
+            self.paint_colors(canvas, panel, fonts, focus);
+        }
 
         canvas.set_mouse(mouse);
         if self.presets_open {
@@ -514,6 +641,59 @@ impl FormatManager {
         }
         let id = self.editor.id;
         self.editor.paint_popups(canvas, Hit::CodeEditor(id));
+    }
+
+    /// The colors panel: a picker for the `#…` at the caret, or for a new
+    /// color to insert there.
+    fn paint_colors(&mut self, canvas: &mut Canvas<Hit>, panel: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
+        self.follow_caret(focus);
+        let small = &fonts.small;
+        let heading = small.semibold();
+        let small_line = text::line_height(small);
+        canvas.line(point(panel.x - 8.0, panel.y), point(panel.x - 8.0, panel.bottom()), colors::BORDER, 1.0);
+        let mut column = Column::new(panel, 8.0);
+        let top = column.next(small_line);
+        canvas.text(top, "COLORS", &heading, colors::MUTED, Align::Left);
+        let label = "Hide ▸";
+        let width = button_width(label, small);
+        let hide = rect(top.right() - width, top.y - 4.0, width, button_height(small));
+        button(canvas, hide, label, small, ButtonStyle::Ghost, true, Hit::Button(Button::FormatColorsToggle));
+        let at_caret = self.color_at_caret();
+        let status = if at_caret.is_some() { "Changes the color at the caret." } else { "Insert puts this color at the caret." };
+        canvas.text(column.next(small_line), status, small, colors::MUTED, Align::Left);
+
+        // The color, its hex, and Insert.
+        let input_height = Editor::line_box_height(small);
+        let mut items = Row::new(column.next(input_height), 8.0);
+        let swatch = items.left(input_height);
+        canvas.fill_rounded(swatch, 4.0, color_picker::rgb_color(self.picker.rgb()));
+        canvas.stroke_rounded(swatch, 4.0, colors::INPUT_BORDER, 1.0);
+        let insert = "Insert";
+        let insert_box = items.right(button_width(insert, small));
+        let style = if at_caret.is_some() { ButtonStyle::Outline } else { ButtonStyle::Primary };
+        button(canvas, insert_box, insert, small, style, true, Hit::Button(Button::FormatColorInsert));
+        let id = self.hex.id;
+        self.hex.paint(canvas, items.rest(), small, focus == Some(id), |part| Hit::Editor(id, part));
+        column.skip(4.0);
+
+        let rules = self.formats.get(self.selected).map(|f| f.rules.as_str()).unwrap_or_default();
+        let mut used: Vec<(String, u32)> = Vec::new();
+        for (_, color) in diver_format::help::color_spans(rules) {
+            let rgb = rgb_of(color);
+            if color.a > 0 && used.len() < RULE_SWATCHES && !used.iter().any(|(_, seen)| *seen == rgb) {
+                used.push((format!("#{rgb:06x}"), rgb));
+            }
+        }
+        let palette: Vec<(String, u32)> = diver_format::colors::PALETTE
+            .iter()
+            .map(|(name, color)| (format!("{name} · {}", color.to_hex()), rgb_of(*color)))
+            .collect();
+        let groups = [Swatches { title: "IN THESE RULES", colors: &used }, Swatches { title: "PALETTE", colors: &palette }];
+        let height = ColorPicker::height(panel.w, &groups, &heading);
+        let area = column.next(height.min(column.rest().h));
+        canvas.push_clip(rect(area.x - 8.0, area.y - 8.0, area.w + 16.0, area.h + 8.0));
+        self.picker.paint(canvas, area, &groups, &heading);
+        canvas.pop_clip();
     }
 
     /// The open presets list in `panel`, grouped, scrolling when it's taller.
@@ -571,6 +751,15 @@ impl FormatManager {
     }
 }
 
+fn rgb_of(color: diver_format::Color) -> u32 {
+    u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)
+}
+
+/// `#rgb` or `#rrggbb` (with or without `#`) as `0xRRGGBB`.
+fn parse_rgb(text: &str) -> Option<u32> {
+    diver_format::Color::parse_hex(text).map(rgb_of)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,9 +774,8 @@ mod tests {
         manager
             .take_events()
             .into_iter()
-            .filter_map(|event| match event {
-                FormatManagerEvent::Changed(formats) => Some(formats),
-                FormatManagerEvent::PickColor => None,
+            .map(|event| match event {
+                FormatManagerEvent::Changed(formats) => formats,
             })
             .collect()
     }
@@ -628,13 +816,58 @@ mod tests {
     }
 
     #[test]
-    fn picked_colors_replace_the_hash_at_the_caret() {
+    fn insert_replaces_the_hash_at_the_caret_or_adds_a_color_after_a_word() {
         let mut manager = manager(Vec::new(), Some("sales"));
+        let mut focus = None;
+        manager.picker.set_rgb(0xff8800);
         manager.editor.set_text("bg: #f");
         manager.editor.set_selection(6..6);
         assert_eq!(manager.color_at_caret(), None);
-        manager.insert_color("#ff8800");
+        manager.insert_color(&mut focus);
         assert_eq!(manager.editor.text(), "bg: #ff8800");
-        assert_eq!(manager.color_at_caret(), Some(0xff8800));
+        assert_eq!(manager.color_at_caret(), Some((4..11, 0xff8800)));
+        assert_eq!(focus, Some(manager.editor.id));
+        manager.editor.set_text("if c > 1 then text");
+        manager.editor.set_selection(18..18);
+        manager.insert_color(&mut focus);
+        assert_eq!(manager.editor.text(), "if c > 1 then text #ff8800");
+    }
+
+    #[test]
+    fn the_picker_follows_the_caret_and_edits_its_color_as_one_undo_step() {
+        let mut manager = manager(Vec::new(), Some("sales"));
+        manager.editor.set_text("if c > 1 then bg: #ffc7ce, text: #9c0006");
+        manager.editor.set_selection(22..22);
+        manager.follow_caret(None);
+        assert_eq!((manager.picker.rgb(), manager.hex.text()), (0xffc7ce, "#ffc7ce"));
+        // Dragging along the hue bar rewrites the color under the caret each step.
+        let hue_bar = rect(0.0, 130.0, 240.0, 14.0);
+        manager.picker.lay_out(rect(0.0, 0.0, 240.0, 120.0), hue_bar);
+        manager.editor.seal_undo();
+        manager.picker.mouse_down(color_picker::Part::Hue, crate::ui::platform::point(0.0, hue_bar.y));
+        manager.picked(false);
+        for step in 1..=3 {
+            let x = hue_bar.x + hue_bar.w * step as f32 / 6.0;
+            assert!(manager.picker.mouse_drag(crate::ui::platform::point(x, hue_bar.y)));
+            manager.picked(false);
+        }
+        manager.mouse_up();
+        let after = manager.editor.text();
+        assert!(after.starts_with("if c > 1 then bg: #") && after.ends_with(", text: #9c0006"), "{after}");
+        assert_ne!(after, "if c > 1 then bg: #ffc7ce, text: #9c0006");
+        assert_eq!(manager.formats[manager.selected].rules, after);
+        assert_eq!(manager.hex.text(), manager.picker.hex());
+        manager.editor.run(code_editor::Action::Undo);
+        assert_eq!(manager.editor.text(), "if c > 1 then bg: #ffc7ce, text: #9c0006");
+
+        // Typing a whole hex moves the picker and the color at the caret.
+        manager.editor.set_selection(37..37);
+        let mut focus = Some(manager.hex.id);
+        manager.hex.select_all();
+        manager.type_text("#123", focus);
+        assert_eq!(manager.editor.text(), "if c > 1 then bg: #ffc7ce, text: #112233");
+        // Enter goes back to the rules; Escape would too.
+        manager.key(&KeyEvent::new("enter", Modifiers::NONE, None), &mut focus);
+        assert_eq!(focus, Some(manager.editor.id));
     }
 }

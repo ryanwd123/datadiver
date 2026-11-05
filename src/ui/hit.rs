@@ -1,12 +1,13 @@
 //! What a click lands on, for every part of a DataDiver window.
 
-use crate::ui::widgets::{WidgetId, editor, list, tree};
+use crate::ui::widgets::{WidgetId, color_picker, editor, list, tree};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Hit {
     Editor(WidgetId, editor::Part),
     /// The hosted code editor (the SQL panel's).
     CodeEditor(WidgetId),
+    ColorPicker(WidgetId, color_picker::Part),
     List(WidgetId, list::Part),
     Tree(WidgetId, tree::Part),
     Grid(GridHit),
@@ -150,6 +151,10 @@ pub enum Button {
     FormatPresets,
     FormatPresetScroll,
     FormatProblem(usize),
+    /// Shows or hides the colors panel.
+    FormatColorsToggle,
+    /// Puts the panel's color at the caret.
+    FormatColorInsert,
     // AI providers.
     ProviderDefault(usize),
     ProviderEdit(usize),

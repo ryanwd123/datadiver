@@ -13,6 +13,9 @@ const MERGE_GAP: Duration = Duration::from_millis(1000);
 pub enum EditKind {
     Typing,
     Delete,
+    /// One step of a continuing change, such as dragging a color picker:
+    /// adjustments merge however long it takes, until the history is sealed.
+    Adjust,
     Other,
 }
 
@@ -106,7 +109,7 @@ impl History {
             && kind != EditKind::Other
             && g.kind == kind
             && g.after == before
-            && now.duration_since(g.time) < MERGE_GAP
+            && (kind == EditKind::Adjust || now.duration_since(g.time) < MERGE_GAP)
             && saved != Some(g.id)
         {
             g.steps.push(Step { tx, inverse });

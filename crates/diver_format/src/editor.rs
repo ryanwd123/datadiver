@@ -15,18 +15,15 @@ use crate::help::{self, Class};
 use crate::value::Column;
 
 /// The language service and completion provider for rule text, over the
-/// columns of the table being formatted. `pick_color` is the host command
-/// "Pick a color…" sends; the host then opens a picker and replaces
-/// [`crate::hex_at`] the caret.
+/// columns of the table being formatted.
 #[derive(Clone)]
 pub struct FormatLanguage {
     pub columns: Rc<RefCell<Vec<Column>>>,
-    pub pick_color: u32,
 }
 
 impl FormatLanguage {
-    pub fn new(columns: Rc<RefCell<Vec<Column>>>, pick_color: u32) -> Self {
-        FormatLanguage { columns, pick_color }
+    pub fn new(columns: Rc<RefCell<Vec<Column>>>) -> Self {
+        FormatLanguage { columns }
     }
 }
 
@@ -109,7 +106,7 @@ impl CompletionProvider for FormatLanguage {
                 sort_text: Some(c.sort),
                 snippet: c.snippet,
                 swatch: c.swatch.map(|s| s.argb()),
-                command: c.pick_color.then_some(self.pick_color),
+                command: None,
             })
             .collect()
     }

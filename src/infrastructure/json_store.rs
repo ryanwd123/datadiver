@@ -222,6 +222,8 @@ pub struct ApplicationHistory {
     /// The conditional formatting window: its offset from the corner of the
     /// window it formats, and its size.
     pub format_window: Option<WindowGeometry>,
+    /// Whether the formatting window shows its colors panel.
+    pub format_colors_open: bool,
 }
 
 impl Default for ApplicationHistory {
@@ -233,6 +235,7 @@ impl Default for ApplicationHistory {
             recent_sources: Vec::new(),
             primary_window: None,
             format_window: None,
+            format_colors_open: false,
         }
     }
 }
@@ -516,6 +519,11 @@ impl ViewRepository {
 
     pub fn save_format_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
         self.update_history(|history| history.format_window = Some(geometry.clone()))?;
+        Ok(())
+    }
+
+    pub fn save_format_colors_open(&self, open: bool) -> io::Result<()> {
+        self.update_history(|history| history.format_colors_open = open)?;
         Ok(())
     }
 

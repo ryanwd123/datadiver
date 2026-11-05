@@ -1413,15 +1413,8 @@ impl DataFrameView {
                 }
             }
             Hit::Button(Button::ThemeSwatch(index)) => {
-                let index = *index;
-                let initial = match &self.dialog {
-                    Some(Dialog::Theme(form)) => form.color(index),
-                    _ => return,
-                };
-                if let Some(rgb) = system::choose_color(cx.hwnd(), initial)
-                    && let Some(Dialog::Theme(form)) = &mut self.dialog
-                {
-                    form.set_color(index, rgb);
+                if let Some(Dialog::Theme(form)) = &mut self.dialog {
+                    form.toggle_picker(*index);
                 }
             }
             Hit::Button(Button::FilesFolders) => {
@@ -1788,6 +1781,7 @@ impl DataFrameView {
         match dialog {
             Dialog::Pivot(panel) => panel.paint_overlay(canvas, focus),
             Dialog::Aggregation(panel) => panel.paint_overlay(canvas, focus),
+            Dialog::Theme(form) => form.paint_picker(canvas, &fonts),
             _ => {}
         }
         let _ = (scroll::BAR_WIDTH, point(0.0, 0.0), cx.window_id());

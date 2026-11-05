@@ -5,7 +5,7 @@
 use super::*;
 use crate::application::keymap::{ActionId, canonical_keystroke};
 use crate::ui::format_manager::{FormatManager, FormatManagerEvent};
-use crate::ui::platform::{Canvas, Event, Placement, WindowId, WindowOptions, system};
+use crate::ui::platform::{Canvas, Event, Placement, WindowId, WindowOptions};
 use crate::ui::widgets::colors;
 
 const DEFAULT_WIDTH: f32 = 1040.0;
@@ -70,7 +70,8 @@ impl DataFrameView {
             .selection()
             .and_then(|selection| self.session.result.columns.get(selection.active.column))
             .map(|column| column.0.clone());
-        let manager = FormatManager::new(cx.hwnd(), formats, self.format_columns(), active);
+        let mut manager = FormatManager::new(cx.hwnd(), formats, self.format_columns(), active);
+        manager.colors_open = self.repository.load_history().is_ok_and(|history| history.format_colors_open);
         let Some(window) = self.format_window.as_mut().filter(|window| window.id == cx.window_id()) else {
             return;
         };
@@ -107,6 +108,11 @@ impl DataFrameView {
     pub(crate) fn format_window_closed(&mut self, cx: &mut Cx<Self>) {
         let Some(window) = self.format_window.take() else { return };
         self.undo_history.record(self.session.view_state());
+        if let Some(manager) = &window.manager
+            && let Err(error) = self.repository.save_format_colors_open(manager.colors_open)
+        {
+            eprintln!("cannot save whether the colors panel shows: {error}");
+        }
         let owner = cx.for_window(window.owner).window_rect();
         if let (Some(owner), Some(placement)) = (owner, cx.placement()) {
             let geometry = crate::infrastructure::json_store::WindowGeometry {
@@ -205,15 +211,13 @@ impl DataFrameView {
             Event::Drop { .. } | Event::Moved => false,
         };
         window.focus = focus;
-        let picker = cx.hwnd();
-        self.handle_format_events(picker, &mut cx.for_window(owner));
+        self.handle_format_events(&mut cx.for_window(owner));
         cx.notify();
         handled
     }
 
-    /// Applies what the manager changed, at once. A color picker opens over
-    /// `picker`, the manager's window.
-    fn handle_format_events(&mut self, picker: Option<windows::Win32::Foundation::HWND>, cx: &mut Cx<Self>) {
+    /// Applies what the manager changed, at once.
+    fn handle_format_events(&mut self, cx: &mut Cx<Self>) {
         loop {
             let Some(manager) = self.format_window.as_mut().and_then(|window| window.manager.as_mut()) else {
                 return;
@@ -222,26 +226,14 @@ impl DataFrameView {
             if events.is_empty() {
                 break;
             }
-            for event in events {
-                match event {
-                    FormatManagerEvent::Changed(formats) => {
-                        self.ensure_working_view();
-                        if let Err(error) = self.session.edit_definition(|definition| definition.formats = formats) {
-                            self.error = Some(error);
-                        }
-                        self.refresh_formatting(cx);
-                        self.autosave_table_preferences(cx);
-                        self.schedule_auto_save(cx);
-                    }
-                    FormatManagerEvent::PickColor => {
-                        let manager = self.format_window.as_mut().and_then(|window| window.manager.as_mut());
-                        let Some(manager) = manager else { return };
-                        let initial = manager.color_at_caret().unwrap_or(0x638ec6);
-                        if let Some(rgb) = system::choose_color(picker, initial) {
-                            manager.insert_color(&format!("#{rgb:06x}"));
-                        }
-                    }
+            for FormatManagerEvent::Changed(formats) in events {
+                self.ensure_working_view();
+                if let Err(error) = self.session.edit_definition(|definition| definition.formats = formats) {
+                    self.error = Some(error);
                 }
+                self.refresh_formatting(cx);
+                self.autosave_table_preferences(cx);
+                self.schedule_auto_save(cx);
             }
         }
         cx.notify();

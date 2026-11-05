@@ -274,23 +274,52 @@ fn rules_read_list_items_and_struct_fields_on_both_engines() {
 }
 
 #[test]
-fn pick_a_color_puts_the_chosen_color_in_the_rules() {
+fn the_colors_panel_shows_hides_and_edits_the_color_at_the_caret() {
+    use crate::ui::widgets::color_picker::Part;
     let home = tempfile::tempdir().unwrap();
     let path = sales(home.path());
     let viewer = Viewer::file(&path);
     viewer.select(0, 1);
     viewer.render();
     let manager = open_manager(&viewer);
-    manager.input("if c = 'a' then background ");
-    manager.input("#");
-    manager.render();
-    let labels = manager.read(|view| {
-        view.format_window.as_ref().unwrap().manager.as_ref().unwrap().editor.completion_labels()
-    });
-    assert_eq!(labels.unwrap()[0], "Pick a color…");
-    crate::ui::platform::system::fake::with(|system| system.color_answers.push_back(Some(0x123456)));
-    manager.press("enter");
-    viewer.run_until_parked();
-    let text = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().editor.text());
-    assert_eq!(text, "if c = 'a' then background #123456");
+    let picker = |manager: &Viewer| manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().picker.id);
+    let id = picker(&manager);
+    let field = |hit: &Hit| matches!(hit, Hit::ColorPicker(picker, Part::Field) if *picker == id);
+    assert!(manager.find(field).is_none(), "the panel starts hidden");
+    manager.click(|hit| *hit == Hit::Button(Button::FormatColorsToggle));
+    assert!(manager.find(field).is_some());
+
+    // With the caret on a color, a swatch replaces it and the grid follows.
+    manager.input("if c = 'a' then bg: #ffc7ce");
+    manager.click(|hit| matches!(hit, Hit::ColorPicker(picker, Part::Swatch(_)) if *picker == id));
+    let rules = || manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().editor.text());
+    let text = rules();
+    assert!(text.starts_with("if c = 'a' then bg: #") && text != "if c = 'a' then bg: #ffc7ce", "{text}");
+    viewer.settle();
+    assert!(viewer.read(|view| view.session.working.as_ref().unwrap().formats[0].rules == text));
+
+    // Dragging across the field keeps rewriting it, as one undo step.
+    let area = manager.find(field).unwrap();
+    manager.drag(point(area.x + 4.0, area.y + 4.0), point(area.right() - 4.0, area.bottom() - 4.0));
+    assert_ne!(rules(), text);
+    manager.press("ctrl-z");
+    assert_eq!(rules(), text);
+
+    // Away from a color, Insert adds one at the caret.
+    manager.input(", text");
+    manager.click(|hit| *hit == Hit::Button(Button::FormatColorInsert));
+    let inserted = rules();
+    assert!(inserted.starts_with(&format!("{text}, text #")) && inserted.len() == text.len() + 14, "{inserted}");
+
+    // Hiding it is remembered for the next window.
+    manager.click(|hit| *hit == Hit::Button(Button::FormatColorsToggle));
+    assert!(manager.find(field).is_none());
+    manager.click(|hit| *hit == Hit::Button(Button::FormatColorsToggle));
+    // Escape closes an open completion list first, then the window.
+    while manager.is_open() {
+        manager.press("escape");
+        viewer.run_until_parked();
+    }
+    let manager = open_manager(&viewer);
+    assert!(manager.find(|hit| matches!(hit, Hit::ColorPicker(_, Part::Field))).is_some());
 }

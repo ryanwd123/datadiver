@@ -979,6 +979,41 @@ fn theme_editor_saves_with_enter_and_preserves_typed_alpha() {
 }
 
 #[test]
+fn theme_swatches_open_a_color_picker_over_the_dialog() {
+    use crate::application::theme::ThemeColor;
+    use crate::ui::widgets::color_picker::Part;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let viewer = viewer_with_repository(repository.clone());
+    viewer.update(|view, cx| view.open_theme_editor(cx));
+    viewer.click(|hit| *hit == Hit::Button(Button::ThemeSwatch(0)));
+    let field = |hit: &Hit| matches!(hit, Hit::ColorPicker(_, Part::Field));
+    assert!(viewer.find(field).is_some());
+    // Bottom-left of the field is black; the role and its hex take it at once.
+    let area = viewer.find(field).unwrap();
+    viewer.drag(point(area.right() - 2.0, area.y + 2.0), point(area.x + 1.0, area.bottom() - 1.0));
+    let hex = |viewer: &Viewer| {
+        viewer.read(|view| match &view.dialog {
+            Some(super::Dialog::Theme(form)) => form.pickers[0].1.text().to_string(),
+            _ => panic!("the theme editor is open"),
+        })
+    };
+    assert_eq!(&hex(&viewer)[..7], "#000000");
+    // Escape puts the picker away first, then closes the dialog.
+    press(&viewer, "escape");
+    assert!(viewer.has_dialog());
+    viewer.render();
+    assert!(viewer.find(field).is_none());
+    viewer.click(|hit| *hit == Hit::Button(Button::ThemeSwatch(0)));
+    viewer.click(|hit| matches!(hit, Hit::ColorPicker(_, Part::Swatch(_))));
+    let picked = hex(&viewer);
+    assert_ne!(&picked[..7], "#000000");
+    press(&viewer, "enter");
+    assert!(!viewer.has_dialog());
+    assert_eq!(repository.load_theme().unwrap().header_background, ThemeColor::parse(&picked).unwrap());
+}
+
+#[test]
 fn palettes_focus_their_query() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);

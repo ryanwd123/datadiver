@@ -1368,15 +1368,29 @@ impl Editor {
 
     /// Replaces a byte range of `text()` as one undo step.
     pub fn replace_range(&self, range: std::ops::Range<usize>, text: &str) {
-        let (start, end) = self.read(|s| {
+        self.replace_range_as(range, text, EditKind::Other);
+    }
+
+    /// Like [`Editor::replace_range`], as one step of a continuing change
+    /// such as dragging a color picker: the steps undo together. Call
+    /// [`Editor::seal_undo`] before the first, so it starts a step of its own.
+    pub fn adjust_range(&self, range: std::ops::Range<usize>, text: &str) {
+        self.replace_range_as(range, text, EditKind::Adjust);
+    }
+
+    fn replace_range_as(&self, range: std::ops::Range<usize>, text: &str, kind: EditKind) {
+        self.with(|s| {
             let b = &s.doc.buffer;
-            (b.pos(b.floor_char(range.start.min(b.len()))), b.pos(b.floor_char(range.end.min(b.len()))))
+            let (start, end) = (b.floor_char(range.start.min(b.len())), b.floor_char(range.end.min(b.len())));
+            let tx = Transaction::new(vec![Edit::new(start, end, text::normalize_eol(text))]);
+            let sels = s.doc.sels.map_tx(&tx);
+            s.edit(crate::commands::Outcome { tx, sels }, kind);
         });
-        self.apply_edits(&[TextEdit {
-            start,
-            end,
-            text: text.to_string(),
-        }]);
+    }
+
+    /// The next edit starts an undo step of its own.
+    pub fn seal_undo(&self) {
+        self.with(|s| s.doc.history.seal());
     }
 
     /// The primary caret.
@@ -1680,6 +1694,23 @@ mod tests {
         unsafe {
             let _ = DestroyWindow(p);
         }
+    }
+
+    #[test]
+    fn adjustments_undo_as_one_step() {
+        let ed = Editor::create(parent(), Options::default()).unwrap();
+        ed.set_text("bg: #000000");
+        ed.replace_range(0..2, "background");
+        ed.seal_undo();
+        for hex in ["#111111", "#222222", "#333333"] {
+            let at = ed.text().find('#').unwrap();
+            ed.adjust_range(at..at + 7, hex);
+        }
+        assert_eq!(ed.text(), "background: #333333");
+        ed.run(Action::Undo);
+        assert_eq!(ed.text(), "background: #000000");
+        ed.run(Action::Undo);
+        assert_eq!(ed.text(), "bg: #000000");
     }
 
     #[test]

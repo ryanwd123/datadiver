@@ -1,6 +1,7 @@
 //! Reusable controls drawn with the platform canvas: text editors, lists,
 //! trees, buttons, and scroll bars.
 
+pub mod color_picker;
 pub mod editor;
 pub mod hosted_editor;
 pub mod list;

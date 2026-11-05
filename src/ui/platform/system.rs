@@ -307,32 +307,6 @@ mod native {
             Ok(shell_item_path(&item))
         }
     }
-
-    /// Asks for a color with the Windows color dialog, starting at `initial`
-    /// (`0xRRGGBB`). Returns the chosen `0xRRGGBB`.
-    pub fn choose_color(owner: Option<HWND>, initial: u32) -> Option<u32> {
-        use windows::Win32::UI::Controls::Dialogs::*;
-        thread_local! {
-            static CUSTOM: std::cell::RefCell<[COLORREF; 16]> = std::cell::RefCell::new([COLORREF(0x00ff_ffff); 16]);
-        }
-        let to_colorref = |rgb: u32| COLORREF(((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff));
-        CUSTOM.with(|custom| {
-            let mut custom = custom.borrow_mut();
-            let mut choose = CHOOSECOLORW {
-                lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
-                hwndOwner: owner.unwrap_or_default(),
-                rgbResult: to_colorref(initial),
-                lpCustColors: custom.as_mut_ptr(),
-                Flags: CC_RGBINIT | CC_FULLOPEN,
-                ..Default::default()
-            };
-            if !unsafe { ChooseColorW(&mut choose) }.as_bool() {
-                return None;
-            }
-            let value = choose.rgbResult.0;
-            Some(((value & 0xff) << 16) | (value & 0xff00) | ((value >> 16) & 0xff))
-        })
-    }
 }
 
 /// Stand-ins for tests, so nothing reaches the desktop. Tests queue dialog
@@ -358,7 +332,6 @@ pub mod fake {
         /// Answers for the next dialogs; an empty queue cancels.
         pub path_answers: VecDeque<Option<Vec<PathBuf>>>,
         pub new_path_answers: VecDeque<Option<PathBuf>>,
-        pub color_answers: VecDeque<Option<u32>>,
     }
 
     thread_local! {
@@ -411,10 +384,6 @@ pub mod fake {
             system.new_path_prompts += 1;
             system.new_path_answers.pop_front().flatten()
         }))
-    }
-
-    pub fn choose_color(_owner: Option<HWND>, _initial: u32) -> Option<u32> {
-        with(|system| system.color_answers.pop_front().flatten())
     }
 }
 

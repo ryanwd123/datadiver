@@ -1,5 +1,5 @@
 //! Completions at the caret: what the parser says fits there, plus column
-//! names inside `"…"` and the color picker after `#`.
+//! names inside `"…"` and palette colors after `#`.
 
 use std::ops::Range;
 
@@ -37,8 +37,6 @@ pub struct Completion {
     pub retrigger: bool,
     /// `insert` has `${1:…}` placeholders.
     pub snippet: bool,
-    /// Accepting it should open a color picker for the `#…` at the caret.
-    pub pick_color: bool,
 }
 
 impl Completion {
@@ -54,7 +52,6 @@ impl Completion {
             sort: sort.into(),
             retrigger: false,
             snippet: false,
-            pick_color: false,
         }
     }
 
@@ -310,23 +307,15 @@ fn action_items() -> Vec<Completion> {
 }
 
 fn color_items() -> Vec<Completion> {
-    let mut out = vec![pick_item(None)];
-    out.extend(colors::NAMED.iter().filter(|(name, _)| *name != "transparent").map(|(name, color)| {
-        let mut item = Completion::new(*name, CompletionKind::Color, format!("5{name}")).detail(color.to_hex());
-        item.swatch = Some(*color);
-        item
-    }));
-    out
-}
-
-/// "Pick a color…", which opens the host's picker.
-fn pick_item(range: Option<Range<usize>>) -> Completion {
-    let mut item = Completion::new("Pick a color…", CompletionKind::Color, "4")
-        .insert("#")
-        .detail("opens a color picker");
-    item.pick_color = true;
-    item.range = range;
-    item
+    colors::NAMED
+        .iter()
+        .filter(|(name, _)| *name != "transparent")
+        .map(|(name, color)| {
+            let mut item = Completion::new(*name, CompletionKind::Color, format!("5{name}")).detail(color.to_hex());
+            item.swatch = Some(*color);
+            item
+        })
+        .collect()
 }
 
 fn words(words: &[&str]) -> Vec<Completion> {
@@ -490,11 +479,11 @@ fn subsequence(needle: &str, haystack: &str) -> bool {
     needle.chars().all(|c| rest.any(|h| h == c))
 }
 
-/// The `#` picker: "Pick a color…", then palette colors whose hex starts
-/// with what's typed.
+/// After `#`: the color as typed, then palette colors whose hex starts
+/// with it.
 fn picker(typed: &str, range: Range<usize>) -> Vec<Completion> {
     let digits = typed.trim_start_matches('#').to_ascii_lowercase();
-    let mut out = vec![pick_item(Some(range.clone()))];
+    let mut out = Vec::new();
     if let Some(color) = Color::parse_hex(&digits).filter(|_| digits.len() >= 3) {
         let mut item = Completion::new(format!("#{digits}"), CompletionKind::Color, "0").detail("as typed");
         item.swatch = Some(color);
@@ -577,7 +566,7 @@ mod tests {
         let colors = labels("if c > 1 then bg: |");
         assert!(colors.contains(&"red".into()));
         assert!(colors.contains(&"scale".into()));
-        assert_eq!(colors[0], "Pick a color…");
+        assert!(!colors.iter().any(|label| label.starts_with("Pick")));
         let more = labels("if c > 1 then bold, |");
         assert!(more.contains(&"italic".into()));
         let next = labels("if c > 1 then bold |");
@@ -634,11 +623,10 @@ mod tests {
     }
 
     #[test]
-    fn hashes_open_the_picker() {
+    fn hashes_offer_palette_colors() {
         let items = complete("bg: #ff", 7, &columns());
-        assert!(items[0].pick_color);
-        assert!(items.iter().skip(1).all(|i| i.label.starts_with("#ff")));
-        assert_eq!(items[1].range, Some(4..7));
+        assert!(items.iter().all(|i| i.label.starts_with("#ff")));
+        assert_eq!(items[0].range, Some(4..7));
         assert_eq!(hex_at("bg: #ff, bold", 6), Some(4..7));
     }
 }

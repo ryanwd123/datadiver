@@ -323,6 +323,29 @@ impl<'a, H: Clone> Canvas<'a, H> {
         }
     }
 
+    /// Fills `r` with a gradient through `stops` (position 0–1, color), left
+    /// to right, or top to bottom when `vertical`.
+    pub fn fill_gradient(&mut self, r: Rect, stops: &[(f32, Color)], vertical: bool) {
+        if r.is_empty() || stops.is_empty() {
+            return;
+        }
+        let stops: Vec<D2D1_GRADIENT_STOP> = stops
+            .iter()
+            .map(|(position, color)| D2D1_GRADIENT_STOP { position: *position, color: d2d_color(*color) })
+            .collect();
+        unsafe {
+            let Ok(collection) = self.target.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+            else {
+                return;
+            };
+            let end = if vertical { Vector2 { X: r.x, Y: r.bottom() } } else { Vector2 { X: r.right(), Y: r.y } };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: Vector2 { X: r.x, Y: r.y }, endPoint: end };
+            if let Ok(brush) = self.target.CreateLinearGradientBrush(&props, None, &collection) {
+                self.target.FillRectangle(&d2d_rect(r), &brush);
+            }
+        }
+    }
+
     /// Fills the polygon through `points`, antialiased.
     pub fn fill_polygon(&mut self, points: &[Point], color: Color) {
         let Some(geometry) = path(points, true) else { return };

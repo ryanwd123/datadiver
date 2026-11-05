@@ -149,6 +149,17 @@ impl HostedEditor {
         self.editor.replace_range(range, text);
     }
 
+    /// Replaces `range` as one step of a continuing change, such as dragging
+    /// a color picker; the steps since [`Self::seal_undo`] undo together.
+    pub fn adjust(&mut self, range: Range<usize>, text: &str) {
+        self.editor.adjust_range(range, text);
+    }
+
+    /// The next edit starts an undo step of its own.
+    pub fn seal_undo(&mut self) {
+        self.editor.seal_undo();
+    }
+
     /// Applies a rewrite as one undo step and selects its tab stops.
     pub fn apply_rewrite(&mut self, rewrite: &diver_sql::Rewrite) {
         let old = self.text();

@@ -20,12 +20,12 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use code_editor::{Action, DecorationId, Editor, Event, Options, Pos, Range as Sel, TextEdit, Theme};
+use code_editor::{Action, DecorationId, Editor, Event, Options, Range as Sel, TextEdit, Theme};
 use diver_format::check::Checked;
 use diver_format::draw::{self, Rect};
 use diver_format::editor::{FormatLanguage, color_decorations, pos};
 use diver_format::style::{Align, CellStyle};
-use diver_format::{Color, Column, FormatSet, PRESETS, Severity, TableStats, ValueKind, ValuesRow, check, hex_at};
+use diver_format::{Column, FormatSet, PRESETS, Severity, TableStats, ValueKind, ValuesRow, check};
 use gfx::{Fonts, Gfx, rgb};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -35,14 +35,11 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::Dialogs::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-const PICK_COLOR: u32 = 1;
 const WM_TEXT_CHANGED: u32 = WM_APP + 1;
-const WM_PICK_COLOR: u32 = WM_APP + 2;
 
 const PANEL_W: f32 = 290.0;
 const TITLE_H: f32 = 30.0;
@@ -89,7 +86,6 @@ struct App {
     hits: Vec<(Rect, Hit)>,
     hover: Option<Hit>,
     swatches: Vec<DecorationId>,
-    custom_colors: [COLORREF; 16],
 }
 
 thread_local! {
@@ -127,18 +123,6 @@ fn preset_entries() -> Vec<Entry> {
         out.push(Entry::Preset(i));
     }
     out
-}
-
-/// Byte offset of a line/column position.
-fn offset(text: &str, p: Pos) -> usize {
-    let mut start = 0;
-    for (i, line) in text.split_inclusive('\n').enumerate() {
-        if i == p.line {
-            return start + p.col.min(line.trim_end_matches(['\n', '\r']).len());
-        }
-        start += line.len();
-    }
-    text.len()
 }
 
 impl App {
@@ -538,35 +522,6 @@ fn dips(hwnd: HWND, lparam: LPARAM) -> (f32, f32) {
     (x / scale, y / scale)
 }
 
-/// Opens the color dialog and puts the color in place of the `#…` at the caret.
-fn pick_color(hwnd: HWND) {
-    let Some(ed) = editor() else { return };
-    let text = ed.text();
-    let caret = ed.selections().first().map_or(text.len(), |s| offset(&text, s.head));
-    let range = hex_at(&text, caret).unwrap_or(caret..caret);
-    let initial = Color::parse_hex(&text[range.clone()]).unwrap_or(Color::rgb(0x63, 0x8e, 0xc6));
-    // The dialog runs its own message loop, so the app isn't held while it's open.
-    let Some(mut custom) = with_app(|app| app.custom_colors) else { return };
-    let mut cc = CHOOSECOLORW {
-        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
-        hwndOwner: hwnd,
-        rgbResult: COLORREF(initial.r as u32 | (initial.g as u32) << 8 | (initial.b as u32) << 16),
-        lpCustColors: custom.as_mut_ptr(),
-        Flags: CC_FULLOPEN | CC_RGBINIT,
-        ..Default::default()
-    };
-    let chosen = unsafe { ChooseColorW(&mut cc) }.as_bool().then_some(cc.rgbResult.0);
-    with_app(|app| app.custom_colors = custom);
-    if let Some(bgr) = chosen {
-        let color = Color::rgb(bgr as u8, (bgr >> 8) as u8, (bgr >> 16) as u8);
-        let (start, end) = (pos(&text, range.start), pos(&text, range.end));
-        ed.apply_edits(&[TextEdit { start, end, text: color.to_hex() }]);
-        let caret = pos(&ed.text(), range.start + 7);
-        ed.set_selections(&[Sel::caret(caret)]);
-    }
-    ed.focus();
-}
-
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         if let Some(ed) = editor()
@@ -629,10 +584,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_TEXT_CHANGED => {
                 with_app(App::sync_text);
                 let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
-            }
-            WM_PICK_COLOR => {
-                pick_color(hwnd);
                 LRESULT(0)
             }
             WM_GETDLGCODE => LRESULT(DLGC_WANTALLKEYS as isize),
@@ -791,17 +742,13 @@ fn main() -> Result<()> {
         ed.set_language("sql");
         let table = data::sample(60);
         let columns: Rc<RefCell<Vec<Column>>> = Rc::new(RefCell::new(table.columns.clone()));
-        let language = FormatLanguage::new(columns, PICK_COLOR);
+        let language = FormatLanguage::new(columns);
         ed.set_language_service(Some(Rc::new(language.clone())));
         ed.set_completion_provider(language);
-        ed.on_event(move |_, e| match e {
-            Event::ContentChanged { .. } => {
+        ed.on_event(move |_, e| {
+            if let Event::ContentChanged { .. } = e {
                 let _ = PostMessageW(Some(hwnd), WM_TEXT_CHANGED, WPARAM(0), LPARAM(0));
             }
-            Event::Command(PICK_COLOR) => {
-                let _ = PostMessageW(Some(hwnd), WM_PICK_COLOR, WPARAM(0), LPARAM(0));
-            }
-            _ => {}
         });
         let rows = (0..table.rows()).map(|r| table.values.iter().map(|c| c[r].clone()).collect()).collect();
         let sets = data::starting_sets();
@@ -820,7 +767,6 @@ fn main() -> Result<()> {
             hits: Vec::new(),
             hover: None,
             swatches: Vec::new(),
-            custom_colors: [COLORREF(0xffffff); 16],
         };
         for i in 0..app.sets.len() {
             app.recheck(i);
