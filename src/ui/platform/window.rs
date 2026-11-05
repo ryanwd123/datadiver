@@ -254,6 +254,17 @@ fn render<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>) {
         let Some(hwnd) = state.hwnd else {
             return;
         };
+        if slot.view.try_borrow_mut().is_err() {
+            // The view is busy, such as behind a modal dialog. Leaving the
+            // window invalid would send WM_PAINT without end, and a dialog
+            // shows itself only once its message loop goes idle. The frame
+            // is drawn once the view is free; see `drain`.
+            slot.dirty.set(true);
+            unsafe {
+                let _ = ValidateRect(Some(hwnd), None);
+            }
+            return;
+        }
         if state.target.is_none() {
             state.target = create_target(hwnd);
             state.brushes.clear();
@@ -640,6 +651,13 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
 
 fn drain<V: View>(runtime: &Runtime<V>) {
     while runtime.drain(&|runtime, request| open_window(runtime, request), &|runtime, id| close_window(runtime, id)) {}
+    // Frames `render` skipped while their view was busy.
+    let windows = runtime.windows.borrow().clone();
+    for slot in windows {
+        if slot.dirty.get() && slot.view.try_borrow_mut().is_ok() {
+            slot.invalidate();
+        }
+    }
 }
 
 fn tooltip_deadline<V: View>(runtime: &Runtime<V>) -> Option<Instant> {
