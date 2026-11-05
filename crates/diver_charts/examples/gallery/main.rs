@@ -5,12 +5,13 @@
 //! Run with `cargo run -p diver_charts --example gallery`.
 //!
 //! Keys: Up/Down pick an example, Home shows the overview, T switches
-//! between the light and dark themes.
+//! between the light and dark themes, Ctrl+S saves the open chart as a PNG.
 //!
 //! `--capture out.png` paints one frame to a PNG and exits; `--sample N`
 //! opens example N (0 is the first), `--dark` uses the dark theme, `--size
 //! 1400x900` sets the picture's size, and `--hover X,Y` (in DIPs) points
-//! there first.
+//! there first. `--save chart.png` saves the open example (or the first)
+//! as the Save PNG button does, without asking where.
 
 #![windows_subsystem = "windows"]
 
@@ -18,9 +19,10 @@ mod gfx;
 mod samples;
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use diver_charts::{Color, Font, Rect, Scene, Theme};
+use diver_charts::{Color, Font, Measure, Rect, Scene, Theme};
 use gfx::{Fonts, Gfx};
 use samples::Sample;
 use windows::Win32::Foundation::*;
@@ -33,11 +35,15 @@ use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 /// Not in the features this crate builds `windows` with.
 const WM_MOUSELEAVE: u32 = 0x02a3;
+
+const TOAST_TIMER: usize = 1;
 
 const SIDEBAR_W: f32 = 230.0;
 const ENTRY_H: f32 = 28.0;
@@ -94,11 +100,18 @@ enum Hit {
     Overview,
     Sample(usize),
     Theme,
+    /// Saves example N's chart as a PNG.
+    Save(usize),
+}
+
+/// What a click asks for that has to wait until the app is free.
+enum Action {
+    Save(usize),
 }
 
 struct App {
     factory: ID2D1Factory,
-    fonts: Fonts,
+    fonts: Rc<Fonts>,
     target: Option<ID2D1HwndRenderTarget>,
     samples: Vec<Sample>,
     /// The example shown on its own, or the overview.
@@ -108,10 +121,13 @@ struct App {
     max_scroll: f32,
     /// What the last frame drew, for finding things under the pointer.
     hits: Vec<(Rect, Hit)>,
-    charts: Vec<(Rect, Scene)>,
+    /// Each chart drawn: where, its scene, and its example.
+    charts: Vec<(Rect, Scene, usize)>,
     hover: Option<Hit>,
     /// The chart and mark under the pointer.
     hover_mark: Option<(usize, usize)>,
+    /// A short message at the bottom of the window, such as where a PNG went.
+    toast: Option<String>,
 }
 
 thread_local! {
@@ -132,7 +148,7 @@ impl App {
     }
 
     fn mark_at(&self, (x, y): (f32, f32)) -> Option<(usize, usize)> {
-        self.charts.iter().enumerate().find_map(|(i, (r, scene))| {
+        self.charts.iter().enumerate().find_map(|(i, (r, scene, _))| {
             if !r.contains((x, y)) {
                 return None;
             }
@@ -143,18 +159,55 @@ impl App {
     /// Moves the pointer to `p`; true when what it is over changed.
     fn point(&mut self, p: Option<(f32, f32)>) -> bool {
         let hover = p.and_then(|p| self.hit(p));
-        let mark = p.and_then(|p| self.mark_at(p));
+        // A button over a chart hides the bar beneath it.
+        let mark = if matches!(hover, Some(Hit::Save(_))) { None } else { p.and_then(|p| self.mark_at(p)) };
         let changed = hover != self.hover || mark != self.hover_mark;
         self.hover = hover;
         self.hover_mark = mark;
         changed
     }
 
-    fn click(&mut self, hit: Hit) {
+    fn click(&mut self, hit: Hit) -> Option<Action> {
         match hit {
             Hit::Overview => self.show(None),
             Hit::Sample(i) => self.show(Some(i)),
             Hit::Theme => self.dark = !self.dark,
+            Hit::Save(i) => return Some(Action::Save(i)),
+        }
+        None
+    }
+
+    /// The size example `i` was last drawn at, which is what a PNG of it gets.
+    fn chart_size(&self, i: usize) -> (f32, f32) {
+        self.charts.iter().find(|(_, _, s)| *s == i).map_or((1000.0, 600.0), |(r, _, _)| (r.w, r.h))
+    }
+
+    /// A file name from the chart's title, or the example's name.
+    fn suggested_name(&self, i: usize) -> String {
+        let sample = &self.samples[i];
+        let title = sample.chart.title.as_deref().unwrap_or(sample.name);
+        let clean: String = title.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '-' } else { c }).collect();
+        format!("{}.png", clean.trim())
+    }
+
+    /// Writes example `i`'s chart to `path` at the size it is shown, with
+    /// twice the pixels so it stays sharp.
+    fn save_png(&self, i: usize, path: &Path) -> Result<()> {
+        let (w, h) = self.chart_size(i);
+        let theme = self.theme();
+        let scene = self.samples[i].chart.layout(w, h, &theme, &*self.fonts);
+        render_png(&self.factory, &self.fonts, (w, h), 2.0, Some(path), |g| g.items(&scene.items, (0.0, 0.0), None, &theme))
+    }
+
+    /// Saves example `i` to `path`, and says how it went.
+    fn save_and_say(&self, i: usize, path: &Path) -> String {
+        match self.save_png(i, path) {
+            Ok(()) => format!("Saved {}", path.display()),
+            // The name alone, so the reason is not cut off.
+            Err(e) => {
+                let name = path.file_name().map_or(path.as_os_str(), |n| n).to_string_lossy();
+                format!("Couldn't save {name}: {}", e.message())
+            }
         }
     }
 
@@ -193,11 +246,31 @@ impl App {
         self.paint_sidebar(g, height, &chrome);
         // The tooltip goes over everything, kept within its chart.
         if let Some((c, m)) = self.hover_mark
-            && let Some((r, scene)) = self.charts.get(c)
+            && let Some((r, scene, _)) = self.charts.get(c)
         {
             let items = scene.tooltip(m, &theme, g.fonts);
             g.items(&items, (r.x, r.y), None, &theme);
         }
+        if let Some(toast) = &self.toast {
+            let w = (g.fonts.width(toast, UI) + 32.0).min(main.w - 2.0 * MARGIN);
+            let r = Rect::new((main.x + (main.w - w) / 2.0).round(), height - 56.0, w.ceil(), 34.0);
+            g.fill_rounded(r, 6.0, chrome.text);
+            g.text(toast, UI, r.inset(16.0, 0.0, 16.0, 0.0), chrome.page);
+        }
+    }
+
+    /// A button with a label and, dimmed after it, its shortcut.
+    #[allow(clippy::too_many_arguments)]
+    fn button(&mut self, g: &Gfx, r: Rect, label: &str, shortcut: Option<&str>, hit: Hit, rest: Color, chrome: &Chrome) {
+        let bg = if self.hover == Some(hit) { chrome.hover } else { rest };
+        g.fill_rounded(r, 4.0, bg);
+        g.outline_rounded(r, 4.0, chrome.line, 1.0);
+        g.text(label, SMALL, r.inset(10.0, 0.0, 6.0, 0.0), chrome.text);
+        if let Some(keys) = shortcut {
+            let w = g.fonts.width(keys, SMALL);
+            g.text(keys, SMALL, Rect::new(r.right() - 10.0 - w, r.y, w + 1.0, r.h), chrome.dim);
+        }
+        self.hits.push((r, hit));
     }
 
     fn entry(&mut self, g: &Gfx, r: Rect, label: &str, hit: Hit, selected: bool, chrome: &Chrome) {
@@ -244,23 +317,19 @@ impl App {
 
         g.fill(Rect::new(0.0, foot.y, SIDEBAR_W, 1.0), chrome.line);
         let button = Rect::new(14.0, foot.y + 12.0, SIDEBAR_W - 28.0, 26.0);
-        let bg = if self.hover == Some(Hit::Theme) { chrome.hover } else { chrome.page };
-        g.fill_rounded(button, 4.0, bg);
-        g.outline_rounded(button, 4.0, chrome.line, 1.0);
         let label = if self.dark { "Dark theme  ·  switch to light" } else { "Light theme  ·  switch to dark" };
-        g.text(label, SMALL, button.inset(10.0, 0.0, 6.0, 0.0), chrome.text);
-        self.hits.push((button, Hit::Theme));
+        self.button(g, button, label, None, Hit::Theme, chrome.page, chrome);
         g.text("↑↓ examples   Home overview   T theme", SMALL, Rect::new(16.0, foot.y + 44.0, SIDEBAR_W - 32.0, 20.0), chrome.dim);
     }
 
     /// Draws a chart in a card at `r`, and keeps its scene for the pointer.
-    fn card(&mut self, g: &Gfx, r: Rect, chart: Scene, theme: &Theme, chrome: &Chrome) {
+    fn card(&mut self, g: &Gfx, r: Rect, chart: Scene, sample: usize, theme: &Theme, chrome: &Chrome) {
         let hover = self.hover_mark.filter(|(c, _)| *c == self.charts.len()).map(|(_, m)| m);
         g.fill(r.grow(1.0), chrome.line);
         g.clip(r);
         g.items(&chart.items, (r.x, r.y), hover, theme);
         g.unclip();
-        self.charts.push((r, chart));
+        self.charts.push((r, chart, sample));
     }
 
     fn paint_overview(&mut self, g: &Gfx, area: Rect, theme: &Theme, chrome: &Chrome) {
@@ -280,9 +349,13 @@ impl App {
                 continue;
             }
             let scene = self.samples[i].chart.layout(r.w, r.h, theme, g.fonts);
-            self.card(g, r, scene, theme, chrome);
+            self.card(g, r, scene, i, theme, chrome);
             // A click on the card's empty parts opens it.
             self.hits.push((r, Hit::Sample(i)));
+            if matches!(self.hover, Some(Hit::Sample(n) | Hit::Save(n)) if n == i) {
+                let save = Rect::new(r.right() - 90.0, r.y + 10.0, 80.0, 26.0);
+                self.button(g, save, "Save PNG", None, Hit::Save(i), chrome.sidebar, chrome);
+            }
         }
         g.unclip();
     }
@@ -290,13 +363,15 @@ impl App {
     fn paint_sample(&mut self, g: &Gfx, area: Rect, i: usize, theme: &Theme, chrome: &Chrome) {
         self.max_scroll = 0.0;
         let sample = &self.samples[i];
-        let head = Rect::new(area.x + MARGIN, area.y + 14.0, area.w - 2.0 * MARGIN, 26.0);
+        let save = Rect::new(area.right() - MARGIN - 136.0, area.y + 18.0, 136.0, 28.0);
+        let head = Rect::new(area.x + MARGIN, area.y + 14.0, save.x - area.x - 2.0 * MARGIN, 26.0);
         g.text(sample.name, HEADING, head, chrome.text);
         g.text(sample.about, UI, Rect::new(head.x, head.bottom(), head.w, 20.0), chrome.dim);
         let r = area.inset(MARGIN, HEADER_H, MARGIN, MARGIN);
         let r = Rect::new(r.x.round(), r.y.round(), r.w.floor(), r.h.floor());
         let scene = sample.chart.layout(r.w, r.h, theme, g.fonts);
-        self.card(g, r, scene, theme, chrome);
+        self.card(g, r, scene, i, theme, chrome);
+        self.button(g, save, "Save PNG", Some("Ctrl+S"), Hit::Save(i), chrome.page, chrome);
     }
 }
 
@@ -315,8 +390,8 @@ fn paint_window(hwnd: HWND) {
         let _ = target.Resize(&size);
         target.BeginDraw();
         let factory = app.factory.clone();
-        let fonts = std::ptr::addr_of!(app.fonts);
-        if let Ok(g) = Gfx::new(&target, &factory, &*fonts) {
+        let fonts = app.fonts.clone();
+        if let Ok(g) = Gfx::new(&target, &factory, &fonts) {
             let scale = dpi / 96.0;
             app.paint(&g, rc.right as f32 / scale, rc.bottom as f32 / scale);
         }
@@ -357,6 +432,46 @@ fn cursor(hwnd: HWND) -> Option<(f32, f32)> {
     }
 }
 
+/// Asks where to save a PNG, starting with `suggested`; `None` when cancelled.
+fn ask_png_path(owner: HWND, suggested: &str) -> Result<Option<PathBuf>> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
+        let options = dialog.GetOptions()?;
+        dialog.SetOptions(options | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT)?;
+        dialog.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: w!("PNG image"), pszSpec: w!("*.png") }])?;
+        dialog.SetDefaultExtension(w!("png"))?;
+        let _ = dialog.SetTitle(w!("Save chart as PNG"));
+        let _ = dialog.SetFileName(&HSTRING::from(suggested));
+        if dialog.Show(Some(owner)).is_err() {
+            return Ok(None);
+        }
+        let item = dialog.GetResult()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+        let path = name.to_string().map(PathBuf::from).ok();
+        CoTaskMemFree(Some(name.0 as *const _));
+        Ok(path)
+    }
+}
+
+/// Asks where to save example `i` and saves it there, saying how it went.
+/// Called with the app free, so it can repaint behind the modal dialog.
+fn save_chart(hwnd: HWND, i: usize) {
+    let Some(name) = with_app(|app| app.suggested_name(i)) else { return };
+    let message = match ask_png_path(hwnd, &name) {
+        Ok(None) => None,
+        Ok(Some(path)) => with_app(|app| app.save_and_say(i, &path)),
+        Err(e) => Some(format!("Couldn't open the save dialog: {}", e.message())),
+    };
+    if let Some(message) = message {
+        with_app(|app| app.toast = Some(message));
+        unsafe {
+            SetTimer(Some(hwnd), TOAST_TIMER, 4000, None);
+        }
+    }
+    repaint_and_point(hwnd, cursor(hwnd));
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -374,13 +489,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_LBUTTONDOWN => {
                 let p = dips(hwnd, lparam);
-                with_app(|app| {
-                    if let Some(hit) = app.hit(p) {
-                        app.click(hit);
-                    }
-                });
+                let action = with_app(|app| app.hit(p).and_then(|hit| app.click(hit))).flatten();
                 repaint_and_point(hwnd, Some(p));
                 invalidate(hwnd);
+                match action {
+                    Some(Action::Save(i)) => save_chart(hwnd, i),
+                    None => {}
+                }
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
@@ -411,10 +526,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_KEYDOWN => {
-                if with_app(|app| app.key(VIRTUAL_KEY(wparam.0 as u16))) == Some(true) {
+                let vk = VIRTUAL_KEY(wparam.0 as u16);
+                if vk == VK_S && GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                    if let Some(i) = with_app(|app| app.open).flatten() {
+                        save_chart(hwnd, i);
+                    }
+                } else if with_app(|app| app.key(vk)) == Some(true) {
                     repaint_and_point(hwnd, cursor(hwnd));
                     invalidate(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == TOAST_TIMER => {
+                let _ = KillTimer(Some(hwnd), TOAST_TIMER);
+                with_app(|app| app.toast = None);
+                invalidate(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -428,6 +554,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
 struct Args {
     capture: Option<PathBuf>,
+    save: Option<PathBuf>,
     sample: Option<usize>,
     dark: bool,
     size: Option<(u32, u32)>,
@@ -441,11 +568,12 @@ fn pair<T: std::str::FromStr>(s: Option<String>, sep: char) -> Option<(T, T)> {
 }
 
 fn args() -> Args {
-    let mut out = Args { capture: None, sample: None, dark: false, size: None, hover: None };
+    let mut out = Args { capture: None, save: None, sample: None, dark: false, size: None, hover: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--capture" => out.capture = it.next().map(PathBuf::from),
+            "--save" => out.save = it.next().map(PathBuf::from),
             "--sample" => out.sample = it.next().and_then(|n| n.parse().ok()),
             "--dark" => out.dark = true,
             "--size" => out.size = pair(it.next(), 'x'),
@@ -456,8 +584,10 @@ fn args() -> Args {
     out
 }
 
-/// Paints a frame at 96 DPI into a bitmap, and saves it when given a path.
-fn capture(path: Option<&std::path::Path>, width: u32, height: u32) -> Result<()> {
+/// Paints `size` DIPs at `scale` pixels per DIP into a bitmap, and saves
+/// it as a PNG when given a path.
+fn render_png(factory: &ID2D1Factory, fonts: &Fonts, size: (f32, f32), scale: f32, path: Option<&Path>, paint: impl FnOnce(&Gfx)) -> Result<()> {
+    let (width, height) = ((size.0 * scale).round().max(1.0) as u32, (size.1 * scale).round().max(1.0) as u32);
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
@@ -465,20 +595,14 @@ fn capture(path: Option<&std::path::Path>, width: u32, height: u32) -> Result<()
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-            dpiX: 96.0,
-            dpiY: 96.0,
+            dpiX: 96.0 * scale,
+            dpiY: 96.0 * scale,
             ..Default::default()
         };
-        with_app(|app| -> Result<()> {
-            let target = app.factory.CreateWicBitmapRenderTarget(&bitmap, &props)?;
-            target.BeginDraw();
-            let factory = app.factory.clone();
-            let fonts = std::ptr::addr_of!(app.fonts);
-            let g = Gfx::new(&target, &factory, &*fonts)?;
-            app.paint(&g, width as f32, height as f32);
-            target.EndDraw(None, None)
-        })
-        .unwrap_or(Ok(()))?;
+        let target = factory.CreateWicBitmapRenderTarget(&bitmap, &props)?;
+        target.BeginDraw();
+        paint(&Gfx::new(&target, factory, fonts)?);
+        target.EndDraw(None, None)?;
         let Some(path) = path else { return Ok(()) };
         let stream = wic.CreateStream()?;
         stream.InitializeFromFilename(&HSTRING::from(path.as_os_str()), 0x4000_0000)?;
@@ -496,6 +620,15 @@ fn capture(path: Option<&std::path::Path>, width: u32, height: u32) -> Result<()
         encoder.Commit()?;
     }
     Ok(())
+}
+
+/// Paints the whole gallery at 96 DPI, and saves it when given a path.
+fn capture(path: Option<&Path>, width: u32, height: u32) -> Result<()> {
+    with_app(|app| {
+        let (factory, fonts) = (app.factory.clone(), app.fonts.clone());
+        render_png(&factory, &fonts, (width as f32, height as f32), 1.0, path, |g| app.paint(g, width as f32, height as f32))
+    })
+    .unwrap_or(Ok(()))
 }
 
 /// A windowed app has no console, so a panic would just close it: say what
@@ -530,10 +663,11 @@ fn main() -> Result<()> {
         RegisterClassW(&wc);
         let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
         let samples = samples::all();
+        let n = samples.len();
         let open = args.sample.map(|i| i.min(samples.len() - 1));
         let app = App {
             factory,
-            fonts: Fonts::new()?,
+            fonts: Rc::new(Fonts::new()?),
             target: None,
             samples,
             open,
@@ -544,13 +678,20 @@ fn main() -> Result<()> {
             charts: Vec::new(),
             hover: None,
             hover_mark: None,
+            toast: None,
         };
         APP.with(|a| *a.borrow_mut() = Some(app));
 
         if let Some(path) = &args.capture {
             let (w, h) = args.size.unwrap_or((1400, 900));
+            // A first frame lays things out for the pointer and the save.
+            capture(None, w, h)?;
+            if let Some(save) = &args.save {
+                let i = args.sample.unwrap_or(0).min(n - 1);
+                let message = with_app(|app| app.save_and_say(i, save));
+                with_app(|app| app.toast = message);
+            }
             if let Some(p) = args.hover {
-                capture(None, w, h)?;
                 with_app(|app| app.point(Some(p)));
             }
             let result = capture(Some(path), w, h);

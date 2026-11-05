@@ -39,6 +39,11 @@ The overview shows every example as a card, and the sidebar opens each one on
 its own. Hover a bar to see its tooltip. Up and Down move between examples,
 Home goes back to the overview, and T switches between light and dark.
 
+Save PNG, at the top of an open example or on a hovered card (Ctrl+S on an
+open example), asks where to save the chart. The image is drawn at the size the
+chart is shown, with twice the pixels so it stays sharp.
+
 `--capture out.png` paints one frame to a PNG and exits. `--sample N` opens
 example N first, `--dark` uses the dark theme, `--size 1400x900` sets the
-size, and `--hover X,Y` points there before the picture is taken.
+size, and `--hover X,Y` points there before the picture is taken. `--save
+chart.png` saves the open example as the button does, without the dialog.
