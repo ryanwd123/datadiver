@@ -7,7 +7,7 @@ use crate::colors::{self, Color};
 use crate::parser::parse;
 use crate::program::*;
 use crate::stats::Aggregate;
-use crate::style::{Align, Icon, LineStyle};
+use crate::style::{Align, Icon, LineStyle, TooltipLook, TooltipShape};
 use crate::value::{Column, Value};
 use crate::{Diagnostic, Severity};
 
@@ -499,6 +499,92 @@ impl Checker<'_> {
         }
     }
 
+    /// A tooltip template, `text` being its unquoted text at `span`; true
+    /// when a field pads to a width.
+    fn template(&mut self, text: &str, span: &Span) -> Option<(Vec<TemplatePart>, bool)> {
+        // Where a byte of the unquoted text is in the rules: past the
+        // opening quote, and a byte on for each doubled quote before it.
+        let at = |i: usize| span.start + 1 + i + text[..i.min(text.len())].matches('\'').count();
+        let pieces = match crate::template::split(text) {
+            Ok(pieces) => pieces,
+            Err((range, message)) => return self.error(&(at(range.start)..at(range.end)), message),
+        };
+        let mut parts = Vec::new();
+        let mut widths = false;
+        let mut failed = false;
+        for piece in pieces {
+            let raw = match piece {
+                crate::template::Piece::Text { text, .. } => {
+                    parts.push(TemplatePart::Text(text));
+                    continue;
+                }
+                crate::template::Piece::Field(raw) => raw,
+            };
+            let (source, offset) = &raw.value;
+            let map = |i: usize| at(offset + i);
+            let (mut expr, problems) = crate::parser::parse_expression(source);
+            expr.map_spans(&map);
+            if !problems.is_empty() {
+                for problem in problems {
+                    self.diagnostics.push(Diagnostic { span: map(problem.span.start)..map(problem.span.end), ..problem });
+                }
+                failed = true;
+                continue;
+            }
+            let Some(value) = self.expr(&expr) else {
+                failed = true;
+                continue;
+            };
+            let mut field = TemplateField { value, format: None, color: None, bold: false, italic: false, underline: false };
+            if let Some((format, offset)) = &raw.format {
+                match crate::template::FieldFormat::parse(format) {
+                    Ok(format) => {
+                        widths |= format.has_width();
+                        field.format = Some(format);
+                    }
+                    Err(message) => {
+                        self.error::<()>(&(at(*offset)..at(offset + format.len())), message);
+                        failed = true;
+                    }
+                }
+            }
+            if let Some((style, offset)) = &raw.style {
+                let words = style.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty());
+                for word in words {
+                    let start = offset + (word.as_ptr() as usize - style.as_ptr() as usize);
+                    let word_span = at(start)..at(start + word.len());
+                    match word.to_ascii_lowercase().as_str() {
+                        "bold" => field.bold = true,
+                        "italic" => field.italic = true,
+                        "underline" => field.underline = true,
+                        lower => {
+                            if !lower.starts_with('#')
+                                && Color::named(lower).is_none()
+                                && let Some(near) = catalog::suggest(lower, catalog::TOOLTIP_STYLES.iter().copied())
+                            {
+                                self.error::<()>(&word_span, format!("unknown style `{word}`; did you mean `{near}`?"));
+                                failed = true;
+                                continue;
+                            }
+                            if field.color.is_some() {
+                                self.error::<()>(&word_span, "a field takes one color");
+                                failed = true;
+                                continue;
+                            }
+                            let kind = if lower.starts_with('#') { ExprKind::Hex(word.into()) } else { ExprKind::Name(lower.into()) };
+                            match self.color(&Expr { kind, span: word_span }) {
+                                Some(color) => field.color = Some(color),
+                                None => failed = true,
+                            }
+                        }
+                    }
+                }
+            }
+            parts.push(TemplatePart::Field(field));
+        }
+        (!failed).then_some((parts, widths))
+    }
+
     fn width(&mut self, value: &Expr) -> Option<f32> {
         match &value.kind {
             ExprKind::Length(n) | ExprKind::Number(n) if (0.0..=8.0).contains(n) => Some(*n as f32),
@@ -675,33 +761,93 @@ impl Options<'_, '_, '_> {
                 let bars = self.word("kind", catalog::SPARK_KINDS)? == Some("bars");
                 Some(Op::Sparkline(SparkSpec { columns, color, bars }))
             }
-            "display" | "tooltip" => {
-                let example = if name == "display" { "display(c[0]) or display(c, '#,##0.00')" } else { "tooltip('Over budget') or tooltip(\"target\", '\"Target \"#,##0')" };
-                let Some(value) = positional.first() else {
-                    return self.checker.error(span, format!("`{name}` needs a value: {example}"));
-                };
-                if let Some(extra) = positional.get(2) {
-                    return self.checker.error(&extra.span, format!("`{name}` takes a value and a format"));
+            "display" => {
+                if positional.is_empty() {
+                    return self.checker.error(span, "`display` needs a value: display(c[0]) or display(c, '#,##0.00')");
                 }
-                let value = self.checker.expr(value)?;
-                let format = match positional.get(1) {
-                    Some(Expr { kind: ExprKind::Str(text), span }) => match crate::format::Format::parse(text) {
-                        Ok(_) if text.is_empty() => return self.checker.error(span, "the format is empty"),
-                        Ok(format) => Some(format),
-                        Err(message) => return self.checker.error(span, message),
-                    },
-                    Some(e) => {
-                        return self
-                            .checker
-                            .error(&e.span, "the format is text in quotes, like '#,##0.00' or 'YYYY-MM-DD'");
-                    }
-                    None => None,
-                };
-                let blank = self.expr("blank").ok()?;
-                let spec = DisplaySpec { value, format, blank };
-                Some(if name == "display" { Op::Display(spec) } else { Op::Tooltip(spec) })
+                Some(Op::Display(self.display(name, positional)?))
             }
+            "tooltip" => self.tooltip(positional, span),
             other => unreachable!("visual {other}"),
+        }
+    }
+
+    /// `display`'s value, format and `blank=`, which `tooltip` also takes.
+    fn display(&mut self, name: &str, positional: &[&Expr]) -> Option<DisplaySpec> {
+        if let Some(extra) = positional.get(2) {
+            return self.checker.error(&extra.span, format!("`{name}` takes a value and a format"));
+        }
+        let value = self.checker.expr(positional[0])?;
+        let format = match positional.get(1) {
+            Some(Expr { kind: ExprKind::Str(text), span }) => match crate::format::Format::parse(text) {
+                Ok(_) if text.is_empty() => return self.checker.error(span, "the format is empty"),
+                Ok(format) => Some(format),
+                Err(message) => return self.checker.error(span, message),
+            },
+            Some(e) => {
+                return self.checker.error(&e.span, "the format is text in quotes, like '#,##0.00' or 'YYYY-MM-DD'");
+            }
+            None => None,
+        };
+        let blank = self.expr("blank").ok()?;
+        Some(DisplaySpec { value, format, blank })
+    }
+
+    fn tooltip(&mut self, positional: &[&Expr], span: &Span) -> Option<Op> {
+        let Some(first) = positional.first() else {
+            return self
+                .checker
+                .error(span, "`tooltip` needs text or a value: tooltip('Total {c:,.2f}') or tooltip(c, '#,##0')");
+        };
+        let mut look = TooltipLook::default();
+        let content = match &first.kind {
+            ExprKind::Str(text) => {
+                if let Some(extra) = positional.get(1) {
+                    return self.checker.error(&extra.span, "a template's formats go in its fields, like '{c:,.2f}'");
+                }
+                let (parts, widths) = self.checker.template(text, &first.span)?;
+                // Padded fields only line up in a fixed-width font.
+                if widths {
+                    look.mono = Some(true);
+                }
+                TooltipContent::Template { parts, blank: self.expr("blank").ok()? }
+            }
+            _ => TooltipContent::Value(self.display("tooltip", positional)?),
+        };
+        look.background = self.color("bg")?;
+        look.text = self.color("text")?;
+        look.border = self.color("border")?;
+        look.border_width = self.length("border_width", 0.0, 8.0, "px")?;
+        look.padding = self.length("padding", 0.0, 40.0, "px")?;
+        look.radius = self.length("radius", 0.0, 40.0, "px")?;
+        look.max_width = self.length("max_width", 40.0, 2000.0, "px")?;
+        look.delay = self.length("delay", 0.0, 10_000.0, " milliseconds")?.map(|ms| ms as u32);
+        if let Some(shape) = self.word("shape", catalog::TOOLTIP_SHAPES)? {
+            look.shape = Some(if shape == "box" { TooltipShape::Box } else { TooltipShape::Callout });
+        }
+        if let Some(font) = self.word("font", catalog::TOOLTIP_FONTS)? {
+            look.mono = Some(font == "mono");
+        }
+        Some(Op::Tooltip(TooltipSpec { content, look }))
+    }
+
+    /// A named color; `border=none` is a clear one.
+    fn color(&mut self, key: &str) -> Option<Option<Color>> {
+        match self.get(key).cloned() {
+            Some(Expr { kind: ExprKind::Name(name), .. }) if key == "border" && name == "none" => {
+                Some(Some(Color { a: 0, ..Color::rgb(0, 0, 0) }))
+            }
+            Some(e) => self.checker.color(&e).map(Some),
+            None => Some(None),
+        }
+    }
+
+    /// A named number from `low` to `high`, perhaps in `px`.
+    fn length(&mut self, key: &str, low: f64, high: f64, unit: &str) -> Option<Option<f32>> {
+        match self.get(key).cloned() {
+            Some(Expr { kind: ExprKind::Length(n) | ExprKind::Number(n), .. }) if (low..=high).contains(&n) => Some(Some(n as f32)),
+            Some(e) => self.checker.error(&e.span, format!("`{key}=` goes from {low}{unit} to {high}{unit}")),
+            None => Some(None),
         }
     }
 

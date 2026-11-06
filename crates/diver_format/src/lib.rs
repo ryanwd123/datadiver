@@ -37,6 +37,7 @@ pub mod presets;
 pub mod program;
 pub mod stats;
 pub mod style;
+pub mod template;
 pub mod value;
 
 use std::ops::Range;
@@ -47,7 +48,7 @@ pub use complete::{Completion, complete, hex_at};
 pub use presets::{PRESETS, Preset};
 pub use program::{Program, Row, ValuesRow};
 pub use stats::{Aggregate, NoStats, Stats, TableStats};
-pub use style::CellStyle;
+pub use style::{CellStyle, Tooltip, TooltipLook, TooltipShape, TooltipSpan};
 pub use value::{Column, Value, ValueKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

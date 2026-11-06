@@ -83,7 +83,9 @@ fn display_shows_another_value_in_a_format() {
 
 #[test]
 fn tooltips_add_a_line_for_each_rule_that_sets_one() {
-    let tips = |rules: &str| -> Vec<Option<String>> { run(rules, 1).into_iter().map(|s| s.tooltip).collect() };
+    let tips = |rules: &str| -> Vec<Option<String>> {
+        run(rules, 1).into_iter().map(|s| s.tooltip.map(|t| t.text)).collect()
+    };
     let gap = tips("if c > \"target\" then tooltip('Over target'); tooltip(\"target\", '\"Target: \"#,##0')");
     assert_eq!(gap[0].as_deref(), Some("Over target\nTarget: 5"));
     assert_eq!(gap[1].as_deref(), Some("Target: 0"));
@@ -93,9 +95,79 @@ fn tooltips_add_a_line_for_each_rule_that_sets_one() {
     // A tooltip leaves the cell's look alone, so it doesn't count as display.
     let styles = run("tooltip(upper(\"name\"))", 1);
     assert_eq!(styles[0].display, None);
-    assert_eq!(styles[0].tooltip.as_deref(), Some("ANN"));
-    assert!(messages("tooltip()")[0].contains("needs a value"));
+    assert_eq!(styles[0].tooltip.as_ref().map(|t| t.text.as_str()), Some("ANN"));
+    assert!(messages("tooltip()")[0].contains("needs text or a value"));
     assert!(messages("tooltip(c, '0', 'x')")[0].contains("a value and a format"));
+}
+
+#[test]
+fn tooltip_templates_fill_fields_like_python_f_strings() {
+    let tip = |rules: &str, row: usize| run(rules, 1).swap_remove(row).tooltip;
+    let text = |rules: &str, row: usize| tip(rules, row).map(|t| t.text);
+    // Fields, formats and new lines.
+    let rules = r#"tooltip('{upper("name")}  {c:>6,.1f}\nTarget {"target":d} ({c / "target":.0%})')"#;
+    assert_eq!(text(rules, 0).as_deref(), Some("ANN    10.0\nTarget 5 (200%)"));
+    // Dividing by zero is blank.
+    assert_eq!(text(rules, 1).as_deref(), Some("BOB    -5.0\nTarget 0 ()"));
+    // Excel formats after a width, quotes, braces and a blank field.
+    let rules = r#"tooltip('{{{c:<8#,##0}}} it''s {c:*>5|bold}', blank='n/a')"#;
+    assert_eq!(text(rules, 0).as_deref(), Some("{10      } it's ***10"));
+    assert_eq!(text(rules, 3).as_deref(), Some("{n/a     } it's **n/a"));
+    // A field's style covers its text.
+    let styled = tip(r#"tooltip('Gap {c - "target"|red bold} of {"target"|italic}')"#, 0).unwrap();
+    assert_eq!(styled.text, "Gap 5 of 5");
+    assert_eq!(styled.spans.len(), 2);
+    assert_eq!((styled.spans[0].range.clone(), styled.spans[0].color, styled.spans[0].bold), (4..5, Some(RED), true));
+    assert!(styled.spans[1].italic && styled.spans[1].color.is_none());
+    // Lines from several rules keep their spans.
+    let both = tip(r#"tooltip('one'); tooltip('{c|green}')"#, 0).unwrap();
+    assert_eq!((both.text.as_str(), both.spans[0].range.clone()), ("one\n10", 4..6));
+    // A text-only template still works, and empty text shows nothing.
+    assert_eq!(text("tooltip('Over target')", 0).as_deref(), Some("Over target"));
+    assert_eq!(text("tooltip('{c}')", 3), None);
+}
+
+#[test]
+fn tooltip_looks_merge_and_widths_pick_a_fixed_width_font() {
+    let look = |rules: &str| run(rules, 1).swap_remove(0).tooltip.unwrap().look;
+    let set = look("tooltip('a', bg=#333333, text=white, border=none, border_width=2px, padding=10, radius=0, shape=box, delay=250, max_width=300px)");
+    assert_eq!(set.background, Color::parse_hex("#333333"));
+    assert_eq!(set.text, Color::named("white"));
+    assert_eq!(set.border.map(|c| c.a), Some(0));
+    assert_eq!((set.border_width, set.padding, set.radius, set.max_width), (Some(2.0), Some(10.0), Some(0.0), Some(300.0)));
+    assert_eq!((set.shape, set.delay), (Some(TooltipShape::Box), Some(250)));
+    assert_eq!(set.mono, None);
+    // A later tooltip's look wins where it sets one.
+    let merged = look("tooltip('a', bg=red, delay=100); tooltip('b', delay=0)");
+    assert_eq!((merged.background, merged.delay), (Some(RED), Some(0)));
+    assert_eq!(look("tooltip('{c:>8}')").mono, Some(true));
+    assert_eq!(look("tooltip('{c:>8}', font=ui)").mono, Some(false));
+    assert_eq!(look("tooltip(c)").mono, None);
+}
+
+#[test]
+fn tooltip_template_problems_point_into_the_text() {
+    let (columns, _) = table();
+    let problems = |rules: &str| -> Vec<(String, String)> {
+        check(rules, &columns).diagnostics.into_iter().map(|d| (rules[d.span.clone()].to_string(), d.message)).collect()
+    };
+    let unknown = problems(r#"tooltip('ok {"salse":,.2f}')"#);
+    assert_eq!(unknown[0].0, r#""salse""#);
+    assert!(unknown[0].1.contains("sales"), "{unknown:?}");
+    // Spans count the doubled quotes before them.
+    let after_quote = problems(r#"tooltip('it''s {c:,.2q}')"#);
+    assert_eq!(after_quote[0].0, ",.2q");
+    assert!(after_quote[0].1.contains("`q`"), "{after_quote:?}");
+    let style = problems("tooltip('{c|bodl}')");
+    assert_eq!(style[0], ("bodl".into(), "unknown style `bodl`; did you mean `bold`?".into()));
+    assert!(problems("tooltip('{c|red blue}')")[0].1.contains("one color"));
+    assert!(problems("tooltip('a } b')")[0].1.contains("`}}`"));
+    assert!(problems("tooltip('{c + }')")[0].0.is_empty() || !problems("tooltip('{c + }')").is_empty());
+    assert!(problems("tooltip('{c}', '0')")[0].1.contains("go in its fields"));
+    assert!(problems("tooltip('a', delay=-1)")[0].1.contains("delay="));
+    assert!(problems("tooltip('a', shape=round)")[0].1.contains("callout"));
+    // A rule with a bad template doesn't run.
+    assert!(check("tooltip('{nope}')", &columns).program.is_empty());
 }
 
 #[test]

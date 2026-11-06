@@ -30,7 +30,70 @@ pub enum Class {
 /// What each token is, and the color of each color literal or name.
 pub fn highlight(text: &str) -> Vec<(Range<usize>, Class)> {
     let tokens = tokenize(text);
-    tokens.iter().enumerate().map(|(i, t)| (t.span.clone(), classify(text, &tokens, i))).collect()
+    let mut out = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if is_template(text, &tokens, i) {
+            template_classes(text, t, &mut out);
+        } else {
+            out.push((t.span.clone(), classify(text, &tokens, i)));
+        }
+    }
+    out
+}
+
+/// Whether token `i` is a tooltip's template: text right after `tooltip(`.
+pub(crate) fn is_template(text: &str, tokens: &[Token], i: usize) -> bool {
+    tokens[i].kind == TokenKind::Str
+        && i >= 2
+        && tokens[i - 1].kind == TokenKind::LParen
+        && tokens[i - 2].text(text).eq_ignore_ascii_case("tooltip")
+}
+
+/// Where byte `i` of a template's unquoted text is in the rules.
+pub(crate) fn template_offset(token: &Token, unquoted: &str, i: usize) -> usize {
+    token.span.start + 1 + i + unquoted[..i.min(unquoted.len())].matches('\'').count()
+}
+
+/// A template's text as text, and its fields' values as rules.
+fn template_classes(text: &str, token: &Token, out: &mut Vec<(Range<usize>, Class)>) {
+    use crate::template::{Piece, split};
+    let inner = unquote(token.text(text));
+    let Ok(pieces) = split(&inner) else {
+        out.push((token.span.clone(), Class::String));
+        return;
+    };
+    let at = |i: usize| template_offset(token, &inner, i);
+    // Text runs from `from` to each field, which colors its own parts.
+    let mut from = token.span.start;
+    for piece in pieces {
+        let Piece::Field(field) = piece else { continue };
+        out.push((from..at(field.span.start), Class::String));
+        out.push((at(field.span.start)..at(field.span.start + 1), Class::Operator));
+        let (value, offset) = &field.value;
+        for (range, class) in highlight(value) {
+            out.push((at(offset + range.start)..at(offset + range.end), class));
+        }
+        if let Some((format, offset)) = &field.format {
+            out.push((at(offset - 1)..at(offset + format.len()), Class::Number));
+        }
+        if let Some((style, offset)) = &field.style {
+            out.push((at(offset - 1)..at(*offset), Class::Operator));
+            for word in style.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()) {
+                let start = offset + (word.as_ptr() as usize - style.as_ptr() as usize);
+                let class = if catalog::TOOLTIP_STYLES.contains(&word.to_ascii_lowercase().as_str()) {
+                    Class::Action
+                } else if Color::named(word).is_some() || Color::parse_hex(word).is_some() {
+                    Class::Color
+                } else {
+                    Class::Error
+                };
+                out.push((at(start)..at(start + word.len()), class));
+            }
+        }
+        out.push((at(field.span.end - 1)..at(field.span.end), Class::Operator));
+        from = at(field.span.end);
+    }
+    out.push((from..token.span.end, Class::String));
 }
 
 fn next_kind(tokens: &[Token], i: usize) -> Option<TokenKind> {
@@ -236,6 +299,31 @@ mod tests {
         let fields = highlight("if c.red[0] > 1 then bold");
         assert_eq!(fields[2..6].iter().map(|(_, c)| *c).collect::<Vec<_>>(), [Class::Operator, Class::Column, Class::Operator, Class::Number]);
         assert!(hover("if c.\"red\" > 1", 7, &[]).unwrap().starts_with("Field `red`"));
+    }
+
+    #[test]
+    fn template_fields_are_classified_as_rules() {
+        let text = r#"tooltip('it''s {"sales" * 2:,.2f|red bold} ok', bg=red)"#;
+        let classes: Vec<(String, Class)> =
+            highlight(text).into_iter().map(|(r, c)| (text[r].to_string(), c)).collect();
+        let expected = [
+            ("'it''s ", Class::String),
+            ("{", Class::Operator),
+            ("\"sales\"", Class::Column),
+            ("2", Class::Number),
+            (":,.2f", Class::Number),
+            ("|", Class::Operator),
+            ("red", Class::Color),
+            ("bold", Class::Action),
+            ("}", Class::Operator),
+            (" ok'", Class::String),
+            ("bg", Class::Keyword),
+        ];
+        for (word, class) in expected {
+            assert!(classes.contains(&(word.to_string(), class)), "{word}: {classes:?}");
+        }
+        // Text elsewhere is still plain text.
+        assert!(highlight("display('{c}')").iter().any(|(r, c)| *r == (8..13) && *c == Class::String));
     }
 
     #[test]

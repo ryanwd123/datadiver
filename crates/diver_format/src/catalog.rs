@@ -146,10 +146,16 @@ pub const ACTIONS: &[ActionDef] = &[
     ActionDef {
         name: "tooltip",
         form: Form::Call,
-        signature: "tooltip(<value>, [<format>], blank=)",
-        doc: "Shows `value` while the pointer rests on the cell, like `tooltip('Over budget')` or \
-              `tooltip(\"target\", '\"Target: \"#,##0')`. The format is `display`'s; quoted text \
-              in it shows as written. Each tooltip the rules set adds a line.",
+        signature: "tooltip(<'template'> | <value>, [<format>], bg=, text=, border=, shape=, delay=, …)",
+        doc: "Shows text while the pointer rests on the cell. In quotes it's a template, like a \
+              Python f-string: `tooltip('Target {\"target\":,.0f}\\nGap {c - \"target\":>8,.1f|red bold}')`. \
+              A field is `{value}`, `{value:format}` or `{value:format|style}`: the format is \
+              Python's (`>10`, `,.2f`, `.1%`) or Excel's (`YYYY-MM-DD`, `>12#,##0`), the style a \
+              color and `bold`, `italic` or `underline`. `\\n` starts a line and `{{` shows a brace. \
+              Without quotes it shows a value, like `display`: `tooltip(c, '#,##0')`. \
+              `bg=`, `text=`, `border=`, `border_width=`, `padding=`, `radius=`, `max_width=`, \
+              `shape=callout|box`, `font=ui|mono` and `delay=` (milliseconds, 0 by default) \
+              change how it looks. Each tooltip the rules set adds a line.",
     },
     ActionDef {
         name: "hide_text",
@@ -200,7 +206,19 @@ pub fn named_args(call: &str) -> &'static [(&'static str, ArgValue, &'static str
             ("kind", ArgValue::Kind, "line or bars."),
         ],
         "display" => &[("blank", ArgValue::Expr, "What shows when the value is blank (nothing by default).")],
-        "tooltip" => &[("blank", ArgValue::Expr, "What shows when the value is blank (no tooltip by default).")],
+        "tooltip" => &[
+            ("blank", ArgValue::Expr, "What a blank value or field shows (nothing by default)."),
+            ("bg", ArgValue::Color, "The tooltip's background."),
+            ("text", ArgValue::Color, "The text's color."),
+            ("border", ArgValue::Color, "The border's color, or `none`."),
+            ("border_width", ArgValue::Length, "The border's width, like `2px`."),
+            ("padding", ArgValue::Length, "Space around the text, like `10px`."),
+            ("radius", ArgValue::Length, "How round the corners are, like `8px`; 0 is square."),
+            ("max_width", ArgValue::Length, "How wide it gets before lines wrap, like `400px`."),
+            ("shape", ArgValue::Shape, "callout, with an arrow at the cell, or box."),
+            ("font", ArgValue::Font, "ui, or mono to line up padded fields (mono when a field has a width)."),
+            ("delay", ArgValue::Length, "Milliseconds the pointer rests on the cell first (0 by default)."),
+        ],
         _ => &[],
     }
 }
@@ -213,6 +231,10 @@ pub enum ArgValue {
     Color,
     Fill,
     Kind,
+    /// A number, perhaps in `px`.
+    Length,
+    Shape,
+    Font,
 }
 
 /// How a function relates to the column it reads.
@@ -433,6 +455,10 @@ pub const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 pub const ALIGNMENTS: &[&str] = &["left", "center", "right"];
 pub const FILLS: &[&str] = &["solid", "gradient"];
 pub const SPARK_KINDS: &[&str] = &["line", "bars"];
+pub const TOOLTIP_SHAPES: &[&str] = &["callout", "box"];
+pub const TOOLTIP_FONTS: &[&str] = &["ui", "mono"];
+/// The words a template field's style takes, besides a color.
+pub const TOOLTIP_STYLES: &[&str] = &["bold", "italic", "underline"];
 
 /// The closest of `candidates` to a misspelled `word`, when one is close.
 pub fn suggest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {

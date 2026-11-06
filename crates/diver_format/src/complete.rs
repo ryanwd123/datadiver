@@ -121,7 +121,8 @@ pub fn complete(text: &str, offset: usize, columns: &[Column]) -> Vec<Completion
                 }
                 return quoted_columns(text, token, offset, columns);
             }
-            TokenKind::Str | TokenKind::Comment => return Vec::new(),
+            TokenKind::Str => return template_field(text, &tokens, token, offset, columns),
+            TokenKind::Comment => return Vec::new(),
             TokenKind::Hex => return picker(&text[token.span.start..offset], token.span.clone()),
             _ => {}
         }
@@ -138,6 +139,40 @@ pub fn complete(text: &str, offset: usize, columns: &[Column]) -> Vec<Completion
     }
     out.sort_by(|a, b| a.sort.cmp(&b.sort));
     out
+}
+
+/// Inside a tooltip template, what fits in the value of the field the
+/// caret is in; nothing elsewhere in text.
+fn template_field(text: &str, tokens: &[Token], token: &Token, offset: usize, columns: &[Column]) -> Vec<Completion> {
+    let Some(i) = tokens.iter().position(|t| t == token) else { return Vec::new() };
+    if !crate::help::is_template(text, tokens, i) {
+        return Vec::new();
+    }
+    // The template's text up to the caret, its doubled quotes read.
+    let typed = text[token.span.start + 1..offset].replace("''", "'");
+    // An open field is the one the caret is in.
+    let open = match crate::template::split(&typed) {
+        Err((range, message)) if message.contains("no closing") => range.start,
+        _ => return Vec::new(),
+    };
+    let value = &typed[open + 1..];
+    if value.contains([':', '|']) {
+        return Vec::new();
+    }
+    let inner = crate::lexer::unquote(token.text(text));
+    // Completed as a condition, where an expression is what fits.
+    const LEAD: &str = "if ";
+    let condition = format!("{LEAD}{value}");
+    complete(&condition, condition.len(), columns)
+        .into_iter()
+        .map(|mut item| {
+            item.range = item.range.map(|r| {
+                let at = |i: usize| crate::help::template_offset(token, &inner, open + 1 + i - LEAD.len());
+                at(r.start)..at(r.end)
+            });
+            item
+        })
+        .collect()
 }
 
 fn items(expect: &Expect, columns: &[Column]) -> Vec<Completion> {
@@ -157,6 +192,9 @@ fn items(expect: &Expect, columns: &[Column]) -> Vec<Completion> {
             Some(ArgValue::Color) => color_items(),
             Some(ArgValue::Fill) => words(catalog::FILLS),
             Some(ArgValue::Kind) => words(catalog::SPARK_KINDS),
+            Some(ArgValue::Shape) => words(catalog::TOOLTIP_SHAPES),
+            Some(ArgValue::Font) => words(catalog::TOOLTIP_FONTS),
+            Some(ArgValue::Length) => Vec::new(),
         },
     }
 }
@@ -528,6 +566,21 @@ mod tests {
         assert!(formats.contains(&"'#,##0.00'".into()));
         assert!(formats.contains(&"'YYYY-MM-DD'".into()));
         assert!(labels("display(c, '0', |").contains(&"blank=".into()));
+    }
+
+    #[test]
+    fn template_fields_complete_like_rules() {
+        let at = |text: &str| -> Vec<Completion> { complete(text, text.len(), &columns()) };
+        let names: Vec<String> = at("tooltip('Total {").into_iter().map(|c| c.label).collect();
+        assert!(names.contains(&"c".into()) && names.contains(&"abs".into()), "{names:?}");
+        // A quoted name is replaced where it is in the rules, past doubled quotes.
+        let text = "tooltip('it''s {\"sa";
+        let column = at(text).into_iter().find(|c| c.kind == CompletionKind::Column).expect("a column");
+        assert_eq!(column.range, Some(text.len() - 3..text.len()));
+        // Text outside a field, and the field's format, have nothing.
+        assert!(at("tooltip('Total ").is_empty());
+        assert!(at("tooltip('{c:").is_empty());
+        assert!(at("display('{").is_empty());
     }
 
     #[test]

@@ -20,7 +20,8 @@ use crate::ui::platform::keys::KeyEvent;
 use crate::ui::platform::{
     Align, Canvas, Color, Cursor, Cx, Font, Point, Rect, Task, TextOptions, View, point, rect, text,
 };
-use crate::ui::widgets::{WidgetId, colors, scroll};
+use crate::ui::platform::text::RunStyle;
+use crate::ui::widgets::{Fonts, WidgetId, colors, scroll};
 
 const CELL_PREVIEW_LIMIT: usize = 200;
 const SEARCH_HIGHLIGHT: Color = Color::rgba(0xffd84d99);
@@ -135,14 +136,35 @@ pub enum GridEvent {
     ToggleFrozen,
 }
 
-/// The full text of a cell shown in a popup while the pointer rests on it.
+/// A popup while the pointer rests on a cell: its full text when the cell
+/// cuts it short, then the tooltip its formatting gives it.
 pub(crate) struct CellTooltip {
     pub(crate) row: usize,
     pub(crate) column: usize,
     pub(crate) text: String,
+    /// Parts of the text in their own color or weight.
+    pub(crate) spans: Vec<diver_format::TooltipSpan>,
+    /// How the rules' tooltip looks; `None` for a cell's full text alone.
+    pub(crate) look: Option<diver_format::TooltipLook>,
+    /// The rules' tooltip it shows, to notice when that changes.
+    note: Option<diver_format::Tooltip>,
     rect: Rect,
     scroll: scroll::Scroll,
+    /// The height the text scrolls in.
+    viewport: f32,
     content_height: f32,
+}
+
+/// How far a callout's arrow sticks out.
+const ARROW: f32 = 7.0;
+
+/// Which side of a callout its arrow is on.
+#[derive(Clone, Copy, PartialEq)]
+enum ArrowSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 /// Where the last paint put the grid's parts.
@@ -157,6 +179,65 @@ struct Layout {
 
 fn theme_color(color: diver_format::Color) -> Color {
     Color::rgba(u32::from_be_bytes([color.r, color.g, color.b, color.a]))
+}
+
+/// Where a tooltip of `width` by `height` goes for `cell` in a canvas of
+/// `canvas_w` by `canvas_h`, and where its arrow points from, if it has one.
+/// A callout sits beside the cell, its arrow at the cell's middle, or
+/// below or above it when neither side has room; a box sits below the
+/// cell, or above it near the bottom.
+fn place_tooltip(
+    cell: Rect,
+    width: f32,
+    height: f32,
+    canvas_w: f32,
+    canvas_h: f32,
+    shape: diver_format::TooltipShape,
+) -> (Rect, Option<(ArrowSide, f32)>) {
+    let margin = 8.0;
+    let callout = shape == diver_format::TooltipShape::Callout;
+    if callout {
+        let top = (cell.y + cell.h / 2.0 - height / 2.0).min(canvas_h - height - margin).max(margin);
+        let middle = cell.y + cell.h / 2.0;
+        if cell.right() + ARROW + width <= canvas_w - margin {
+            return (rect(cell.right() + ARROW, top, width, height), Some((ArrowSide::Left, middle)));
+        }
+        if cell.x - ARROW - width >= margin {
+            return (rect(cell.x - ARROW - width, top, width, height), Some((ArrowSide::Right, middle)));
+        }
+    }
+    let gap = if callout { ARROW } else { 2.0 };
+    let left = cell.x.min(canvas_w - width - margin).max(margin);
+    let (top, side) = if cell.bottom() + gap + height <= canvas_h - margin {
+        (cell.bottom() + gap, ArrowSide::Top)
+    } else {
+        ((cell.y - gap - height).max(margin), ArrowSide::Bottom)
+    };
+    let r = rect(left, top, width, height);
+    let at = (cell.x + 16.0).clamp(r.x + 12.0, r.right() - 12.0);
+    (r, callout.then_some((side, at)))
+}
+
+/// A callout's arrow on `side` of `r`, pointing out at `at` along that side.
+fn draw_arrow(canvas: &mut Canvas<Hit>, r: Rect, side: ArrowSide, at: f32, fill: Color, border: Color, border_width: f32) {
+    // The base sits a border's width inside the box, covering its edge there.
+    let inset = border_width.max(1.0);
+    let (tip, a, b) = match side {
+        ArrowSide::Left => (point(r.x - ARROW, at), point(r.x + inset, at - ARROW), point(r.x + inset, at + ARROW)),
+        ArrowSide::Right => (point(r.right() + ARROW, at), point(r.right() - inset, at - ARROW), point(r.right() - inset, at + ARROW)),
+        ArrowSide::Top => (point(at, r.y - ARROW), point(at - ARROW, r.y + inset), point(at + ARROW, r.y + inset)),
+        ArrowSide::Bottom => (point(at, r.bottom() + ARROW), point(at - ARROW, r.bottom() - inset), point(at + ARROW, r.bottom() - inset)),
+    };
+    canvas.fill_polygon(&[a, tip, b], fill);
+    if border_width > 0.0 {
+        // The edges run from where they meet the box's border.
+        let edge = |from: Point| {
+            let t = (inset - border_width / 2.0) / (ARROW + inset);
+            point(from.x + (tip.x - from.x) * t, from.y + (tip.y - from.y) * t)
+        };
+        canvas.line(edge(a), tip, border, border_width);
+        canvas.line(edge(b), tip, border, border_width);
+    }
 }
 
 fn point_of((x, y): diver_format::draw::Point) -> crate::ui::platform::Point {
@@ -240,10 +321,12 @@ pub struct GridView {
     /// Cells drawn cut short in the last frame, which offer their full text.
     overflowing: HashSet<(usize, usize)>,
     /// The tooltips formatting rules gave cells in the last frame.
-    notes: HashMap<(usize, usize), String>,
+    notes: HashMap<(usize, usize), diver_format::Tooltip>,
     hover: Option<(usize, usize)>,
     hover_task: Option<Task>,
     pub(crate) tooltip: Option<CellTooltip>,
+    /// A cell whose rule tooltip opens once it's painted, for screenshots.
+    pub(crate) pending_tooltip: Option<(usize, usize)>,
     events: Vec<GridEvent>,
 }
 
@@ -377,6 +460,7 @@ impl GridView {
             hover: None,
             hover_task: None,
             tooltip: None,
+            pending_tooltip: None,
             events: Vec::new(),
         }
     }
@@ -1105,7 +1189,7 @@ impl GridView {
                     let bar = rect(tooltip.rect.right() - scroll::BAR_WIDTH, tooltip.rect.y, scroll::BAR_WIDTH, tooltip.rect.h);
                     tooltip
                         .scroll
-                        .press(pos.y - bar.y, bar.h, tooltip.rect.h - 16.0, tooltip.content_height);
+                        .press(pos.y - bar.y, bar.h, tooltip.viewport, tooltip.content_height);
                 }
                 false
             }
@@ -1136,7 +1220,7 @@ impl GridView {
             let bar = rect(tooltip.rect.right() - scroll::BAR_WIDTH, tooltip.rect.y, scroll::BAR_WIDTH, tooltip.rect.h);
             tooltip
                 .scroll
-                .drag(pos.y - bar.y, bar.h, tooltip.rect.h - 16.0, tooltip.content_height);
+                .drag(pos.y - bar.y, bar.h, tooltip.viewport, tooltip.content_height);
         } else {
             self.extend_selection_drag(pos);
         }
@@ -1159,7 +1243,7 @@ impl GridView {
             let line = text::line_height(self.typography.as_ref().unwrap_or(&Font::new("Segoe UI", 13.0)));
             return tooltip
                 .scroll
-                .scroll_by(-delta.y * line, tooltip.rect.h - 16.0, tooltip.content_height);
+                .scroll_by(-delta.y * line, tooltip.viewport, tooltip.content_height);
         }
         let horizontal = if shift { delta.y } else { delta.x };
         if horizontal != 0.0 {
@@ -1198,8 +1282,18 @@ impl GridView {
         let Some((row, column)) = cell.filter(|cell| self.overflowing.contains(cell) || self.notes.contains_key(cell)) else {
             return;
         };
+        // A rule's tooltip waits as long as it says, at once by default.
+        let delay = self
+            .notes
+            .get(&(row, column))
+            .map_or(TOOLTIP_DELAY, |note| Duration::from_millis(note.look.delay.unwrap_or(0).into()));
+        if delay.is_zero() {
+            self.show_tooltip(row, column);
+            cx.notify();
+            return;
+        }
         let revision = self.result.result_revision;
-        self.hover_task = Some(cx.timer(TOOLTIP_DELAY, move |host: &mut V, cx| {
+        self.hover_task = Some(cx.timer(delay, move |host: &mut V, cx| {
             let grid = host.grid_mut();
             if grid.hover == Some((row, column)) && grid.result.result_revision == revision {
                 grid.show_tooltip(row, column);
@@ -1227,18 +1321,32 @@ impl GridView {
             .overflowing
             .contains(&(row, column))
             .then(|| display_cell(value, &self.result.dtypes[column], self.formats[column], usize::MAX));
-        let text = match (full, self.notes.get(&(row, column))) {
-            (Some(full), Some(note)) => format!("{full}\n\n{note}"),
-            (Some(full), None) => full,
-            (None, Some(note)) => note.clone(),
+        let note = self.notes.get(&(row, column)).cloned();
+        let shown = note.clone();
+        let (text, spans, look) = match (full, note) {
+            (Some(full), Some(note)) => {
+                let start = full.len() + 2;
+                let spans = note
+                    .spans
+                    .into_iter()
+                    .map(|span| diver_format::TooltipSpan { range: span.range.start + start..span.range.end + start, ..span })
+                    .collect();
+                (format!("{full}\n\n{}", note.text), spans, Some(note.look))
+            }
+            (Some(full), None) => (full, Vec::new(), None),
+            (None, Some(note)) => (note.text, note.spans, Some(note.look)),
             (None, None) => return,
         };
         self.tooltip = Some(CellTooltip {
             row,
             column,
             text,
+            spans,
+            look,
+            note: shown,
             rect: Rect::default(),
             scroll: scroll::Scroll::default(),
+            viewport: 0.0,
             content_height: 0.0,
         });
     }
@@ -1725,6 +1833,21 @@ impl GridView {
                 }
             }
             canvas.pop_clip();
+            if let Some((row, column)) = self.pending_tooltip.take_if(|cell| self.notes.contains_key(cell)) {
+                self.show_tooltip(row, column);
+            }
+            // An open tooltip follows its rules, as when the column's
+            // statistics arrive after it opened.
+            if let Some(open) = &self.tooltip
+                && self.notes.get(&(open.row, open.column)) != open.note.as_ref()
+            {
+                let (row, column, offset) = (open.row, open.column, open.scroll.offset);
+                self.tooltip = None;
+                self.show_tooltip(row, column);
+                if let Some(tooltip) = &mut self.tooltip {
+                    tooltip.scroll.offset = offset;
+                }
+            }
             if let Some(formatting) = &mut self.formatting {
                 let columns: Vec<usize> = visible.iter().map(|column| column_indices[*column]).collect();
                 let lookups = formatting.missing_lookups(&page_rows, &columns);
@@ -1796,41 +1919,80 @@ impl GridView {
     }
 
     /// Draws the open cell tooltip; call after everything it may cover.
-    pub fn paint_tooltip(&mut self, canvas: &mut Canvas<Hit>, font: &Font) {
+    pub fn paint_tooltip(&mut self, canvas: &mut Canvas<Hit>, fonts: &Fonts) {
         let Some(tooltip) = &mut self.tooltip else {
             return;
         };
-        let Some(x) = GridGeometry::new(self.widths.clone(), self.frozen_count, self.layout.rows.w, self.scroll_x)
-            .column_x(tooltip.column)
-        else {
+        let geometry = GridGeometry::new(self.widths.clone(), self.frozen_count, self.layout.rows.w, self.scroll_x);
+        let Some(x) = geometry.column_x(tooltip.column) else {
             return;
         };
         let cell_y = self.layout.rows.y + tooltip.row as f32 * self.row_height - self.v_scroll.offset;
-        let width = (canvas.width - 64.0).clamp(1.0, 560.0);
+        let column_width = self.widths.get(tooltip.column).copied().unwrap_or(0.0);
+        // The part of the cell on show, which a callout points at.
+        let cell = rect(self.layout.bounds.x + x, cell_y, column_width, self.row_height).intersect(&self.layout.rows);
+        let ruled = tooltip.look.is_some();
+        let look = tooltip.look.unwrap_or_default();
+        let font = if look.mono == Some(true) { &fonts.mono } else { &fonts.ui };
+        let padding = look.padding.unwrap_or(8.0);
+        let max_width = look.max_width.unwrap_or(560.0).min(canvas.width - 64.0).max(40.0);
         let max_height = (canvas.height - 64.0).clamp(1.0, 360.0);
-        let layout = text::layout(&tooltip.text, font, TextOptions::wrapped(width - 16.0 - scroll::BAR_WIDTH));
+        let runs: Vec<(std::ops::Range<usize>, RunStyle)> = tooltip
+            .spans
+            .iter()
+            .flat_map(|span| {
+                [(span.bold, RunStyle::Bold), (span.italic, RunStyle::Italic), (span.underline, RunStyle::Underline)]
+                    .into_iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, style)| (span.range.clone(), style))
+            })
+            .collect();
+        let lay_out = |width: f32| {
+            let options = TextOptions::wrapped(width.max(20.0));
+            if runs.is_empty() { text::layout(&tooltip.text, font, options) } else { text::styled_layout(&tooltip.text, font, options, &runs) }
+        };
+        let mut layout = lay_out(max_width - 2.0 * padding);
+        let bar = layout.height > max_height - 2.0 * padding;
+        if bar {
+            layout = lay_out(max_width - 2.0 * padding - scroll::BAR_WIDTH);
+        }
+        // A rule's tooltip fits its text; a cell's full text takes the room.
+        let width = if ruled {
+            (layout.width.ceil() + 2.0 * padding + if bar { scroll::BAR_WIDTH } else { 0.0 }).min(max_width)
+        } else {
+            max_width
+        };
+        let height = (layout.height + 2.0 * padding).min(max_height);
         tooltip.content_height = layout.height;
-        let height = (layout.height + 16.0).min(max_height);
-        let mut left = (self.layout.bounds.x + x).min(canvas.width - width - 8.0).max(8.0);
-        let mut top = cell_y + self.row_height + 2.0;
-        if top + height > canvas.height - 8.0 {
-            top = (cell_y - height - 2.0).max(8.0);
-        }
-        if left < 0.0 {
-            left = 8.0;
-        }
-        let r = rect(left, top, width, height);
+        tooltip.viewport = height - 2.0 * padding;
+        let shape = if ruled { look.shape.unwrap_or_default() } else { diver_format::TooltipShape::Box };
+        let (r, arrow) = place_tooltip(cell, width, height, canvas.width, canvas.height, shape);
         tooltip.rect = r;
-        tooltip.scroll.clamp(height - 16.0, layout.height);
-        canvas.shadow(r, 6.0);
-        canvas.fill_rounded(r, 6.0, colors::POPOVER);
-        canvas.stroke_rounded(r, 6.0, colors::BORDER, 1.0);
-        canvas.push_clip(r.inset(8.0));
-        canvas.draw_layout(&layout, point(r.x + 8.0, r.y + 8.0 - tooltip.scroll.offset), colors::FOREGROUND);
+        tooltip.scroll.clamp(tooltip.viewport, layout.height);
+        let background = look.background.map_or(colors::POPOVER, theme_color);
+        let border = look.border.map_or(colors::BORDER, theme_color);
+        let border_width = if look.border.is_some_and(|c| c.a == 0) { 0.0 } else { look.border_width.unwrap_or(1.0) };
+        let radius = look.radius.unwrap_or(6.0).min(height / 2.0);
+        canvas.shadow(r, radius);
+        canvas.fill_rounded(r, radius, background);
+        if border_width > 0.0 {
+            canvas.stroke_rounded(r, radius, border, border_width);
+        }
+        if let Some((side, at)) = arrow {
+            draw_arrow(canvas, r, side, at, background, border, border_width);
+        }
+        let colored: Vec<(usize, usize, Color)> = tooltip
+            .spans
+            .iter()
+            .filter_map(|span| Some((span.range.start, span.range.end, theme_color(span.color?))))
+            .collect();
+        let foreground = look.text.map_or(colors::FOREGROUND, theme_color);
+        canvas.push_clip(r.inset(padding));
+        canvas.draw_layout_runs(&layout, point(r.x + padding, r.y + padding - tooltip.scroll.offset), foreground, &colored);
         canvas.pop_clip();
         canvas.hit(r, Hit::Grid(GridHit::Tooltip));
-        let bar = rect(r.right() - scroll::BAR_WIDTH, r.y, scroll::BAR_WIDTH, r.h);
-        scroll::vertical(canvas, bar, height - 16.0, layout.height, &tooltip.scroll, Hit::Grid(GridHit::TooltipBar));
+        let track = rect(r.right() - scroll::BAR_WIDTH, r.y, scroll::BAR_WIDTH, r.h);
+        scroll::vertical(canvas, track, tooltip.viewport, layout.height, &tooltip.scroll, Hit::Grid(GridHit::TooltipBar));
     }
 
     /// The rows' visible top, for tests.
@@ -1876,7 +2038,7 @@ mod tests {
             let bounds = rect(0.0, self.inset, canvas.width, canvas.height - self.inset);
             let font = self.font.clone();
             self.grid.paint(canvas, bounds, &font, cx);
-            self.grid.paint_tooltip(canvas, &font);
+            self.grid.paint_tooltip(canvas, &crate::ui::widgets::Fonts::new(font.size, None, None));
         }
 
         fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {

@@ -140,6 +140,7 @@ fn main() {
                             | "formatting"
                             | "formatting:presets"
                             | "formatted"
+                            | "formatted:tooltip"
                             | "ai-providers"
                             | "action-menu"
                             | "slicer-search"

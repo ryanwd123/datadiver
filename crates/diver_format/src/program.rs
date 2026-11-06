@@ -173,17 +173,54 @@ pub enum Op {
     Bar(BarSpec),
     Sparkline(SparkSpec),
     Display(DisplaySpec),
-    Tooltip(DisplaySpec),
+    Tooltip(TooltipSpec),
     HideText,
     Stop,
 }
 
-/// `display(value, format, blank=)`, and `tooltip(…)`, which takes the same.
+/// `display(value, format, blank=)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplaySpec {
     pub value: Cx,
     pub format: Option<crate::format::Format>,
     pub blank: Option<Cx>,
+}
+
+/// `tooltip(…)`: a value like `display`'s, or a template, and its look.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TooltipSpec {
+    pub content: TooltipContent,
+    pub look: crate::style::TooltipLook,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TooltipContent {
+    Value(DisplaySpec),
+    /// `'Total {c:,.2f|bold}'`, and what a blank field shows.
+    Template { parts: Vec<TemplatePart>, blank: Option<Cx> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TemplatePart {
+    Text(String),
+    Field(TemplateField),
+}
+
+/// A template's `{value:format|style}`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TemplateField {
+    pub value: Cx,
+    pub format: Option<crate::template::FieldFormat>,
+    pub color: Option<Color>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+impl TemplateField {
+    fn styled(&self) -> bool {
+        self.color.is_some() || self.bold || self.italic || self.underline
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -290,9 +327,19 @@ impl Program {
                         range(&mut add, s.by, &[&s.min, &s.mid, &s.max])
                     }
                     Ok(Op::Bar(b)) => range(&mut add, b.by, &[&b.min, &b.max]),
-                    Ok(Op::Display(d) | Op::Tooltip(d)) => {
+                    Ok(Op::Display(d) | Op::Tooltip(TooltipSpec { content: TooltipContent::Value(d), .. })) => {
                         walk(&d.value, &mut add);
                         if let Some(blank) = &d.blank {
+                            walk(blank, &mut add);
+                        }
+                    }
+                    Ok(Op::Tooltip(TooltipSpec { content: TooltipContent::Template { parts, blank }, .. })) => {
+                        for part in parts {
+                            if let TemplatePart::Field(field) = part {
+                                walk(&field.value, &mut add);
+                            }
+                        }
+                        if let Some(blank) = blank {
                             walk(blank, &mut add);
                         }
                     }
@@ -347,14 +394,10 @@ fn apply(env: &Env, ops: &[Op], style: &mut CellStyle) -> bool {
             Op::Sparkline(spec) => style.sparkline = Some(env.sparkline(spec)),
             Op::Display(spec) => style.display = Some(env.display(spec)),
             Op::Tooltip(spec) => {
-                let line = env.display(spec);
-                if !line.is_empty() {
+                if let Some(tooltip) = env.tooltip(spec) {
                     match &mut style.tooltip {
-                        Some(text) => {
-                            text.push('\n');
-                            text.push_str(&line);
-                        }
-                        None => style.tooltip = Some(line),
+                        Some(shown) => shown.push(tooltip),
+                        None => style.tooltip = Some(tooltip),
                     }
                 }
             }
@@ -468,6 +511,45 @@ impl Env<'_> {
             Some(format) => format.apply(&value),
             None => value.text().into_owned(),
         }
+    }
+
+    /// The tooltip `spec` shows, or none when its text is blank.
+    fn tooltip(&self, spec: &TooltipSpec) -> Option<crate::style::Tooltip> {
+        let mut tooltip = crate::style::Tooltip { look: spec.look, ..Default::default() };
+        match &spec.content {
+            TooltipContent::Value(display) => tooltip.text = self.display(display),
+            TooltipContent::Template { parts, blank } => {
+                for part in parts {
+                    match part {
+                        TemplatePart::Text(text) => tooltip.text.push_str(text),
+                        TemplatePart::Field(field) => {
+                            let mut value = self.eval(&field.value);
+                            if value.is_null()
+                                && let Some(blank) = blank
+                            {
+                                value = self.eval(blank);
+                            }
+                            let shown = match &field.format {
+                                Some(format) => format.apply(&value),
+                                None => value.text().into_owned(),
+                            };
+                            let start = tooltip.text.len();
+                            tooltip.text.push_str(&shown);
+                            if field.styled() && !shown.is_empty() {
+                                tooltip.spans.push(crate::style::TooltipSpan {
+                                    range: start..tooltip.text.len(),
+                                    color: field.color,
+                                    bold: field.bold,
+                                    italic: field.italic,
+                                    underline: field.underline,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (!tooltip.text.trim().is_empty()).then_some(tooltip)
     }
 
     fn eval(&self, cx: &Cx) -> Value {

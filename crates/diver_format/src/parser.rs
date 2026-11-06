@@ -72,6 +72,26 @@ pub fn parse(text: &str) -> Parsed {
     Parsed { rules, diagnostics }
 }
 
+/// Parses `text` as one expression, such as a tooltip template's field.
+pub(crate) fn parse_expression(text: &str) -> (Expr, Vec<Diagnostic>) {
+    let tokens = tokenize(text).into_iter().filter(|t| t.kind != TokenKind::Comment).collect();
+    let mut p = Parser {
+        text,
+        tokens,
+        pos: 0,
+        diagnostics: Vec::new(),
+        expected: Vec::new(),
+        frozen: false,
+        rule_failed: false,
+    };
+    let expr = p.expr();
+    if !p.eof() {
+        let found = p.found();
+        p.error(format!("expected `:`, `|` or `}}` after the field's value, found {found}"));
+    }
+    (expr, p.diagnostics)
+}
+
 /// What could follow `tokens`, which end at the caret.
 pub(crate) fn expected(text: &str, tokens: Vec<Token>) -> Vec<Expect> {
     run(text, tokens).2

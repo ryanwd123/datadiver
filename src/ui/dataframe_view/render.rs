@@ -417,7 +417,7 @@ impl DataFrameView {
             panel.paint_overlay(canvas, &fonts, focus);
         }
         if self.dialog.is_none() {
-            self.grid.paint_tooltip(canvas, &fonts.ui);
+            self.grid.paint_tooltip(canvas, &fonts);
         }
     }
 }

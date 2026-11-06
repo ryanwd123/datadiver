@@ -692,9 +692,16 @@ impl DataFrameView {
             let format = |rules: &str, column: Option<&String>| {
                 column.map(|column| ConditionalFormat { rules: rules.into(), columns: vec![column.clone()], ..Default::default() })
             };
+            // The first number column's tooltip, which `formatted:tooltip` opens.
+            let tooltip = if target == "formatted:tooltip" {
+                ";\ntooltip('Value   {c:>10,.2f|bold}\\nAverage {avg(c):>10,.2f}\\nGap     {c - avg(c):>+10,.1f|#c00000}')"
+            } else {
+                ""
+            };
+            let bar = format!("bar(#638ec6, fill=gradient);\nif c > avg(c) then bold{tooltip}");
             let formats: Vec<ConditionalFormat> = [
                 format("if duplicate(c) then bg: #ffc7ce, text: #9c0006", of(diver_format::ValueKind::Text).next().as_ref()),
-                format("bar(#638ec6, fill=gradient);\nif c > avg(c) then bold", numbers.first()),
+                format(&bar, numbers.first()),
                 format("scale(#f8696b, #ffeb84, #63be7b)", numbers.get(1)),
                 format("if c > 0 then text: #006100, icon: up\nelif c < 0 then text: #c00000, icon: down", numbers.get(2)),
                 format("icons(traffic)", numbers.get(3)),
@@ -709,6 +716,12 @@ impl DataFrameView {
         }
         if target.starts_with("formatting") {
             self.open_format_manager(cx);
+        }
+        if target == "formatted:tooltip"
+            && let Some(column) = (self.session.result.dtypes.iter())
+                .position(|dtype| crate::application::conditional_format::value_kind(dtype) == diver_format::ValueKind::Number)
+        {
+            self.grid.pending_tooltip = Some((3, column));
         }
         if target == "formatting:presets" {
             self.open_presets_for_capture(cx);

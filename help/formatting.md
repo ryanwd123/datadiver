@@ -75,7 +75,7 @@ Whole-column tests count the rows the slicers and filters leave, not a search's.
 | `icons(…)` | `icons(arrows, reverse, low=33%, high=67%)` |
 | `sparkline(…)` | `sparkline("q1", "q2", "q3", kind=bars)` or `sparkline(c)` |
 | `display(…)` | `display(c[0])`, `display(c, '#,##0.00', blank='-')` |
-| `tooltip(…)` | `tooltip('Over target')`, `tooltip("target", '"Target: "#,##0')` |
+| `tooltip(…)` | `tooltip('Target {"target":,.0f}')`, `tooltip(c, '#,##0', bg=lightyellow)` |
 | `hide_text`, `stop` | `bar(blue), hide_text` |
 
 Colors are CSS names, `#rgb`, `#rrggbb`, `#rrggbbaa` or `rgb(r, g, b)`. Icon sets for `icons()` are arrows, triangles, traffic, checks, flags, stars and signal.
@@ -92,12 +92,39 @@ The optional format is Excel's, such as `'#,##0.00'`, `'0.0%'`, `'$#,##0;($#,##0
 
 ## Tooltips
 
-`tooltip(value, format)` shows a value while the pointer rests on the cell. It takes the same arguments as `display`, and quoted text in the format shows as written. Each tooltip the rules set adds a line, after the cell's full text when the cell cuts it short:
+`tooltip(…)` shows text while the pointer rests on the cell. Text in quotes is a template, like a Python f-string: each `{…}` field is filled in with a value, which can be any expression:
 
 ```rules
-if c > "target" then tooltip('Over target');
-tooltip("target", '"Target: "#,##0')
+tooltip('Sales  {c:>10,.2f|bold}\nTarget {"target":>10,.0f}\nGap    {c - "target":>+10,.1f|red}');
+if c > "target" then tooltip('Over target', bg=honeydew)
 ```
+
+A field is `{value}`, `{value:format}` or `{value:format|style}`:
+
+| Part | Examples |
+| --- | --- |
+| Python's alignment and width | `>10` right, `<10` left, `^10` centered, `*>10` padded with `*` |
+| Python's number format | `,.2f` two decimals with thousands, `.1%` a percent, `+d` a whole number with its sign, `.2e` |
+| Excel's format, after any width | `YYYY-MM-DD`, `>12mmm d, yyyy`, `#,##0.00` |
+| Style | a color and `bold`, `italic` or `underline`: `\|red bold` |
+
+`\n` starts a new line, `\t` is a tab, and `{{` and `}}` show braces. A blank value shows `blank=`, or nothing. A tooltip whose fields have a width uses a fixed-width font, so the columns line up.
+
+Without quotes, the first argument is a value, which takes `display`'s format: `tooltip("target", '"Target: "#,##0')`.
+
+These change how a tooltip looks:
+
+| Argument | What it does |
+| --- | --- |
+| `bg=`, `text=` | the background and text colors |
+| `border=`, `border_width=` | the border's color (or `none`) and width |
+| `padding=`, `radius=` | the space around the text and how round the corners are, like `10px` |
+| `max_width=` | how wide it gets before lines wrap |
+| `shape=` | `callout`, with an arrow pointing at the cell (the default), or `box` |
+| `font=` | `ui`, or `mono` to line fields up |
+| `delay=` | how long the pointer rests on the cell first, in milliseconds (0 by default) |
+
+Each tooltip the rules set adds a line, and where they set the same argument the later one wins. When the cell cuts its text short, the full text shows first.
 
 ## Help while typing
 

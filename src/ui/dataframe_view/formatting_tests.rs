@@ -391,3 +391,41 @@ fn many_columns_scroll_in_a_few_rows_and_leave_room_for_the_rules() {
     let columns = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().formats[0].columns.clone());
     assert_eq!(columns, ["column_140".to_string(), format!("column_{index}")]);
 }
+
+#[test]
+fn template_tooltips_wait_as_told_and_point_at_their_cell() {
+    use crate::ui::hit::GridHit;
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    viewer.select(0, 2);
+    viewer.render();
+    let manager = open_manager(&viewer);
+    manager.input("tooltip('{\"region\"|bold} {c:>4|red}'); if c > 15 then tooltip('Big', delay=300, bg=navy)");
+    viewer.settle();
+    let hover = |row: usize| {
+        viewer.update(|view, _| view.grid.mouse_leave());
+        viewer.render();
+        let cell = viewer.find(|hit| *hit == Hit::Grid(GridHit::Cell { row, column: 2 })).expect("the cell is painted");
+        viewer.hover(cell.center());
+        viewer.render();
+        cell
+    };
+    let shown = || viewer.read(|view| view.grid.tooltip.as_ref().map(|tooltip| (tooltip.text.clone(), tooltip.spans.clone())));
+    // With no delay it shows at once, its fields styled.
+    let cell = hover(0);
+    let (text, spans) = shown().expect("shown at once");
+    assert_eq!(text, "North   10");
+    assert!(spans[0].bold && spans[1].color.is_some());
+    // A callout sits beside its cell.
+    let tip = viewer.find(|hit| *hit == Hit::Grid(GridHit::Tooltip)).expect("the tooltip is painted");
+    assert!(tip.x >= cell.right() && tip.y < cell.center().y && tip.bottom() > cell.center().y, "{tip:?} {cell:?}");
+    // A later rule's delay wins, and nothing shows until it's up.
+    hover(1);
+    assert!(shown().is_none());
+    viewer.advance_clock(std::time::Duration::from_millis(350));
+    viewer.render();
+    assert_eq!(shown().unwrap().0, "North   30\nBig");
+    let look = viewer.read(|view| view.grid.tooltip.as_ref().unwrap().look.unwrap());
+    assert_eq!(look.background, diver_format::Color::named("navy"));
+}

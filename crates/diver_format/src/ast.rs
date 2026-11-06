@@ -113,3 +113,54 @@ pub enum ExprKind {
     /// Where a parse error left a hole.
     Error,
 }
+
+impl Expr {
+    /// Moves every span by `map`, as for an expression parsed out of a
+    /// tooltip template's text.
+    pub fn map_spans(&mut self, map: &dyn Fn(usize) -> usize) {
+        let span = |s: &mut Span| *s = map(s.start)..map(s.end);
+        span(&mut self.span);
+        let arg = |a: &mut Arg| {
+            span(&mut a.span);
+            if let Some((_, s)) = &mut a.name {
+                span(s);
+            }
+            a.value.map_spans(map);
+        };
+        match &mut self.kind {
+            ExprKind::Neg(e) | ExprKind::Not(e) | ExprKind::IsNull { expr: e, .. } => e.map_spans(map),
+            ExprKind::Binary(_, a, b) | ExprKind::Index { expr: a, index: b } => {
+                a.map_spans(map);
+                b.map_spans(map);
+            }
+            ExprKind::Between { expr, low, high, .. } => {
+                for e in [expr, low, high] {
+                    e.map_spans(map);
+                }
+            }
+            ExprKind::In { expr, list, .. } => {
+                expr.map_spans(map);
+                list.iter_mut().for_each(|e| e.map_spans(map));
+            }
+            ExprKind::Call { name_span, args, .. } => {
+                span(name_span);
+                args.iter_mut().for_each(arg);
+            }
+            ExprKind::Field { expr, name_span, .. } => {
+                expr.map_spans(map);
+                span(name_span);
+            }
+            ExprKind::Cell
+            | ExprKind::Column(_)
+            | ExprKind::Number(_)
+            | ExprKind::Percent(_)
+            | ExprKind::Length(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::Hex(_)
+            | ExprKind::Name(_)
+            | ExprKind::Error => {}
+        }
+    }
+}
