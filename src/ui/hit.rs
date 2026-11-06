@@ -144,6 +144,9 @@ pub enum Button {
     FormatNewSet,
     FormatDeleteSet,
     FormatColumn(usize),
+    /// The column chips' list, behind the chips, when it scrolls.
+    FormatColumns,
+    FormatColumnScroll,
     FormatPreset(usize),
     /// The presets drop-down's button.
     FormatPresetsToggle,

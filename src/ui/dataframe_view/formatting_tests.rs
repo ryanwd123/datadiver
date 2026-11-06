@@ -360,3 +360,34 @@ fn a_rule_tooltip_shows_while_the_pointer_rests_on_its_cell() {
     assert!(viewer.read(|view| view.grid.tooltip.is_none()));
 
 }
+
+#[test]
+fn many_columns_scroll_in_a_few_rows_and_leave_room_for_the_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("wide.csv");
+    let names: Vec<String> = (0..150).map(|n| format!("column_{n}")).collect();
+    std::fs::write(&path, format!("{}\n{}\n", names.join(","), vec!["1"; 150].join(","))).unwrap();
+    let viewer = Viewer::file(&path);
+    viewer.select(0, 140);
+    let manager = open_manager(&viewer);
+    manager.resize(700.0, 500.0);
+    let chip = |manager: &Viewer, index: usize| manager.find(|hit| *hit == Hit::Button(Button::FormatColumn(index)));
+    // The list opens scrolled to the set's column.
+    assert!(chip(&manager, 140).is_some());
+    assert!(chip(&manager, 0).is_none());
+    let rules = manager.find(|hit| matches!(hit, Hit::CodeEditor(_))).expect("the rules editor");
+    assert!(rules.h > 150.0, "{rules:?}");
+    // It scrolls by bar and by wheel.
+    let bar = manager.find(|hit| *hit == Hit::Button(Button::FormatColumnScroll)).expect("a scroll bar");
+    manager.drag(bar.center(), point(bar.center().x, bar.y - 400.0));
+    let first = chip(&manager, 0).expect("scrolled to the top");
+    assert!(chip(&manager, 149).is_none());
+    manager.app.scroll(manager.id, first.center(), point(0.0, -3.0));
+    manager.render();
+    assert!(chip(&manager, 0).is_none());
+    // Clicking a chip still adds its column.
+    let index = (0..150).find(|index| chip(&manager, *index).is_some()).unwrap();
+    manager.click(|hit| *hit == Hit::Button(Button::FormatColumn(index)));
+    let columns = manager.read(|view| view.format_window.as_ref().unwrap().manager.as_ref().unwrap().formats[0].columns.clone());
+    assert_eq!(columns, ["column_140".to_string(), format!("column_{index}")]);
+}

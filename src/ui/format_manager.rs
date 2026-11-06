@@ -30,6 +30,8 @@ const START_COLOR: u32 = 0x638ec6;
 const RULE_SWATCHES: usize = 16;
 /// The presets drop-down, which may be wider than the list it opens from.
 const PRESETS_WIDTH: f32 = 300.0;
+/// Rows of column chips shown before the list scrolls.
+const COLUMN_ROWS: f32 = 4.0;
 
 pub enum FormatManagerEvent {
     Changed(Vec<ConditionalFormat>),
@@ -54,12 +56,15 @@ fn preset_entries() -> Vec<Entry> {
     out
 }
 
-/// Where the open presets list scrolls, from the last frame.
+/// Where a scrolling list (the open presets, or the columns) scrolls,
+/// from the last frame.
 #[derive(Clone, Copy)]
-struct PresetList {
+struct ScrollList {
     track: Rect,
     viewport: f32,
     content: f32,
+    /// How far one wheel notch scrolls.
+    row: f32,
 }
 
 pub struct FormatManager {
@@ -72,7 +77,14 @@ pub struct FormatManager {
     rules_running: usize,
     pub(crate) presets_open: bool,
     preset_scroll: Scroll,
-    preset_list: Option<PresetList>,
+    preset_list: Option<ScrollList>,
+    /// The column chips, which scroll once they need more than a few rows.
+    column_scroll: Scroll,
+    column_list: Option<ScrollList>,
+    /// Scrolls the chips to the selected set's first column on the next paint.
+    reveal_columns: bool,
+    /// The width the chips last wrapped at; they rewrap when it changes.
+    columns_width: f32,
     /// The colors panel: shown, its picker, and the picker's hex input.
     pub(crate) colors_open: bool,
     pub(crate) picker: ColorPicker,
@@ -129,6 +141,10 @@ impl FormatManager {
             presets_open: false,
             preset_scroll: Scroll::default(),
             preset_list: None,
+            column_scroll: Scroll::default(),
+            column_list: None,
+            reveal_columns: true,
+            columns_width: 0.0,
             colors_open: false,
             picker,
             hex,
@@ -177,6 +193,7 @@ impl FormatManager {
         if self.selector.text() != pattern {
             self.selector.set_text(pattern);
         }
+        self.reveal_columns = true;
         self.check();
     }
 
@@ -472,6 +489,11 @@ impl FormatManager {
                     self.preset_scroll.press(pos.y - list.track.y, list.track.h, list.viewport, list.content);
                 }
             }
+            Hit::Button(Button::FormatColumnScroll) => {
+                if let Some(list) = self.column_list {
+                    self.column_scroll.press(pos.y - list.track.y, list.track.h, list.viewport, list.content);
+                }
+            }
             Hit::CodeEditor(id) if *id == self.editor.id => {
                 self.editor.mouse_down(pos, clicks, modifiers);
                 *focus = Some(self.editor.id);
@@ -536,6 +558,10 @@ impl FormatManager {
             && let Some(list) = self.preset_list
         {
             self.preset_scroll.drag(pos.y - list.track.y, list.track.h, list.viewport, list.content);
+        } else if self.column_scroll.dragging()
+            && let Some(list) = self.column_list
+        {
+            self.column_scroll.drag(pos.y - list.track.y, list.track.h, list.viewport, list.content);
         } else if self.editor.is_dragging() {
             self.editor.mouse_move(pos, true);
         }
@@ -543,6 +569,7 @@ impl FormatManager {
 
     pub fn mouse_up(&mut self) {
         self.preset_scroll.release();
+        self.column_scroll.release();
         self.picker.mouse_up();
         self.hex.mouse_up();
         self.selector.mouse_up();
@@ -554,8 +581,11 @@ impl FormatManager {
             Hit::CodeEditor(id) if *id == self.editor.id => self.editor.wheel(delta, modifiers),
             Hit::Button(Button::FormatPreset(_) | Button::FormatPresets | Button::FormatPresetScroll) => {
                 let Some(list) = self.preset_list else { return false };
-                let row = list.content / preset_entries().len().max(1) as f32;
-                self.preset_scroll.scroll_by(-delta.y * row, list.viewport, list.content)
+                self.preset_scroll.scroll_by(-delta.y * list.row, list.viewport, list.content)
+            }
+            Hit::Button(Button::FormatColumn(_) | Button::FormatColumns | Button::FormatColumnScroll) => {
+                let Some(list) = self.column_list else { return false };
+                self.column_scroll.scroll_by(-delta.y * list.row, list.viewport, list.content)
             }
             _ => false,
         }
@@ -669,15 +699,53 @@ impl FormatManager {
         let picked = picks.unwrap_or_default();
         let chip_height = (small_line + 8.0).round();
         let names: Vec<String> = self.columns.borrow().iter().map(|c| c.name.clone()).collect();
-        let mut x = main.x;
-        let mut y = column.y;
-        for (index, name) in names.iter().enumerate() {
-            let width = (text::measure(name, small).0 + 30.0).min(main.w);
-            if x + width > main.right() && x > main.x {
-                x = main.x;
-                y += chip_height + 6.0;
+        // Chips wrap into rows, laid out from the top of the list.
+        let gap = 6.0;
+        let lay_out = |width: f32| {
+            let (mut x, mut y) = (0.0, 0.0);
+            let chips: Vec<Rect> = names
+                .iter()
+                .map(|name| {
+                    let w = (text::measure(name, small).0 + 30.0).min(width);
+                    if x + w > width && x > 0.0 {
+                        x = 0.0;
+                        y += chip_height + gap;
+                    }
+                    let chip = rect(x, y, w, chip_height);
+                    x += w + gap;
+                    chip
+                })
+                .collect();
+            let content = if names.is_empty() { 0.0 } else { y + chip_height };
+            (chips, content)
+        };
+        // Past a few rows the list scrolls, so the rules stay in view however
+        // many columns the table has.
+        let viewport_max = COLUMN_ROWS * (chip_height + gap) - gap;
+        let (mut chips, mut content) = lay_out(main.w);
+        let bar = content > viewport_max;
+        if bar {
+            (chips, content) = lay_out(main.w - scroll::BAR_WIDTH - 4.0);
+        }
+        let area = column.next(content.min(viewport_max));
+        self.column_scroll.clamp(area.h, content);
+        // Rewrapped chips move, so the set's column is found again.
+        let rewrapped = std::mem::replace(&mut self.columns_width, main.w) != main.w;
+        if (std::mem::take(&mut self.reveal_columns) || rewrapped)
+            && let Some(first) = names.iter().position(|name| applied.contains(name)).map(|index| chips[index])
+        {
+            self.column_scroll.reveal(first.y, first.h, area.h);
+        }
+        let offset = self.column_scroll.offset;
+        if bar {
+            canvas.hit(area, Hit::Button(Button::FormatColumns));
+        }
+        canvas.push_clip(area);
+        for (index, (name, chip)) in names.iter().zip(&chips).enumerate() {
+            let chip = chip.offset(area.x, area.y - offset);
+            if chip.bottom() <= area.y || chip.y >= area.bottom() {
+                continue;
             }
-            let chip = rect(x, y, width, chip_height);
             let on = applied.contains(name);
             let matched = picked.contains(&index);
             canvas.fill_rounded(chip, chip_height / 2.0, if on || matched { colors::SELECTED } else { colors::STRIPE });
@@ -687,10 +755,15 @@ impl FormatManager {
             let mark = if on { "✓" } else if matched { "●" } else { "+" };
             canvas.text(rect(chip.x + 8.0, chip.y, 12.0, chip.h), mark, small, colors::MUTED, Align::Left);
             canvas.text(rect(chip.x + 22.0, chip.y, chip.w - 26.0, chip.h), name, small, colors::FOREGROUND, Align::Left);
-            canvas.hit_cursor(chip, Hit::Button(Button::FormatColumn(index)), Cursor::Hand);
-            x += width + 6.0;
+            canvas.hit_cursor(chip.intersect(&area), Hit::Button(Button::FormatColumn(index)), Cursor::Hand);
         }
-        column.skip(y + chip_height + 10.0 - column.y);
+        canvas.pop_clip();
+        let track = rect(area.right() - scroll::BAR_WIDTH, area.y, scroll::BAR_WIDTH, area.h);
+        if bar {
+            scroll::vertical(canvas, track, area.h, content, &self.column_scroll, Hit::Button(Button::FormatColumnScroll));
+        }
+        self.column_list = bar.then_some(ScrollList { track, viewport: area.h, content, row: chip_height + gap });
+        column.skip(10.0);
         canvas.text(column.next(small_line), "RULES", &heading, colors::MUTED, Align::Left);
         let problem_rows = self.problems.len().clamp(1, 4) as f32;
         let below = problem_rows * (small_line + 4.0) + small_line + 18.0;
@@ -855,7 +928,7 @@ impl FormatManager {
         if bar {
             scroll::vertical(canvas, track, inner.h, content, &self.preset_scroll, Hit::Button(Button::FormatPresetScroll));
         }
-        self.preset_list = Some(PresetList { track, viewport: inner.h, content });
+        self.preset_list = Some(ScrollList { track, viewport: inner.h, content, row: row_height });
     }
 }
 
