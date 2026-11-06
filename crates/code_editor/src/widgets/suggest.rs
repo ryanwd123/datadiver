@@ -65,6 +65,9 @@ pub struct CompletionItem {
     /// Sent as [`crate::Event::Command`] after the item is inserted, for
     /// items the host finishes itself (like opening a color picker).
     pub command: Option<u32>,
+    /// A function: accepting it adds `()` with the caret between them (unless
+    /// a `(` already follows) and opens signature help.
+    pub call: bool,
 }
 
 impl CompletionItem {

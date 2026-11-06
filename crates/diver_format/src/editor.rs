@@ -107,6 +107,7 @@ impl CompletionProvider for FormatLanguage {
                 snippet: c.snippet,
                 swatch: c.swatch.map(|s| s.argb()),
                 command: None,
+                call: false,
             })
             .collect()
     }

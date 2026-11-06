@@ -1183,6 +1183,9 @@ impl State {
 
     fn insert_item(&mut self, item: CompletionItem) {
         let head = self.doc.sels.primary().head;
+        // A call gets its parentheses where none follow the replaced word.
+        let call = item.call && !item.snippet;
+        let parens = |b: &crate::text::Buffer, end: usize| call && b.char_at(end) != Some('(');
         if let Some(range) = item.range.clone().filter(|_| self.suggest.ranged) {
             let insert = item.insert_text.unwrap_or(item.label);
             self.close_suggest();
@@ -1192,14 +1195,18 @@ impl State {
             if item.snippet {
                 return self.insert_snippet(start..end, &insert);
             }
-            let tx = Transaction::new(vec![Edit::new(start, end, insert.clone())]);
-            let caret = start + insert.len();
+            let (text, caret) = match parens(&self.doc.buffer, end) {
+                true => (format!("{insert}()"), start + insert.len() + 1),
+                false => (insert.clone(), start + insert.len()),
+            };
+            let opened = caret > start + insert.len();
+            let tx = Transaction::new(vec![Edit::new(start, end, text)]);
             let sels = Selections::single(Selection::cursor(caret));
             self.edit(commands::Outcome { tx, sels }, EditKind::Other);
             if item.retrigger {
                 self.open_ranged();
             }
-            if self.opts.parameter_hints && insert.ends_with('(') {
+            if self.opts.parameter_hints && (opened || insert.ends_with('(')) {
                 self.update_signature(true);
             }
             return;
@@ -1217,16 +1224,24 @@ impl State {
             return;
         }
         let b = &self.doc.buffer;
+        let mut opened = false;
         let o = commands::per_selection(&self.doc.sels, |s| {
             let h = s.head;
             let start = if h >= n && b.slice(h - n, h) == prefix { h - n } else { h };
-            commands::Replace::caret_after(start.min(s.start()), s.end(), insert.clone())
+            let mut replace = commands::Replace::caret_after(start.min(s.start()), s.end(), insert.clone());
+            if parens(b, s.end()) {
+                replace.text.push_str("()");
+                replace.anchor += 1;
+                replace.head += 1;
+                opened = true;
+            }
+            replace
         });
         self.edit(o, EditKind::Other);
         if item.retrigger {
             self.open_suggest(None, true);
         }
-        if self.opts.parameter_hints && insert.ends_with('(') {
+        if self.opts.parameter_hints && (opened || insert.ends_with('(')) {
             self.update_signature(true);
         }
     }

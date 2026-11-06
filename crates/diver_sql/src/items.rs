@@ -44,6 +44,9 @@ pub struct CompletionItem {
     pub documentation: Option<String>,
     /// Lower first.
     pub sort_key: u32,
+    /// A function at a place it is called, which takes its `(…)` next. Not
+    /// a name that DROP or COMMENT ON refers to.
+    pub call: bool,
 }
 
 /// Rank bands: in-scope columns, then aliases, CTEs and tables, then
@@ -211,6 +214,7 @@ impl Items<'_> {
             detail,
             documentation: None,
             sort_key,
+            call: false,
         });
     }
 
@@ -401,6 +405,7 @@ impl Items<'_> {
                     detail,
                     documentation: f.description.clone(),
                     sort_key: rank::FUNCTION,
+                    call: kind != FunctionKind::Macro,
                 });
             }
         }
@@ -422,6 +427,9 @@ impl Items<'_> {
                     Some("in this script".into()),
                     rank::FUNCTION,
                 );
+                if let Some(item) = self.out.last_mut() {
+                    item.call = kind != FunctionKind::Macro;
+                }
             }
         }
     }

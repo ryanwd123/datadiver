@@ -2030,3 +2030,34 @@ fn f12_goes_to_a_cte_and_f2_renames_it_everywhere() {
     viewer.run_until_parked();
     assert_eq!(sql_text(&viewer), "with totals as (select 1 x) select totals.x from totals");
 }
+
+#[test]
+fn accepting_a_function_adds_its_parentheses_and_shows_its_signature() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    viewer.update(|view, cx| view.new_sql(false, cx));
+    viewer.run_until_parked();
+    let accept = |viewer: &Viewer, text: &str, at: usize| {
+        place(viewer, text, at..at);
+        viewer.update(|view, cx| view.dispatch_command(CommandId::SqlShowCompletions, cx));
+        viewer.run_until_parked();
+        press(viewer, "tab");
+        viewer.run_until_parked();
+    };
+    accept(&viewer, "SELECT roun", 11);
+    assert_eq!(sql_text(&viewer), "SELECT round()");
+    assert_eq!(panel(&viewer, |panel| panel.editor.cursor()), "SELECT round(".len());
+    let (label, _) = panel(&viewer, |panel| panel.editor.signature()).expect("signature help");
+    assert!(label.starts_with("round("), "{label}");
+    // Typing the arguments keeps it open, and a call that has its
+    // parentheses already gets only its name.
+    viewer.input("1.5,");
+    viewer.run_until_parked();
+    assert!(panel(&viewer, |panel| panel.editor.signature()).is_some());
+    press(&viewer, "escape");
+    accept(&viewer, "SELECT roun(2.5)", 11);
+    assert_eq!(sql_text(&viewer), "SELECT round(2.5)");
+    // A table function in FROM is called too.
+    accept(&viewer, "SELECT * FROM read_csv_aut", 27);
+    assert_eq!(sql_text(&viewer), "SELECT * FROM read_csv_auto()");
+}

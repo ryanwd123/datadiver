@@ -114,6 +114,7 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                     snippet: false,
                     swatch: None,
                     command: None,
+                    call: false,
                 })
                 .collect();
         }
@@ -156,6 +157,7 @@ impl code_editor::CompletionProvider for SqlCompletionProvider {
                 snippet: false,
                 swatch: None,
                 command: None,
+                call: item.call,
             })
             .collect();
         // Snippets follow what was typed, after everything else.

@@ -504,6 +504,7 @@ pub fn completions_with(text: &str, offset: usize, catalog: &SqlCatalog, quoting
                 documentation: None,
                 // After the default schema's tables.
                 sort_key: 360,
+                call: false,
             });
         }
     }
