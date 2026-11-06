@@ -344,25 +344,37 @@ impl SqlExecution {
                 .map(|r| format!(" -> {r}"))
                 .unwrap_or_default();
             let signature = format!("{name}({}){returns}", arguments.join(", "));
-            let same = out
-                .last()
-                .is_some_and(|f| f.name == name && f.schema == schema);
-            if !same {
-                out.push(diver_sql::FunctionInfo {
-                    name,
-                    schema,
-                    kind: match kind.as_str() {
-                        "aggregate" => FunctionKind::Aggregate,
-                        "window" => FunctionKind::Window,
-                        "table" | "table_macro" => FunctionKind::Table,
-                        "macro" => FunctionKind::Macro,
-                        _ => FunctionKind::Scalar,
-                    },
-                    signatures: Vec::new(),
-                    description: None,
-                });
-            }
-            let function = out.last_mut().expect("pushed above");
+            let kind = match kind.as_str() {
+                "aggregate" => FunctionKind::Aggregate,
+                "window" => FunctionKind::Window,
+                "table" | "table_macro" => FunctionKind::Table,
+                "macro" => FunctionKind::Macro,
+                _ => FunctionKind::Scalar,
+            };
+            // A name can be both a table function and a scalar one, like
+            // `range`: each gets an entry, so completion offers it in FROM
+            // and in expressions. DuckDB lists the two kinds' rows in no order.
+            let table = kind == FunctionKind::Table;
+            // Rows come ordered by name, so the entries to match are last.
+            let found = out
+                .iter()
+                .rev()
+                .take_while(|f| f.name == name)
+                .position(|f| f.schema == schema && (f.kind == FunctionKind::Table) == table);
+            let index = match found {
+                Some(back) => out.len() - 1 - back,
+                None => {
+                    out.push(diver_sql::FunctionInfo {
+                        name,
+                        schema,
+                        kind,
+                        signatures: Vec::new(),
+                        description: None,
+                    });
+                    out.len() - 1
+                }
+            };
+            let function = &mut out[index];
             if function.signatures.len() < MAX_SIGNATURES && !function.signatures.contains(&signature) {
                 function.signatures.push(signature);
             }
@@ -370,7 +382,31 @@ impl SqlExecution {
                 function.description = description.filter(|d| !d.is_empty());
             }
         }
+        self.add_expression_forms(&mut out);
         Ok(out)
+    }
+
+    /// Adds an expression entry for each table function DuckDB also accepts
+    /// in an expression though it lists no scalar form, like `unnest`. The
+    /// binder decides, so each is bound in `SELECT name()`: a table-only
+    /// function fails saying it's a table function (or that no scalar one
+    /// exists), and any other error means the name binds as an expression.
+    /// Binding runs nothing.
+    fn add_expression_forms(&self, functions: &mut Vec<diver_sql::FunctionInfo>) {
+        use diver_sql::FunctionKind;
+        let expression = |f: &diver_sql::FunctionInfo, name: &str, schema: &Option<String>| {
+            f.kind != FunctionKind::Table && f.name == name && &f.schema == schema
+        };
+        let mut added = Vec::new();
+        for f in functions.iter().filter(|f| f.kind == FunctionKind::Table) {
+            if functions.iter().any(|g| expression(g, &f.name, &f.schema)) {
+                continue;
+            }
+            if expression_binds(&self.connection, &f.name) {
+                added.push(diver_sql::FunctionInfo { kind: FunctionKind::Scalar, ..f.clone() });
+            }
+        }
+        functions.extend(added);
     }
 
     /// The database unqualified names resolve to.
@@ -1039,6 +1075,19 @@ pub fn sql_source_rows(
     }
 }
 
+/// Whether DuckDB's binder takes `name()` in a select list: false when it
+/// says the function is table-only or there's no such scalar function.
+fn expression_binds(connection: &Connection, name: &str) -> bool {
+    let sql = format!("SELECT \"{}\"()", name.replace('"', "\"\""));
+    match connection.prepare(&sql) {
+        Ok(_) => true,
+        Err(error) => {
+            let error = error.to_string();
+            !error.contains("is a table function") && !error.contains("does not exist")
+        }
+    }
+}
+
 /// A DuckDB aggregate function, for the aggregation manager's reference list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AggregateFunction {
@@ -1437,6 +1486,29 @@ mod tests {
         assert!(sequences.contains(&("ser".into(), "ser".into())), "{sequences:?}");
         assert!(sequences.contains(&("other.ids".into(), "other.ids".into())), "{sequences:?}");
         assert!(inserts("SELECT current_setting(").iter().any(|(label, _)| label == "threads"));
+    }
+
+    #[test]
+    fn functions_complete_wherever_duckdb_takes_them() {
+        use crate::domain::sql_editor::completions;
+        let (_dir, service) = service();
+        let catalog = service.sql_catalog().unwrap();
+        let labels = |sql: &str| {
+            completions(sql, sql.len(), &catalog)
+                .into_iter()
+                .map(|c| c.label)
+                .collect::<Vec<_>>()
+        };
+        // `range` is a scalar and a table function, `unnest` a table function
+        // that also binds in a select list, `read_csv` only a table function.
+        let select = labels("select rang");
+        assert!(select.iter().any(|l| l == "range"), "{select:?}");
+        assert!(labels("select unne").iter().any(|l| l == "unnest"));
+        assert!(!labels("select read_cs").iter().any(|l| l == "read_csv"));
+        let from = labels("select * from rang");
+        assert!(from.iter().any(|l| l == "range"), "{from:?}");
+        assert!(labels("select * from unne").iter().any(|l| l == "unnest"));
+        assert!(labels("select * from read_cs").iter().any(|l| l == "read_csv"));
     }
 
     #[test]
