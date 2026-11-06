@@ -5,6 +5,7 @@ pub mod color_picker;
 pub mod editor;
 pub mod hosted_editor;
 pub mod list;
+pub mod rules_highlight;
 pub mod scroll;
 pub mod sql_highlight;
 pub mod tree;

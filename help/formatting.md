@@ -29,7 +29,7 @@ The set applies to the columns you clicked and those the pattern picks; ● mark
 
 Rules are separated by `;` and run in order for each cell of the set's columns. What a later rule sets wins, and `stop` skips the rules after it.
 
-```text
+```rules
 -- A comment.
 if duplicate(c) then bg: #ffc7ce, text: #9c0006;
 if c > "target" then bold, border: 1px green;
@@ -84,7 +84,7 @@ Colors are CSS names, `#rgb`, `#rrggbb`, `#rrggbbaa` or `rgb(r, g, b)`. Icon set
 
 `display(value, format)` shows another value in the cell in place of its own. A list column can show its first item and keep the rest for conditions:
 
-```text
+```rules
 display(c[0]); if c[1] = 'late' then bg: mistyrose
 ```
 
@@ -94,7 +94,7 @@ The optional format is Excel's, such as `'#,##0.00'`, `'0.0%'`, `'$#,##0;($#,##0
 
 `tooltip(value, format)` shows a value while the pointer rests on the cell. It takes the same arguments as `display`, and quoted text in the format shows as written. Each tooltip the rules set adds a line, after the cell's full text when the cell cuts it short:
 
-```text
+```rules
 if c > "target" then tooltip('Over target');
 tooltip("target", '"Target: "#,##0')
 ```

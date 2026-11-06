@@ -9,7 +9,7 @@ use code_editor::markdown::{Block, Inline, Style, parse};
 use crate::ui::hit::Hit;
 use crate::ui::platform::text::{RunStyle, styled_layout};
 use crate::ui::platform::{Canvas, Color, Cursor, Font, Point, Rect, TextLayout, TextOptions, point, rect, text};
-use crate::ui::widgets::{Fonts, colors, scroll, sql_highlight};
+use crate::ui::widgets::{Fonts, colors, rules_highlight, scroll, sql_highlight};
 
 /// Lines longer than this are hard to read, so wider pages keep a margin.
 const MAX_TEXT_WIDTH: f32 = 880.0;
@@ -327,7 +327,13 @@ fn layout(blocks: &[Block], width: f32, font: &Font, mono: &Font) -> Laid {
             }
             Block::Code { lang, text: code } => {
                 let layout = text::layout(code, &code_font, TextOptions::wrapped(width - 28.0));
-                let runs = if lang.is_empty() || lang.eq_ignore_ascii_case("sql") { sql_highlight::runs(code) } else { Vec::new() };
+                let runs = if lang.is_empty() || lang.eq_ignore_ascii_case("sql") {
+                    sql_highlight::runs(code)
+                } else if lang.eq_ignore_ascii_case("rules") {
+                    rules_highlight::runs(code)
+                } else {
+                    Vec::new()
+                };
                 let height = layout.height + 20.0;
                 laid.items.push(Item::Fill { r: rect(0.0, y, width, height), color: colors::STRIPE, radius: 5.0 });
                 laid.items.push(Item::Text { at: point(14.0, y + 10.0), layout, color: colors::FOREGROUND, runs, code: Vec::new() });
