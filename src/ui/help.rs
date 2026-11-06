@@ -65,8 +65,8 @@ pub(crate) fn sections(keymap: &KeymapFile) -> Vec<HelpSection> {
                     spec.context,
                     KeyContext::TableGrid
                         | KeyContext::QueryGrid
-                        | KeyContext::TableSpaceMenu
-                        | KeyContext::QuerySpaceMenu
+                        | KeyContext::TableCommandMenu
+                        | KeyContext::QueryCommandMenu
                 )
                 .then_some(spec.context),
             });
@@ -225,10 +225,10 @@ impl ShortcutsPage {
         let mut y = 0.0;
         ops.push((rect(0.0, y, width, line), Op::Title(section.category.label())));
         y += line + 8.0;
-        if section.category == ActionCategory::SpaceMenu {
+        if section.category == ActionCategory::CommandMenu {
             ops.push((
                 rect(0.0, y, width, line),
-                Op::Muted("Keys apply after opening the Helper menu with Space or Ctrl+K.".into()),
+                Op::Muted("Keys work while the Command menu is open. Space opens the Helper menu, which lists the grid's keys.".into()),
             ));
             y += line + 8.0;
         }
@@ -271,8 +271,8 @@ impl ShortcutsPage {
             ));
             if let Some(context) = row.context {
                 let label = match context {
-                    KeyContext::TableSpaceMenu => "Table Grid",
-                    KeyContext::QuerySpaceMenu => "Query Grid",
+                    KeyContext::TableCommandMenu => "Table Grid",
+                    KeyContext::QueryCommandMenu => "Query Grid",
                     _ => context.label(),
                 };
                 ops.push((

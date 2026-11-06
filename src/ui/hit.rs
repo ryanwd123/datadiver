@@ -65,7 +65,7 @@ pub enum Button {
     ClearSort,
     ClearFilters,
     RemoveValueFilter(usize),
-    SpaceCommand(crate::application::commands::CommandId),
+    CommandMenuItem(crate::application::commands::CommandId),
     /// A command listed in the SQL helper menu.
     SqlHelperCommand(crate::application::commands::CommandId),
     /// A grid shortcut listed in the Helper menu.

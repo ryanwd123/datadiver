@@ -29,7 +29,7 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 
 - **F** freezes columns up to the active one, so they stay in view while you scroll right; **Shift+F** unfreezes all.
 - **Alt+Left** and **Alt+Right** move the selected columns of a table; they move together and stay in view.
-- **Space H** hides the selected columns and **Space Shift+H** chooses which columns show. Hidden columns keep their place, and a `column:` search term still searches them.
+- **Ctrl+K H** hides the selected columns and **Ctrl+K Shift+H** chooses which columns show. Hidden columns keep their place, and a `column:` search term still searches them.
 - **(** and **)** narrow or widen the selected columns. **Recalculate column widths** in the command palette fits every column to its contents again.
 
 ## Number formatting
@@ -46,9 +46,13 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 
 ## The Helper menu
 
-**Space** (or **Ctrl+K**) in the grid opens the Helper menu. It lists keys for the grid's commands, so it doubles as a reminder of them. Press a key to run its command, or click it.
+**Space** in the grid opens the Helper menu. It lists the grid's keys, so it doubles as a reminder of them. They work while the menu is open, and close it; click one to run it. **Space** or **Escape** closes the menu.
 
-| Key after Space | Action |
+## The Command menu
+
+**Ctrl+K** in the grid opens the Command menu, with keys for commands used less often. Press a key to run its command, or click it; **Escape** or **Ctrl+K** closes the menu. Only the menu's own keys work while it is open.
+
+| Key after Ctrl+K | Action |
 | --- | --- |
 | C / Shift+C | Copy / copy as… |
 | S | Save the view |
@@ -67,7 +71,7 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 
 ## Exporting
 
-**Export result to file** (**Space E**) writes the rows on screen, with the search, filters, sort, column order and hidden columns applied. The file name's extension picks the format: `.csv`, `.tsv`, `.parquet`, `.json`, `.ndjson` or `.jsonl`, or `.xlsx`. Text formats can be compressed by adding `.gz` or `.zst`. A query result cut off at the row limit is run again without the limit, so the file is complete.
+**Export result to file** (**Ctrl+K E**) writes the rows on screen, with the search, filters, sort, column order and hidden columns applied. The file name's extension picks the format: `.csv`, `.tsv`, `.parquet`, `.json`, `.ndjson` or `.jsonl`, or `.xlsx`. Text formats can be compressed by adding `.gz` or `.zst`. A query result cut off at the row limit is run again without the limit, so the file is complete.
 
 ## The row limit
 

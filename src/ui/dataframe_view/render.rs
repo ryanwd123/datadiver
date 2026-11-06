@@ -140,15 +140,19 @@ impl DataFrameView {
             self.search_completion
                 .paint(canvas, self.search_input.caret_rect(), font, search_id);
         }
-        if self.space_menu_open {
-            SpaceMenu {
+        if self.space_menu_open || self.command_menu_open {
+            let menu = SpaceMenu {
                 sql: self.session.is_sql(),
                 sql_source: self.sql_source_session(),
                 sql_slicers: self.sql_result_complete,
                 table: self.is_table(),
                 has_sort: !self.session.sort.is_empty(),
+            };
+            if self.space_menu_open {
+                menu.paint(canvas, &fonts, &self.keymap);
+            } else {
+                menu.paint_commands(canvas, &fonts, &self.keymap);
             }
-            .paint(canvas, &fonts, &self.keymap);
         }
         if self.sql_helper_open
             && let Some(panel) = &self.sql_panel

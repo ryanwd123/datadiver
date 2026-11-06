@@ -8,7 +8,7 @@ Make DataDiver comfortable: fonts and themes, your own keys, editor options and 
 
 ## Keymap Editor
 
-**Ctrl+Shift+K** opens the Keymap Editor, to rebind any command. Bindings belong to a context, such as the grid, the search box, the SQL editor or the Helper menu, so one key can do different things in different places. The [Shortcuts](shortcuts) tab of this help always shows your keys as they are bound now.
+**Ctrl+Shift+K** opens the Keymap Editor, to rebind any command. Bindings belong to a context, such as the grid, the search box, the SQL editor or the Command menu, so one key can do different things in different places. The [Shortcuts](shortcuts) tab of this help always shows your keys as they are bound now.
 
 ## Themes and fonts
 

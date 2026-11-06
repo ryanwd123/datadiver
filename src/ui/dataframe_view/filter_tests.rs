@@ -580,8 +580,8 @@ fn hidden_columns_leave_the_grid_and_plain_search_and_persist() {
     let viewer = viewer(repository.clone());
     open(&viewer, FileEntry::Source(path.clone()));
 
-    // Space h hides the active column.
-    press_on_cell(&viewer, 0, 1, "space h");
+    // Ctrl+K h hides the active column.
+    press_on_cell(&viewer, 0, 1, "ctrl-k h");
     assert_eq!(column_names(&viewer), ["name", "city"]);
 
     // Plain search skips the hidden column; a column term still reaches it.
@@ -620,7 +620,7 @@ fn export_writes_the_displayed_rows_and_visible_columns() {
     std::fs::write(&path, "name,note,n\nAda,x,1\nBob,y,2\nCy,x,3\n").unwrap();
     let viewer = viewer(repository(home.path()));
     open(&viewer, FileEntry::Source(path));
-    press_on_cell(&viewer, 0, 1, "space h");
+    press_on_cell(&viewer, 0, 1, "ctrl-k h");
     search(&viewer, "note:x");
     viewer.select(0, 1);
     command(&viewer, CommandId::SortDescending);

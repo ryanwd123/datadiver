@@ -4,7 +4,7 @@ A view saves what you set up on a source, so you can open it again: the search, 
 
 ## Saving views
 
-Press **Ctrl+S** (or **Space S**) to save a view and give it a name. Saved views are listed in **Ctrl+P** and in the database tree, and open with everything as you left it.
+Press **Ctrl+S** (or **Ctrl+K S**) to save a view and give it a name. Saved views are listed in **Ctrl+P** and in the database tree, and open with everything as you left it.
 
 Views store the source's path and the setup, not the data. Opening a view reads its source again, so sharing a view also means making its source available.
 
@@ -32,7 +32,7 @@ Deleting a saved view in the database tree, or with **Ctrl+Delete** in **Ctrl+P*
 
 Actions turn the active row into a lookup: open a web search, a record in an internal site, or a file in another program.
 
-Press **Space X** to show the view's actions, then press an action's key to run it for the active row. With no actions yet, **Space X** (or **Edit view actions** in the command palette) opens the editor, where each action has a one-character key, a description and a command.
+Press **Ctrl+K X** to show the view's actions, then press an action's key to run it for the active row. With no actions yet, **Ctrl+K X** (or **Edit view actions** in the command palette) opens the editor, where each action has a one-character key, a description and a command.
 
 In the command, `{Column}` inserts the active row's value for that column, and `{{` and `}}` insert literal braces.
 

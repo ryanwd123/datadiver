@@ -21,10 +21,9 @@ pub enum KeyContext {
     #[serde(alias = "pivot_grid")]
     QueryGrid,
     Search,
-    SpaceMenu,
-    TableSpaceMenu,
-    #[serde(alias = "pivot_space_menu")]
-    QuerySpaceMenu,
+    CommandMenu,
+    TableCommandMenu,
+    QueryCommandMenu,
     FilePicker,
     GroupBy,
     PivotBy,
@@ -42,9 +41,9 @@ impl KeyContext {
         Self::TableGrid,
         Self::QueryGrid,
         Self::Search,
-        Self::SpaceMenu,
-        Self::TableSpaceMenu,
-        Self::QuerySpaceMenu,
+        Self::CommandMenu,
+        Self::TableCommandMenu,
+        Self::QueryCommandMenu,
         Self::FilePicker,
         Self::GroupBy,
         Self::PivotBy,
@@ -62,9 +61,9 @@ impl KeyContext {
             Self::TableGrid => "table_grid",
             Self::QueryGrid => "query_grid",
             Self::Search => "search",
-            Self::SpaceMenu => "space_menu",
-            Self::TableSpaceMenu => "table_space_menu",
-            Self::QuerySpaceMenu => "query_space_menu",
+            Self::CommandMenu => "command_menu",
+            Self::TableCommandMenu => "table_command_menu",
+            Self::QueryCommandMenu => "query_command_menu",
             Self::FilePicker => "file_picker",
             Self::GroupBy => "group_by",
             Self::PivotBy => "pivot_by",
@@ -83,9 +82,9 @@ impl KeyContext {
             Self::TableGrid => "Table Grid",
             Self::QueryGrid => "Query Grid",
             Self::Search => "Search",
-            Self::SpaceMenu => "Helper Menu",
-            Self::TableSpaceMenu => "Table Helper Menu",
-            Self::QuerySpaceMenu => "Query Helper Menu",
+            Self::CommandMenu => "Command Menu",
+            Self::TableCommandMenu => "Table Command Menu",
+            Self::QueryCommandMenu => "Query Command Menu",
             Self::FilePicker => "File Picker",
             Self::GroupBy => "Group By Panel",
             Self::PivotBy => "Pivot By Panel",
@@ -101,7 +100,7 @@ impl KeyContext {
             Self::TableGrid | Self::QueryGrid => Some(Self::Grid),
             Self::Grid
             | Self::Search
-            | Self::SpaceMenu
+            | Self::CommandMenu
             | Self::FilePicker
             | Self::GroupBy
             | Self::PivotBy
@@ -110,7 +109,7 @@ impl KeyContext {
             | Self::SqlEditor => Some(Self::Application),
             // Only its own keys work while the menu is open.
             Self::SqlHelperMenu => None,
-            Self::TableSpaceMenu | Self::QuerySpaceMenu => Some(Self::SpaceMenu),
+            Self::TableCommandMenu | Self::QueryCommandMenu => Some(Self::CommandMenu),
             Self::Application => Some(Self::Window),
             Self::Window => None,
         }
@@ -134,10 +133,10 @@ pub fn supported_contexts(context: KeyContext) -> Vec<KeyContext> {
             KeyContext::TableGrid,
             KeyContext::QueryGrid,
         ],
-        KeyContext::SpaceMenu => vec![
-            KeyContext::SpaceMenu,
-            KeyContext::TableSpaceMenu,
-            KeyContext::QuerySpaceMenu,
+        KeyContext::CommandMenu => vec![
+            KeyContext::CommandMenu,
+            KeyContext::TableCommandMenu,
+            KeyContext::QueryCommandMenu,
         ],
         _ => vec![context],
     }
@@ -172,6 +171,7 @@ pub enum ActionId {
     Help,
     Info,
     Space,
+    CommandMenu,
     Group,
     Aggregation,
     Pivot,
@@ -222,26 +222,26 @@ pub enum ActionId {
     ToggleThousandsGrouping,
     IncreaseDecimalPrecision,
     DecreaseDecimalPrecision,
-    SpaceCopy,
-    SpaceCopyAs,
-    SpaceSave,
-    SpaceSearch,
-    SpaceAddSlicer,
-    SpaceGroup,
-    SpaceAggregation,
-    SpacePivot,
-    SpaceSortAscending,
-    SpaceSortDescending,
-    SpaceClearSort,
-    SpaceToggleFreeze,
-    SpaceUnfreezeAll,
-    SpaceHideColumns,
-    SpaceChooseColumns,
-    SpaceExport,
-    SpaceToggleTotals,
-    SpaceConditionalFormatting,
-    SpaceRunAction,
-    SpaceReload,
+    CommandMenuCopy,
+    CommandMenuCopyAs,
+    CommandMenuSave,
+    CommandMenuSearch,
+    CommandMenuAddSlicer,
+    CommandMenuGroup,
+    CommandMenuAggregation,
+    CommandMenuPivot,
+    CommandMenuSortAscending,
+    CommandMenuSortDescending,
+    CommandMenuClearSort,
+    CommandMenuToggleFreeze,
+    CommandMenuUnfreezeAll,
+    CommandMenuHideColumns,
+    CommandMenuChooseColumns,
+    CommandMenuExport,
+    CommandMenuToggleTotals,
+    CommandMenuConditionalFormatting,
+    CommandMenuRunAction,
+    CommandMenuReload,
     FilterToValue,
     ExcludeValue,
     PasteFilter,
@@ -322,7 +322,7 @@ pub enum ActionCategory {
     CopyExport,
     FilesViews,
     Application,
-    SpaceMenu,
+    CommandMenu,
     SqlEditor,
     SqlHelperMenu,
 }
@@ -336,7 +336,7 @@ impl ActionCategory {
         Self::CopyExport,
         Self::FilesViews,
         Self::Application,
-        Self::SpaceMenu,
+        Self::CommandMenu,
         Self::SqlEditor,
         Self::SqlHelperMenu,
     ];
@@ -350,7 +350,7 @@ impl ActionCategory {
             Self::CopyExport => "Copy & export",
             Self::FilesViews => "Files & views",
             Self::Application => "Application",
-            Self::SpaceMenu => "Helper menu",
+            Self::CommandMenu => "Command menu: Ctrl+K, then",
             Self::SqlEditor => "SQL editor",
             Self::SqlHelperMenu => "SQL helper menu: Ctrl+K, then",
         }
@@ -1095,7 +1095,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Open Helper menu",
         context: KeyContext::Grid,
         command: Some(CommandId::Space),
-        default_bindings: &["space", "ctrl-k"],
+        default_bindings: &["space"],
+    },
+    ActionSpec {
+        id: ActionId::CommandMenu,
+        category: ActionCategory::Application,
+        name: "Open Command menu",
+        context: KeyContext::Grid,
+        command: Some(CommandId::CommandMenu),
+        default_bindings: &["ctrl-k"],
     },
     ActionSpec {
         id: ActionId::Group,
@@ -1563,178 +1571,178 @@ pub const ACTIONS: &[ActionSpec] = &[
         default_bindings: &["alt-right"],
     },
     ActionSpec {
-        id: ActionId::SpaceCopy,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuCopy,
+        category: ActionCategory::CommandMenu,
         name: "Copy",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Copy),
         default_bindings: &["c"],
     },
     ActionSpec {
-        id: ActionId::SpaceCopyAs,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuCopyAs,
+        category: ActionCategory::CommandMenu,
         name: "Copy as…",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::CopyAs),
         default_bindings: &["shift-c"],
     },
     ActionSpec {
-        id: ActionId::SpaceSave,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuSave,
+        category: ActionCategory::CommandMenu,
         name: "Save",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Save),
         default_bindings: &["s"],
     },
     ActionSpec {
-        id: ActionId::SpaceSearch,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuSearch,
+        category: ActionCategory::CommandMenu,
         name: "Search",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Search),
         default_bindings: &["/"],
     },
     ActionSpec {
-        id: ActionId::SpaceGroup,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuGroup,
+        category: ActionCategory::CommandMenu,
         name: "Group By",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Group),
         default_bindings: &["g"],
     },
     ActionSpec {
-        id: ActionId::SpaceAddSlicer,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuAddSlicer,
+        category: ActionCategory::CommandMenu,
         name: "Add slicer",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::AddSlicer),
         default_bindings: &["z"],
     },
     ActionSpec {
-        id: ActionId::SpaceAggregation,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuAggregation,
+        category: ActionCategory::CommandMenu,
         name: "Aggregations",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Aggregation),
         default_bindings: &["a"],
     },
     ActionSpec {
-        id: ActionId::SpacePivot,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuPivot,
+        category: ActionCategory::CommandMenu,
         name: "Pivot By",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Pivot),
         default_bindings: &["p"],
     },
     ActionSpec {
-        id: ActionId::SpaceSortAscending,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuSortAscending,
+        category: ActionCategory::CommandMenu,
         name: "Sort ascending",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::SortAscending),
         default_bindings: &["["],
     },
     ActionSpec {
-        id: ActionId::SpaceSortDescending,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuSortDescending,
+        category: ActionCategory::CommandMenu,
         name: "Sort descending",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::SortDescending),
         default_bindings: &["]"],
     },
     ActionSpec {
-        id: ActionId::SpaceClearSort,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuClearSort,
+        category: ActionCategory::CommandMenu,
         name: "Clear sort",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::ClearSort),
         default_bindings: &["shift-x"],
     },
     ActionSpec {
-        id: ActionId::SpaceToggleFreeze,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuToggleFreeze,
+        category: ActionCategory::CommandMenu,
         name: "Freeze or unfreeze column",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::ToggleFrozen),
         default_bindings: &["f"],
     },
     ActionSpec {
-        id: ActionId::SpaceUnfreezeAll,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuUnfreezeAll,
+        category: ActionCategory::CommandMenu,
         name: "Unfreeze all columns",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::UnfreezeAll),
         default_bindings: &["shift-f"],
     },
     ActionSpec {
-        id: ActionId::SpaceToggleFreeze,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuToggleFreeze,
+        category: ActionCategory::CommandMenu,
         name: "Freeze or unfreeze column",
-        context: KeyContext::QuerySpaceMenu,
+        context: KeyContext::QueryCommandMenu,
         command: Some(CommandId::ToggleFrozen),
         default_bindings: &["f"],
     },
     ActionSpec {
-        id: ActionId::SpaceUnfreezeAll,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuUnfreezeAll,
+        category: ActionCategory::CommandMenu,
         name: "Unfreeze all columns",
-        context: KeyContext::QuerySpaceMenu,
+        context: KeyContext::QueryCommandMenu,
         command: Some(CommandId::UnfreezeAll),
         default_bindings: &["shift-f"],
     },
     ActionSpec {
-        id: ActionId::SpaceExport,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuExport,
+        category: ActionCategory::CommandMenu,
         name: "Export result to file",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::Export),
         default_bindings: &["e"],
     },
     ActionSpec {
-        id: ActionId::SpaceToggleTotals,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuToggleTotals,
+        category: ActionCategory::CommandMenu,
         name: "Show or hide totals",
-        context: KeyContext::QuerySpaceMenu,
+        context: KeyContext::QueryCommandMenu,
         command: Some(CommandId::ToggleTotals),
         default_bindings: &["t"],
     },
     ActionSpec {
-        id: ActionId::SpaceConditionalFormatting,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuConditionalFormatting,
+        category: ActionCategory::CommandMenu,
         name: "Conditional formatting",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::ConditionalFormatting),
         default_bindings: &["m"],
     },
     ActionSpec {
-        id: ActionId::SpaceHideColumns,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuHideColumns,
+        category: ActionCategory::CommandMenu,
         name: "Hide selected columns",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::HideColumns),
         default_bindings: &["h"],
     },
     ActionSpec {
-        id: ActionId::SpaceChooseColumns,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuChooseColumns,
+        category: ActionCategory::CommandMenu,
         name: "Show or hide columns",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::ChooseColumns),
         default_bindings: &["shift-h"],
     },
     ActionSpec {
-        id: ActionId::SpaceRunAction,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuRunAction,
+        category: ActionCategory::CommandMenu,
         name: "Run view action",
-        context: KeyContext::SpaceMenu,
+        context: KeyContext::CommandMenu,
         command: Some(CommandId::RunAction),
         default_bindings: &["x"],
     },
     ActionSpec {
-        id: ActionId::SpaceReload,
-        category: ActionCategory::SpaceMenu,
+        id: ActionId::CommandMenuReload,
+        category: ActionCategory::CommandMenu,
         name: "Reload",
-        context: KeyContext::TableSpaceMenu,
+        context: KeyContext::TableCommandMenu,
         command: Some(CommandId::Reload),
         default_bindings: &["r"],
     },
@@ -2079,8 +2087,8 @@ mod tests {
     #[test]
     fn helper_menu_reloads_tables_with_r() {
         let map = KeymapFile::default();
-        assert_eq!(map.binding_for("r", KeyContext::TableSpaceMenu), Some(ActionId::SpaceReload));
-        assert_eq!(map.binding_for("r", KeyContext::QuerySpaceMenu), None);
+        assert_eq!(map.binding_for("r", KeyContext::TableCommandMenu), Some(ActionId::CommandMenuReload));
+        assert_eq!(map.binding_for("r", KeyContext::QueryCommandMenu), None);
     }
 
     #[test]
@@ -2107,9 +2115,8 @@ mod tests {
         assert_eq!(map.binding_for("t", KeyContext::TableGrid), None);
         assert_eq!(map.binding_for("t", KeyContext::Search), None);
         for context in [KeyContext::TableGrid, KeyContext::QueryGrid] {
-            for stroke in ["space", "ctrl-k"] {
-                assert_eq!(map.binding_for(stroke, context), Some(ActionId::Space));
-            }
+            assert_eq!(map.binding_for("space", context), Some(ActionId::Space));
+            assert_eq!(map.binding_for("ctrl-k", context), Some(ActionId::CommandMenu));
         }
         assert_eq!(map.binding_for("ctrl-k", KeyContext::SqlEditor), Some(ActionId::SqlHelperMenu));
     }
@@ -2131,8 +2138,8 @@ mod tests {
         );
         assert_eq!(map.binding_for("alt-f", KeyContext::TableGrid), None);
         assert_eq!(
-            map.binding_for("f", KeyContext::TableSpaceMenu),
-            Some(ActionId::SpaceToggleFreeze)
+            map.binding_for("f", KeyContext::TableCommandMenu),
+            Some(ActionId::CommandMenuToggleFreeze)
         );
         assert_eq!(
             map.binding_for("f", KeyContext::QueryGrid),
@@ -2185,14 +2192,7 @@ mod tests {
 
     #[test]
     fn legacy_mode_contexts_keep_custom_bindings() {
-        for (old, context, new) in [
-            ("pivot_grid", KeyContext::QueryGrid, "query_grid"),
-            (
-                "pivot_space_menu",
-                KeyContext::QuerySpaceMenu,
-                "query_space_menu",
-            ),
-        ] {
+        for (old, context, new) in [("pivot_grid", KeyContext::QueryGrid, "query_grid")] {
             assert_eq!(
                 serde_json::from_str::<KeyContext>(&format!("\"{old}\"")).unwrap(),
                 context

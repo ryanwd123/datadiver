@@ -104,6 +104,7 @@ fn main() {
                             | "theme-editor"
                             | "help"
                             | "space"
+                            | "command-menu"
                             | "cache-drop"
                             | "save"
                             | "palette:copy-as"

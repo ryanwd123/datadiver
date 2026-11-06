@@ -4,7 +4,7 @@ Conditional formatting colors cells, makes them bold, and draws data bars, color
 
 ## The formatting window
 
-Press **M** (or **Space M**) in the grid to open the formatting manager. It opens in a window of its own beside the grid, and changes show in the grid as you type. It comes back where you left it.
+Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It opens in a window of its own beside the grid, and changes show in the grid as you type. It comes back where you left it.
 
 A view has any number of **format sets**. Each set is some rules and the columns they apply to; the active column's set opens first. Pick a rule from **Add a preset** to start from a common one.
 

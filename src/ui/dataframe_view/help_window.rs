@@ -34,6 +34,7 @@ impl DataFrameView {
     /// `cx` is the grid's window, which owns the help.
     pub(crate) fn open_help_topic(&mut self, topic: &str, cx: &mut Cx<Self>) {
         self.space_menu_open = false;
+        self.command_menu_open = false;
         self.action_menu_open = false;
         if let Some(window) = &mut self.help_window {
             window.view.show(topic);
@@ -80,8 +81,11 @@ impl DataFrameView {
         if self.sql_helper_open {
             return "sql#the-helper-menu";
         }
-        if self.space_menu_open || self.action_menu_open {
+        if self.space_menu_open {
             return "grid#the-helper-menu";
+        }
+        if self.command_menu_open || self.action_menu_open {
+            return "grid#the-command-menu";
         }
         let Some(focus) = self.focus else { return "start" };
         if let Some(panel) = &self.sql_panel

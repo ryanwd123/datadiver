@@ -43,6 +43,7 @@ pub enum CommandId {
     Help,
     Info,
     Space,
+    CommandMenu,
     Group,
     Aggregation,
     Pivot,
@@ -398,6 +399,12 @@ pub const COMMANDS: &[Command] = &[
         key: "space",
         label: "Helper menu",
         default_binding: Some("space"),
+    },
+    Command {
+        id: CommandId::CommandMenu,
+        key: "command-menu",
+        label: "Command menu",
+        default_binding: Some("ctrl-k"),
     },
     Command {
         id: CommandId::Group,

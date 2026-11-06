@@ -1909,16 +1909,27 @@ fn space_menu_is_scoped_to_grid_and_unknown_keys_leave_it_open() {
 }
 
 #[test]
-fn ctrl_k_opens_and_closes_the_helper_menu() {
+fn ctrl_k_opens_and_closes_the_command_menu() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);
     viewer.render();
     viewer.focus_grid();
     viewer.press("ctrl-k");
-    assert!(viewer.read(|view| view.space_menu_open));
+    assert!(viewer.read(|view| view.command_menu_open && !view.space_menu_open));
     viewer.render();
     viewer.press("ctrl-k");
-    assert!(!viewer.read(|view| view.space_menu_open));
+    assert!(!viewer.read(|view| view.command_menu_open));
+    // From the Helper menu, Ctrl+K goes on to the Command menu.
+    viewer.press("space");
+    viewer.render();
+    viewer.press("ctrl-k");
+    assert!(viewer.read(|view| view.command_menu_open && !view.space_menu_open));
+    // Keys it doesn't have leave it open; Escape closes it.
+    viewer.render();
+    viewer.press("q");
+    assert!(viewer.read(|view| view.command_menu_open));
+    viewer.press("escape");
+    assert!(!viewer.read(|view| view.command_menu_open));
 }
 
 #[test]
@@ -1932,10 +1943,9 @@ fn helper_menu_lists_grid_keys_that_run_when_clicked() {
     assert!(has_button(&viewer, Button::GridKey(ActionId::MoveColumnRight)));
     assert!(!has_button(&viewer, Button::GridKey(ActionId::MoveDown)));
     assert!(!has_button(&viewer, Button::GridKey(ActionId::Space)));
-    // A menu command that a grid key also runs is listed once, as the grid key.
+    // The Command menu's commands are in their own menu.
     assert!(has_button(&viewer, Button::GridKey(ActionId::Copy)));
-    assert!(!has_button(&viewer, Button::SpaceCommand(CommandId::Copy)));
-    assert!(has_button(&viewer, Button::SpaceCommand(CommandId::Save)));
+    assert!(!has_button(&viewer, Button::CommandMenuItem(CommandId::Save)));
     let grouping = numeric_format(&viewer, "sales").unwrap().grouping;
     click_button(&viewer, Button::GridKey(ActionId::ToggleThousandsGrouping));
     assert!(!viewer.read(|view| view.space_menu_open));
@@ -1951,6 +1961,32 @@ fn helper_menu_lists_grid_keys_that_run_when_clicked() {
     press(&viewer, "space shift-0");
     assert!(!viewer.read(|view| view.space_menu_open));
     assert_eq!(column_width(&viewer, "sales"), width + 20.);
+}
+
+#[test]
+fn command_menu_lists_its_commands_and_runs_only_its_keys() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "ctrl-k");
+    for command in [CommandId::Copy, CommandId::Save, CommandId::Export, CommandId::ConditionalFormatting] {
+        assert!(has_button(&viewer, Button::CommandMenuItem(command)), "{command:?}");
+    }
+    assert!(!has_button(&viewer, Button::GridKey(crate::application::keymap::ActionId::Copy)));
+    // A grid key does nothing here.
+    let grouping = numeric_format(&viewer, "sales").unwrap().grouping;
+    press(&viewer, ",");
+    assert!(viewer.read(|view| view.command_menu_open));
+    assert_eq!(numeric_format(&viewer, "sales").unwrap().grouping, grouping);
+    // Its own keys run and close it, as does a click.
+    press(&viewer, "s");
+    assert!(!viewer.read(|view| view.command_menu_open));
+    assert!(viewer.has_dialog());
+    viewer.close_dialog();
+    press(&viewer, "ctrl-k");
+    viewer.render();
+    click_button(&viewer, Button::CommandMenuItem(CommandId::Save));
+    assert!(!viewer.read(|view| view.command_menu_open));
+    assert!(viewer.has_dialog());
 }
 
 fn frozen_count(viewer: &Viewer) -> usize {

@@ -1012,6 +1012,7 @@ impl DataFrameView {
 
     pub(crate) fn open_actions_editor(&mut self, cx: &mut Cx<Self>) {
         self.space_menu_open = false;
+        self.command_menu_open = false;
         self.action_menu_open = false;
         let columns = self.result_column_names();
         let actions = self.view_actions();
@@ -1043,6 +1044,7 @@ impl DataFrameView {
 
     pub(crate) fn open_ai_settings(&mut self, cx: &mut Cx<Self>) {
         self.space_menu_open = false;
+        self.command_menu_open = false;
         self.action_menu_open = false;
         let settings = match self.repository.load_settings() {
             Ok(settings) => settings.ai,

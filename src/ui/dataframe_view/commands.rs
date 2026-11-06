@@ -137,6 +137,7 @@ impl DataFrameView {
             CommandId::OrderBy => self.open_order_by_panel(cx),
             CommandId::AddSlicer => self.open_slicer_picker(cx),
             CommandId::Space => self.open_space_menu(cx),
+            CommandId::CommandMenu => self.open_command_menu(cx),
             CommandId::SortAscending => self.sort_active(false, cx),
             CommandId::SortDescending => self.sort_active(true, cx),
             CommandId::ClearSort => self.clear_sort(cx),
@@ -289,12 +290,20 @@ impl DataFrameView {
 
     fn open_space_menu(&mut self, cx: &mut Cx<Self>) {
         self.space_menu_open = true;
+        self.command_menu_open = false;
         self.focus_grid(cx);
         cx.notify();
     }
 
-    pub(crate) fn select_space_command(&mut self, id: CommandId, cx: &mut Cx<Self>) {
+    fn open_command_menu(&mut self, cx: &mut Cx<Self>) {
+        self.command_menu_open = true;
         self.space_menu_open = false;
+        self.focus_grid(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn select_command_menu_item(&mut self, id: CommandId, cx: &mut Cx<Self>) {
+        self.command_menu_open = false;
         self.dispatch_command(id, cx);
         cx.notify();
     }
@@ -305,8 +314,12 @@ impl DataFrameView {
         self.dispatch_keymap_action(action, cx);
     }
 
-    /// The Helper menu's own keys run their commands; any other grid shortcut
-    /// closes the menu and runs as if it were pressed in the grid.
+    fn grid_context(&self) -> KeyContext {
+        if self.is_table() { KeyContext::TableGrid } else { KeyContext::QueryGrid }
+    }
+
+    /// The Helper menu lists the grid's shortcuts: one of them closes the
+    /// menu and runs as if it were pressed in the grid. Space and Escape close it.
     pub(crate) fn handle_space_key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) {
         let key = event.key.to_ascii_lowercase();
         if matches!(key.as_str(), "space" | "escape") {
@@ -314,41 +327,53 @@ impl DataFrameView {
             cx.notify();
             return;
         }
-        let Ok(stroke) = canonical_keystroke(&event.stroke()) else {
+        let Some(action) = self.menu_key_binding(event, self.grid_context()) else {
             return;
         };
-        let (menu, grid) = if self.is_table() {
-            (KeyContext::TableSpaceMenu, KeyContext::TableGrid)
-        } else {
-            (KeyContext::QuerySpaceMenu, KeyContext::QueryGrid)
-        };
-        // Shifted punctuation also matches the character it types, such as `)`.
-        let produced = event
-            .typed()
-            .filter(|typed| !typed.chars().all(char::is_alphanumeric) && event.modifiers.shift);
-        let lookup = |context: KeyContext| {
-            self.keymap
-                .binding_for(&stroke, context)
-                .or_else(|| produced.and_then(|typed| self.keymap.binding_for(typed, context)))
-        };
-        let menu_command = lookup(menu).and_then(|action| {
+        match action {
+            ActionId::Space => {
+                self.space_menu_open = false;
+                cx.notify();
+            }
+            ActionId::CommandMenu => self.open_command_menu(cx),
+            action => self.select_grid_key(action, cx),
+        }
+    }
+
+    /// The Command menu's keys run their commands; Escape, or the key that
+    /// opened it, closes it, and other keys leave it open.
+    pub(crate) fn handle_command_menu_key(&mut self, event: &KeyEvent, cx: &mut Cx<Self>) {
+        let grid = self.grid_context();
+        if event.key.eq_ignore_ascii_case("escape") || self.menu_key_binding(event, grid) == Some(ActionId::CommandMenu) {
+            self.command_menu_open = false;
+            cx.notify();
+            return;
+        }
+        let menu = if self.is_table() { KeyContext::TableCommandMenu } else { KeyContext::QueryCommandMenu };
+        let command = self.menu_key_binding(event, menu).and_then(|action| {
             KEYMAP_ACTIONS
                 .iter()
                 .find(|spec| {
                     spec.id == action
-                        && matches!(spec.context, KeyContext::SpaceMenu | KeyContext::TableSpaceMenu | KeyContext::QuerySpaceMenu)
+                        && matches!(spec.context, KeyContext::CommandMenu | KeyContext::TableCommandMenu | KeyContext::QueryCommandMenu)
                 })
                 .and_then(|spec| spec.command)
         });
-        if let Some(command) = menu_command {
-            self.select_space_command(command, cx);
-        } else if lookup(grid) == Some(ActionId::Space) {
-            // Any key that opens the menu, such as ctrl-k, also closes it.
-            self.space_menu_open = false;
-            cx.notify();
-        } else if let Some(action) = lookup(grid) {
-            self.select_grid_key(action, cx);
+        if let Some(command) = command {
+            self.select_command_menu_item(command, cx);
         }
+    }
+
+    /// The action `event` is bound to in `context`. Shifted punctuation also
+    /// matches the character it types, such as `)`.
+    fn menu_key_binding(&self, event: &KeyEvent, context: KeyContext) -> Option<ActionId> {
+        let stroke = canonical_keystroke(&event.stroke()).ok()?;
+        let produced = event
+            .typed()
+            .filter(|typed| !typed.chars().all(char::is_alphanumeric) && event.modifiers.shift);
+        self.keymap
+            .binding_for(&stroke, context)
+            .or_else(|| produced.and_then(|typed| self.keymap.binding_for(typed, context)))
     }
 
     pub(crate) fn sort_active(&mut self, descending: bool, cx: &mut Cx<Self>) {
@@ -591,6 +616,7 @@ impl DataFrameView {
             return;
         }
         self.space_menu_open = false;
+        self.command_menu_open = false;
         self.action_menu_open = true;
         self.focus_grid(cx);
         cx.notify();

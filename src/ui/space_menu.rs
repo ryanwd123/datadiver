@@ -1,74 +1,13 @@
-use crate::application::commands::{COMMANDS, CommandId};
+use crate::application::commands::CommandId;
 use crate::application::keymap::{ACTIONS as KEYMAP_ACTIONS, ActionCategory, ActionId, KeyContext, KeymapFile};
 use crate::ui::hit::{Button, Hit};
 use crate::ui::platform::{Align, Canvas, Rect, rect, text};
 use crate::ui::widgets::{Fonts, colors, key_cap};
 
-#[derive(Clone, Copy)]
-struct MenuEntry {
-    key: &'static str,
-    shifted: bool,
-    command: CommandId,
-}
-
-const fn entry(key: &'static str, shifted: bool, command: CommandId) -> MenuEntry {
-    MenuEntry {
-        key,
-        shifted,
-        command,
-    }
-}
-
-const SHARED: &[MenuEntry] = &[
-    entry("c", false, CommandId::Copy),
-    entry("c", true, CommandId::CopyAs),
-    entry("e", false, CommandId::Export),
-    entry("s", false, CommandId::Save),
-    entry("/", false, CommandId::Search),
-    entry("g", false, CommandId::Group),
-    entry("z", false, CommandId::AddSlicer),
-    entry("a", false, CommandId::Aggregation),
-    entry("p", false, CommandId::Pivot),
-    entry("x", false, CommandId::RunAction),
-    entry("m", false, CommandId::ConditionalFormatting),
-];
-
-const TABLE: &[MenuEntry] = &[
-    entry("[", false, CommandId::SortAscending),
-    entry("]", false, CommandId::SortDescending),
-    entry("x", true, CommandId::ClearSort),
-    entry("f", false, CommandId::ToggleFrozen),
-    entry("f", true, CommandId::UnfreezeAll),
-    entry("h", false, CommandId::HideColumns),
-    entry("h", true, CommandId::ChooseColumns),
-    entry("r", false, CommandId::Reload),
-];
-
-const QUERY: &[MenuEntry] = &[
-    entry("t", false, CommandId::ToggleTotals),
-    // Shown for SQL views only.
-    entry("f", false, CommandId::ToggleFrozen),
-    entry("f", true, CommandId::UnfreezeAll),
-];
-
-fn entries(table: bool, has_sort: bool) -> impl Iterator<Item = MenuEntry> {
-    SHARED
-        .iter()
-        .chain(table.then_some(TABLE).into_iter().flatten())
-        .chain((!table).then_some(QUERY).into_iter().flatten())
-        .copied()
-        .filter(move |entry| has_sort || entry.command != CommandId::ClearSort)
-}
-
-pub fn command_for_key(key: &str, shifted: bool, table: bool) -> Option<CommandId> {
-    entries(table, true)
-        .find(|entry| entry.key == key && entry.shifted == shifted)
-        .map(|entry| entry.command)
-}
-
-/// The Helper menu, opened with Space: the grid's own shortcuts on top, which
-/// also work while the menu is open, and below them the commands only the
-/// menu's keys run.
+/// The grid's two key menus. The Helper menu, opened with Space, lists the
+/// grid's own shortcuts, which also work while it is open. The Command menu,
+/// opened with Ctrl+K, has keys for commands used less often, which work
+/// only while it is open.
 pub struct SpaceMenu {
     pub sql: bool,
     /// A saved SQL source, whose rows views can be built on.
@@ -78,7 +17,7 @@ pub struct SpaceMenu {
     pub has_sort: bool,
 }
 
-/// One line of the menu: a label, its keys, and what a click does.
+/// One line of a menu: a label, its keys, and what a click does.
 struct Item {
     label: &'static str,
     strokes: Vec<String>,
@@ -89,7 +28,7 @@ const COLUMN_WIDTH: f32 = 290.0;
 const MIN_COLUMN_WIDTH: f32 = 240.0;
 
 impl SpaceMenu {
-    /// Whether the view offers `command`; menu entries and grid keys share this.
+    /// Whether the view offers `command`; both menus share this.
     fn offers(&self, command: CommandId) -> bool {
         // Pivot views freeze their group-by columns themselves.
         if !self.table && !self.sql && matches!(command, CommandId::ToggleFrozen | CommandId::UnfreezeAll) {
@@ -111,12 +50,6 @@ impl SpaceMenu {
                     | CommandId::DrillDown
                     | CommandId::DrillDownNewWindow
             )
-    }
-
-    fn shown(&self) -> Vec<MenuEntry> {
-        entries(self.table, self.has_sort)
-            .filter(|entry| self.offers(entry.command))
-            .collect()
     }
 
     /// The grid's bound shortcuts, leaving out moving the cursor and the
@@ -155,144 +88,125 @@ impl SpaceMenu {
         items
     }
 
-    /// The menu's own commands, leaving out those a grid key already runs,
-    /// since grid keys work while the menu is open.
-    fn menu_items(&self, keymap: &KeymapFile, grid_items: &[Item]) -> Vec<Item> {
-        let context = if self.table {
-            KeyContext::TableSpaceMenu
-        } else {
-            KeyContext::QuerySpaceMenu
-        };
-        let grid_commands: Vec<CommandId> = grid_items
+    /// The Command menu's commands that the view offers, in the keymap's order.
+    fn command_items(&self, keymap: &KeymapFile) -> Vec<Item> {
+        let context = if self.table { KeyContext::TableCommandMenu } else { KeyContext::QueryCommandMenu };
+        KEYMAP_ACTIONS
             .iter()
-            .filter_map(|item| match item.button {
-                Button::GridKey(action) => KEYMAP_ACTIONS.iter().find(|spec| spec.id == action).and_then(|spec| spec.command),
-                _ => None,
-            })
-            .collect();
-        self.shown()
-            .into_iter()
-            .filter(|entry| !grid_commands.contains(&entry.command))
-            .map(|entry| Item {
-                label: COMMANDS
-                    .iter()
-                    .find(|command| command.id == entry.command)
-                    .map_or("Command", |command| command.label),
-                strokes: menu_action(entry.command)
-                    .map(|action| keymap.bindings_for(action, context).into_iter().map(|(stroke, _)| stroke).collect())
-                    .unwrap_or_default(),
-                button: Button::SpaceCommand(entry.command),
+            .filter(|spec| spec.context == KeyContext::CommandMenu || spec.context == context)
+            .filter_map(|spec| {
+                let command = spec.command.filter(|command| self.offers(*command))?;
+                let strokes: Vec<String> = keymap
+                    .bindings_for(spec.id, spec.context)
+                    .into_iter()
+                    .map(|(stroke, _)| stroke)
+                    .collect();
+                (!strokes.is_empty()).then_some(Item {
+                    label: spec.name,
+                    strokes,
+                    button: Button::CommandMenuItem(command),
+                })
             })
             .collect()
     }
 
+    /// The Helper menu: every grid shortcut.
     pub fn paint(&self, canvas: &mut Canvas<Hit>, fonts: &Fonts, keymap: &KeymapFile) {
-        let font = &fonts.ui;
-        let title_font = font.semibold();
-        let line = text::line_height(font);
-        let row_height = line + 6.0;
-        let grid_items = self.grid_items(keymap);
-        let menu_items = self.menu_items(keymap, &grid_items);
-        let sections = [
-            ("Grid keys", "work in the grid and in this menu", grid_items),
-            ("Menu keys", "work only while this menu is open", menu_items),
-        ];
-        // The fewest columns that fit the window; each section fills down its columns.
-        let room = (canvas.width - 16.0).max(MIN_COLUMN_WIDTH + 16.0);
-        let max_columns = (((room - 16.0) / MIN_COLUMN_WIDTH).floor() as usize).clamp(1, 3);
-        let height_for = |columns: usize| {
-            let rows: usize = sections.iter().map(|(_, _, items)| 1 + items.len().div_ceil(columns)).sum();
-            16.0 + row_height * (1 + rows) as f32 + 8.0 * sections.len() as f32
-        };
-        let max_height = (canvas.height - 48.0).max(120.0);
-        let columns = (1..=max_columns)
-            .find(|columns| height_for(*columns) <= max_height)
-            .unwrap_or(max_columns);
-        let column_width = ((room - 16.0) / columns as f32).min(COLUMN_WIDTH);
-        let width = column_width * columns as f32 + 16.0;
-        let height = height_for(columns).min(max_height);
-        let menu = rect(canvas.width - 8.0 - width, canvas.height - 30.0 - height, width, height);
-        draw_popup(canvas, menu);
-        canvas.push_clip(menu);
-        canvas.text(rect(menu.x + 16.0, menu.y + 8.0, width - 32.0, row_height), "Helper Menu", &title_font, colors::FOREGROUND, Align::Left);
-        let mut y = menu.y + 8.0 + row_height;
-        for (title, hint, items) in &sections {
-            y += 8.0;
-            let title_width = text::measure(title, &title_font).0;
-            canvas.text(rect(menu.x + 16.0, y, title_width + 4.0, row_height), title, &title_font, colors::MUTED, Align::Left);
-            canvas.text(
-                rect(menu.x + 26.0 + title_width, y, (width - title_width - 42.0).max(0.0), row_height),
-                hint,
-                &fonts.small,
-                colors::MUTED,
-                Align::Left,
-            );
-            y += row_height;
-            let rows = items.len().div_ceil(columns).max(1);
-            for (index, item) in items.iter().enumerate() {
-                let row = rect(
-                    menu.x + 8.0 + (index / rows) as f32 * column_width,
-                    y + (index % rows) as f32 * row_height,
-                    column_width - 4.0,
-                    row_height,
-                );
-                paint_item(canvas, fonts, row, item);
-            }
-            y += items.len().div_ceil(columns) as f32 * row_height;
-        }
-        canvas.pop_clip();
+        let more = keymap
+            .bindings_for(ActionId::CommandMenu, KeyContext::Grid)
+            .first()
+            .map(|(stroke, _)| format!(" · {} for more commands", crate::ui::platform::keys::display(stroke)))
+            .unwrap_or_default();
+        let hint = format!("the grid's keys, which work here too{more}");
+        paint_menu(canvas, fonts, "Helper Menu", &hint, &self.grid_items(keymap), false);
+    }
+
+    /// The Command menu, where the Helper menu opens.
+    pub fn paint_commands(&self, canvas: &mut Canvas<Hit>, fonts: &Fonts, keymap: &KeymapFile) {
+        let items = self.command_items(keymap);
+        paint_menu(canvas, fonts, "Command Menu", "press a key to run its command · Esc closes", &items, true);
     }
 }
 
-fn paint_item(canvas: &mut Canvas<Hit>, fonts: &Fonts, row: Rect, item: &Item) {
+/// A titled menu of `items` at the bottom right, in the fewest columns that
+/// fit the window. `keys_first` lines the keys up on the left, for menus
+/// whose keys are single letters to press.
+fn paint_menu(canvas: &mut Canvas<Hit>, fonts: &Fonts, title: &str, hint: &str, items: &[Item], keys_first: bool) {
+    let title_font = fonts.ui.semibold();
+    let row_height = text::line_height(&fonts.ui) + 6.0;
+    let room = (canvas.width - 16.0).max(MIN_COLUMN_WIDTH + 16.0);
+    let max_columns = (((room - 16.0) / MIN_COLUMN_WIDTH).floor() as usize).clamp(1, 3);
+    let height_for = |columns: usize| 24.0 + row_height * (1 + items.len().div_ceil(columns)) as f32;
+    let max_height = (canvas.height - 48.0).max(120.0);
+    let columns = (1..=max_columns)
+        .find(|columns| height_for(*columns) <= max_height)
+        .unwrap_or(max_columns);
+    let title_width = text::measure(title, &title_font).0;
+    // Wide enough for the title and its hint on one line; the columns share
+    // any width the header needs.
+    let header_width = (title_width + text::measure(hint, &fonts.small).0 + 48.0).min(room);
+    let column_width = ((room - 16.0) / columns as f32).min(COLUMN_WIDTH).max((header_width - 16.0) / columns as f32);
+    let width = column_width * columns as f32 + 16.0;
+    let height = height_for(columns).min(max_height);
+    let menu = rect(canvas.width - 8.0 - width, canvas.height - 30.0 - height, width, height);
+    draw_popup(canvas, menu);
+    canvas.push_clip(menu);
+    canvas.text(rect(menu.x + 16.0, menu.y + 8.0, title_width + 4.0, row_height), title, &title_font, colors::FOREGROUND, Align::Left);
+    canvas.text(
+        rect(menu.x + 28.0 + title_width, menu.y + 8.0, (width - title_width - 44.0).max(0.0), row_height),
+        hint,
+        &fonts.small,
+        colors::MUTED,
+        Align::Left,
+    );
+    let top = menu.y + 8.0 + row_height + 4.0;
+    let rows = items.len().div_ceil(columns).max(1);
+    // Labels after the keys start where the widest keys end.
+    let label_x = keys_first.then(|| items.iter().map(|item| keys_width(fonts, item)).fold(40.0, f32::max) + 12.0);
+    for (index, item) in items.iter().enumerate() {
+        let row = rect(
+            menu.x + 8.0 + (index / rows) as f32 * column_width,
+            top + (index % rows) as f32 * row_height,
+            column_width - 4.0,
+            row_height,
+        );
+        paint_item(canvas, fonts, row, item, label_x);
+    }
+    canvas.pop_clip();
+}
+
+/// The width of an item's key caps, with the gaps between them.
+fn keys_width(fonts: &Fonts, item: &Item) -> f32 {
+    item.strokes
+        .iter()
+        .map(|stroke| text::measure(&crate::ui::platform::keys::display(stroke), &fonts.small).0 + 14.0)
+        .sum()
+}
+
+/// Paints one item: its keys at the left and the label `label_x` into the
+/// row, or with `None`, the label at the left and the keys at the right edge.
+fn paint_item(canvas: &mut Canvas<Hit>, fonts: &Fonts, row: Rect, item: &Item, label_x: Option<f32>) {
     if canvas.hovered(row) {
         canvas.fill_rounded(row, 4.0, colors::STRIPE);
     }
-    // Keys sit at the right edge so they line up down a column.
-    let keys_width: f32 = item
-        .strokes
-        .iter()
-        .map(|stroke| text::measure(&crate::ui::platform::keys::display(stroke), &fonts.small).0 + 14.0)
-        .sum();
-    let mut x = row.right() - 4.0 - keys_width;
-    canvas.text(
-        rect(row.x + 8.0, row.y, (x - row.x - 12.0).max(0.0), row.h),
-        item.label,
-        &fonts.ui,
-        colors::FOREGROUND,
-        Align::Left,
-    );
-    for stroke in &item.strokes {
-        x += key_cap(canvas, x, row.y + 3.0, row.h - 6.0, stroke, &fonts.small) + 4.0;
+    let label = |canvas: &mut Canvas<Hit>, x: f32, right: f32| {
+        canvas.text(rect(x, row.y, (right - x).max(0.0), row.h), item.label, &fonts.ui, colors::FOREGROUND, Align::Left);
+    };
+    if let Some(label_x) = label_x {
+        let mut x = row.x + 6.0;
+        for stroke in &item.strokes {
+            x += key_cap(canvas, x, row.y + 3.0, row.h - 6.0, stroke, &fonts.small) + 4.0;
+        }
+        label(canvas, (row.x + label_x).max(x + 4.0), row.right() - 4.0);
+    } else {
+        // Keys sit at the right edge so they line up down a column.
+        let mut x = row.right() - 4.0 - keys_width(fonts, item);
+        label(canvas, row.x + 8.0, x - 4.0);
+        for stroke in &item.strokes {
+            x += key_cap(canvas, x, row.y + 3.0, row.h - 6.0, stroke, &fonts.small) + 4.0;
+        }
     }
     canvas.hit(row, Hit::Button(item.button.clone()));
-}
-
-/// The Helper-menu keymap action that runs `command`.
-fn menu_action(command: CommandId) -> Option<ActionId> {
-    match command {
-        CommandId::Copy => Some(ActionId::SpaceCopy),
-        CommandId::CopyAs => Some(ActionId::SpaceCopyAs),
-        CommandId::Export => Some(ActionId::SpaceExport),
-        CommandId::ToggleTotals => Some(ActionId::SpaceToggleTotals),
-        CommandId::ConditionalFormatting => Some(ActionId::SpaceConditionalFormatting),
-        CommandId::Save => Some(ActionId::SpaceSave),
-        CommandId::Search => Some(ActionId::SpaceSearch),
-        CommandId::AddSlicer => Some(ActionId::SpaceAddSlicer),
-        CommandId::Group => Some(ActionId::SpaceGroup),
-        CommandId::Aggregation => Some(ActionId::SpaceAggregation),
-        CommandId::Pivot => Some(ActionId::SpacePivot),
-        CommandId::SortAscending => Some(ActionId::SpaceSortAscending),
-        CommandId::SortDescending => Some(ActionId::SpaceSortDescending),
-        CommandId::ClearSort => Some(ActionId::SpaceClearSort),
-        CommandId::ToggleFrozen => Some(ActionId::SpaceToggleFreeze),
-        CommandId::UnfreezeAll => Some(ActionId::SpaceUnfreezeAll),
-        CommandId::HideColumns => Some(ActionId::SpaceHideColumns),
-        CommandId::ChooseColumns => Some(ActionId::SpaceChooseColumns),
-        CommandId::RunAction => Some(ActionId::SpaceRunAction),
-        CommandId::Reload => Some(ActionId::SpaceReload),
-        _ => None,
-    }
 }
 
 fn draw_popup(canvas: &mut Canvas<Hit>, menu: Rect) {
@@ -302,7 +216,7 @@ fn draw_popup(canvas: &mut Canvas<Hit>, menu: Rect) {
     canvas.hit(menu, Hit::Surface);
 }
 
-/// The view's actions, opened from the Helper menu. Pressing an action's key runs it.
+/// The view's actions, opened from the Command menu. Pressing an action's key runs it.
 pub fn paint_action_menu(canvas: &mut Canvas<Hit>, fonts: &Fonts, actions: &[(String, String)]) {
     let font = &fonts.ui;
     let line = text::line_height(font);
@@ -338,22 +252,4 @@ pub fn paint_action_menu(canvas: &mut Canvas<Hit>, fonts: &Fonts, actions: &[(St
     canvas.text(row.inset_xy(8.0, 0.0), "Edit actions…", font, colors::MUTED, Align::Left);
     canvas.hit(row, Hit::Button(Button::EditViewActions));
     canvas.pop_clip();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::command_for_key;
-    use crate::application::commands::CommandId;
-
-    #[test]
-    fn space_keys_are_case_sensitive_and_table_commands_are_scoped() {
-        assert_eq!(command_for_key("c", false, false), Some(CommandId::Copy));
-        assert_eq!(command_for_key("c", true, false), Some(CommandId::CopyAs));
-        assert_eq!(command_for_key("g", false, false), Some(CommandId::Group));
-        assert_eq!(command_for_key("z", false, false), Some(CommandId::AddSlicer));
-        assert_eq!(command_for_key("[", false, true), Some(CommandId::SortAscending));
-        assert_eq!(command_for_key("[", false, false), None);
-        assert_eq!(command_for_key("q", false, true), None);
-        assert_eq!(command_for_key("x", false, false), Some(CommandId::RunAction));
-    }
 }

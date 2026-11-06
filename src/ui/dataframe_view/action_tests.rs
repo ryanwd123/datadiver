@@ -11,14 +11,14 @@ fn press_keys(viewer: &Viewer, keys: &str) {
 }
 
 #[test]
-fn space_x_runs_the_keyed_action_for_the_active_row() {
+fn ctrl_k_x_runs_the_keyed_action_for_the_active_row() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("people.csv");
     std::fs::write(&path, "name,city\nAda,London\nO'Brien & Co,New York\n").unwrap();
     let viewer = Viewer::file(&path);
 
     // Without actions, the menu key opens the editor instead.
-    press_keys(&viewer, "space x");
+    press_keys(&viewer, "ctrl-k x");
     assert!(viewer.has_dialog());
     assert!(!viewer.read(|view| view.action_menu_open));
     viewer.close_dialog();
@@ -44,7 +44,7 @@ fn space_x_runs_the_keyed_action_for_the_active_row() {
     });
     viewer.run_until_parked();
 
-    press_keys(&viewer, "space x");
+    press_keys(&viewer, "ctrl-k x");
     assert!(viewer.read(|view| view.action_menu_open));
     // Lowercase m is not the action's key, so the menu stays open.
     press_keys(&viewer, "m");
@@ -60,11 +60,11 @@ fn space_x_runs_the_keyed_action_for_the_active_row() {
         assert!(view.error.is_none(), "{:?}", view.error);
     });
 
-    press_keys(&viewer, "space x b");
+    press_keys(&viewer, "ctrl-k x b");
     let error = viewer.read(|view| view.error.clone()).unwrap();
     assert!(error.contains("Broken") && error.contains("datadiver-missing-program"));
 
-    press_keys(&viewer, "space x escape");
+    press_keys(&viewer, "ctrl-k x escape");
     assert!(!viewer.read(|view| view.action_menu_open));
 
     // The editor's Run button uses the active row too, here the first one.

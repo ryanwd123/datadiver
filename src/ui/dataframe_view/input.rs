@@ -191,6 +191,10 @@ impl DataFrameView {
             self.handle_space_key(event, cx);
             return true;
         }
+        if self.command_menu_open {
+            self.handle_command_menu_key(event, cx);
+            return true;
+        }
         if self.sql_helper_open {
             self.handle_sql_helper_key(event, cx);
             return true;
@@ -404,7 +408,7 @@ impl DataFrameView {
         if self.dialog.is_some() {
             return self.dialog_text(typed, cx);
         }
-        if self.space_menu_open || self.action_menu_open || self.cache_drop_open || self.sql_helper_open {
+        if self.space_menu_open || self.command_menu_open || self.action_menu_open || self.cache_drop_open || self.sql_helper_open {
             return false;
         }
         if focus == Some(self.search_input.id) {
@@ -477,6 +481,10 @@ impl DataFrameView {
         // A click outside the SQL helper menu closes it.
         if self.sql_helper_open && !matches!(hit, Hit::Surface | Hit::Button(Button::SqlHelperCommand(_))) {
             self.sql_helper_open = false;
+        }
+        // So does one outside the grid's Command menu.
+        if self.command_menu_open && !matches!(hit, Hit::Surface | Hit::Button(Button::CommandMenuItem(_))) {
+            self.command_menu_open = false;
         }
         // So does one outside the message log; its own button toggles it.
         if self.notices.log_open && !matches!(hit, Hit::Surface | Hit::Button(Button::ClearNotices | Button::NoticeLog)) {
@@ -564,7 +572,7 @@ impl DataFrameView {
             Button::ClearSort => self.clear_sort(cx),
             Button::ClearFilters => self.clear_filters(cx),
             Button::RemoveValueFilter(index) => self.remove_value_filter(index, cx),
-            Button::SpaceCommand(command) => self.select_space_command(command, cx),
+            Button::CommandMenuItem(command) => self.select_command_menu_item(command, cx),
             Button::SqlHelperCommand(command) => self.select_sql_helper_command(command, cx),
             Button::GridKey(action) => self.select_grid_key(action, cx),
             Button::RunViewAction(index) => self.run_view_action(index, cx),

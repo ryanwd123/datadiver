@@ -621,6 +621,8 @@ pub struct DataFrameView {
     pub(crate) file_loading: bool,
     file_revision: u64,
     pub(crate) space_menu_open: bool,
+    /// The Command menu, opened with Ctrl+K: keys for commands used less often.
+    pub(crate) command_menu_open: bool,
     pub(crate) action_menu_open: bool,
     /// The overlay that adds dropped files to the cache instead of opening them.
     pub(crate) cache_drop_open: bool,
@@ -899,6 +901,7 @@ impl DataFrameView {
             file_loading: false,
             file_revision: 0,
             space_menu_open: false,
+            command_menu_open: false,
             action_menu_open: false,
             cache_drop_open: false,
             keymap,

@@ -407,6 +407,7 @@ impl DataFrameView {
             }
             "theme" | "theme-editor" => self.open_theme_editor(cx),
             "space" => self.dispatch_command(CommandId::Space, cx),
+            "command-menu" => self.dispatch_command(CommandId::CommandMenu, cx),
             "cache-drop" => self.set_cache_drop_open(true, cx),
             "cell-detail" => self.toggle_cell_detail(cx),
             "save" => self.open_save_dialog(cx),

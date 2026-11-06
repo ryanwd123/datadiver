@@ -30,7 +30,7 @@ Messages, such as a finished export or an error, pop up in the top right corner 
 
 Every command is in the **command palette**: press **Ctrl+Shift+P** and type part of its name. Commands that have a key show it, so the palette also teaches the shortcuts.
 
-The **Helper menu** opens with **Space** (or **Ctrl+K**) in the grid. It lists keys for the grid's commands; press one to run it, or click it. In the SQL editor, **Ctrl+K** opens the **SQL Helper** menu instead, with commands that work on the query at the caret.
+The **Helper menu** opens with **Space** in the grid. It lists the grid's keys; press one to run it, or click it. **Ctrl+K** opens the **Command menu**, with keys for commands used less often. In the SQL editor, **Ctrl+K** opens the **SQL Helper** menu instead, with commands that work on the query at the caret.
 
 The [Shortcuts](shortcuts) tab lists every key as it is bound now, including your own changes from the Keymap Editor.
 

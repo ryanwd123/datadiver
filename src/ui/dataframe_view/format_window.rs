@@ -30,6 +30,7 @@ impl DataFrameView {
     /// Opens the manager's window, or brings it forward when it's open.
     pub(crate) fn open_format_manager(&mut self, cx: &mut Cx<Self>) {
         self.space_menu_open = false;
+        self.command_menu_open = false;
         self.action_menu_open = false;
         if let Some(window) = &self.format_window {
             cx.for_window(window.id).activate();

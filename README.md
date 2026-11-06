@@ -46,7 +46,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Reuse your work:** save views, open favorites with **Ctrl+1–9**, go back and forward through history, undo view changes, and restore the previous session.
 - **Copy and export:** copy cells as TSV, CSV, JSON, Python lists, or HTML and Markdown tables, or export the displayed result to CSV, Parquet, JSON, or Excel.
 - **Look things up:** view actions open a web page, internal site, or program for the active row.
-- **Work from the keyboard:** a searchable command palette, a Helper menu (**Space** or **Ctrl+K**) that lists the grid's shortcuts, and a Keymap Editor for custom shortcuts.
+- **Work from the keyboard:** a searchable command palette, a Helper menu (**Space**) that lists the grid's shortcuts, a Command menu (**Ctrl+K**) for less frequent commands, and a Keymap Editor for custom shortcuts.
 - **Built-in help:** **F1** opens a help window on the page about whatever has focus, with a page for each part of the app and the shortcuts as they are bound now.
 - **Make it comfortable:** themes, grid and editor fonts, font size, and independent windows.
 
@@ -117,7 +117,8 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Shortcut | Action |
 | --- | --- |
 | / | Search |
-| Space or Ctrl+K | Open the Helper menu |
+| Space | Open the Helper menu, which lists these keys |
+| Ctrl+K | Open the Command menu |
 | G / A / P / O | Group By / Aggregations / Pivot By / Order By |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
@@ -142,7 +143,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | Ctrl+Shift+C | Copy as… |
 | Ctrl+V | Open table from clipboard |
 
-**Helper menu** (press **Space** or **Ctrl+K**, then the key). The menu also lists the grid keys above, so it doubles as a reminder of them; click any entry to run it.
+**Command menu** (press **Ctrl+K**, then the key; click an entry to run it). **Space** opens the Helper menu instead, which lists the grid keys above as a reminder; they work while it is open.
 
 | Key | Action |
 | --- | --- |
@@ -193,7 +194,7 @@ Search words are highlighted in visible cells; column-scoped words are highlight
 
 ## Slicers
 
-**Add slicer** (**Z**, or **Space Z**) offers three kinds of card:
+**Add slicer** (**Z**, or **Ctrl+K Z**) offers three kinds of card:
 
 - **SQL filter** is always first in the list, and a view can have one. Type any SQL condition (in the file's [engine](#query-engines)) over the source columns and press **Enter**, for example `amount > 100 AND region <> 'Europe'` or `amount % 2 = 0`. The card is not tied to a column.
 - **Value cards** list a column's values when it has at most 1,000 of them. Click, Ctrl+click, or drag to select. The search icon in the card header opens a filter box: type to narrow the list, press **Enter** to select every matching value, and **Esc** to close it. Values are greyed out when no row matches the other slicers and the `=` / `-` filters, but search does not grey them out.
@@ -245,7 +246,7 @@ Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid
 
 ## Conditional formatting
 
-Press **M** (or **Space M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
+Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
 
 ```text
 if duplicate(c) then bg: #ffc7ce, text: #9c0006;
@@ -264,7 +265,7 @@ Views store the source path and the exploration configuration. They reference th
 ## Working with the grid
 
 - **Selection statistics:** the status bar summarizes the selected cells. With several columns selected, **Unique rows** counts distinct combinations and turns green when every selected row is distinct, a quick check that the columns form a unique key.
-- **Columns:** freeze with **F** (**Shift+F** unfreezes all), reorder tables with **Alt+←/→** (the selected columns move together and stay centered in view), hide the selected columns with **Space H**, and choose visible columns with **Space Shift+H**. Hidden columns keep their place in the column order, and a `column:` search term still searches them. **Recalculate column widths** in the command palette refits every column to its contents, headers, and totals.
+- **Columns:** freeze with **F** (**Shift+F** unfreezes all), reorder tables with **Alt+←/→** (the selected columns move together and stay centered in view), hide the selected columns with **Ctrl+K H**, and choose visible columns with **Ctrl+K Shift+H**. Hidden columns keep their place in the column order, and a `column:` search term still searches them. **Recalculate column widths** in the command palette refits every column to its contents, headers, and totals.
 - **Number formatting:** **,** toggles thousands grouping and **<** / **>** change decimal places for every selected column; **(** / **)** narrow or widen them.
 - **Cell detail:** **D** opens a pane beside the grid with the active cell's whole value, following the cursor. JSON objects and arrays are pretty-printed.
 - **Information:** **I** opens the Info dialog with column profiles: nulls, unique count, minimum, maximum, and the five most frequent values for every column, plus the SQL behind the view.
@@ -273,7 +274,7 @@ Views store the source path and the exploration configuration. They reference th
 
 **Ctrl+C** copies the selection as TSV. **Ctrl+Shift+C** chooses a format: TSV (raw or formatted), CSV, JSON records, JSON columns, Python lists, or a formatted HTML or Markdown table, with or without headers. An HTML table pastes as a table into Excel, Word, or an email, and as markup into a text editor.
 
-**Export result to file** (**Space E**) writes the rows on screen, matching the search, filters, sort, column order, and hidden columns. The file extension picks the format: `.csv`, `.tsv`, `.parquet`, `.json`, `.ndjson` / `.jsonl`, or `.xlsx`, with `.gz` or `.zst` compression for text formats. A query result cut off at the row limit is rerun without the limit, so the file is complete.
+**Export result to file** (**Ctrl+K E**) writes the rows on screen, matching the search, filters, sort, column order, and hidden columns. The file extension picks the format: `.csv`, `.tsv`, `.parquet`, `.json`, `.ndjson` / `.jsonl`, or `.xlsx`, with `.gz` or `.zst` compression for text formats. A query result cut off at the row limit is rerun without the limit, so the file is complete.
 
 ## SQL editor
 
@@ -325,11 +326,11 @@ Type **@** to mention a table. When the prompt names tables, only those are desc
 
 ## View actions
 
-Actions turn the active row into a lookup: open a web search, a record in an internal site, or a file in another program. Press **Space** then **X** to show the view's actions, then press an action's key to run it for the active row. With no actions yet, **Space X** (or **Edit view actions** in the command palette) opens the editor, where each action has a single-character key (case-sensitive), a description, and a command.
+Actions turn the active row into a lookup: open a web search, a record in an internal site, or a file in another program. Press **Ctrl+K** then **X** to show the view's actions, then press an action's key to run it for the active row. With no actions yet, **Ctrl+K X** (or **Edit view actions** in the command palette) opens the editor, where each action has a single-character key (case-sensitive), a description, and a command.
 
 In the command, `{Column}` inserts the active row's value for that column, and `{{` / `}}` insert literal braces. Commands starting with `http://` or `https://` open in the browser, with inserted values URL-encoded, for example `https://www.google.com/search?q={Customer}`. Any other command starts a program directly without a shell: the first word is the program, double quotes group an argument (`code "C:/notes/{Id}.md"`), and an inserted value always stays inside its argument. For shell features such as pipes or `start`, write the shell yourself (`cmd /C start "" "{Path}"`).
 
-In the editor, a preview under the command shows it filled in with the active row's values, **Run** tries the command in the form without saving it (each saved action has its own **Run** too), and **Use** loads one of the examples into the form. Actions are saved with the view, so save it (**Space S**) to keep them.
+In the editor, a preview under the command shows it filled in with the active row's values, **Run** tries the command in the form without saving it (each saved action has its own **Run** too), and **Use** loads one of the examples into the form. Actions are saved with the view, so save it (**Ctrl+K S**) to keep them.
 
 ## History and undo
 
