@@ -2192,16 +2192,11 @@ mod tests {
 
     #[test]
     fn legacy_mode_contexts_keep_custom_bindings() {
-        for (old, context, new) in [("pivot_grid", KeyContext::QueryGrid, "query_grid")] {
-            assert_eq!(
-                serde_json::from_str::<KeyContext>(&format!("\"{old}\"")).unwrap(),
-                context
-            );
-            assert_eq!(
-                serde_json::to_string(&context).unwrap(),
-                format!("\"{new}\"")
-            );
-        }
+        assert_eq!(
+            serde_json::from_str::<KeyContext>("\"pivot_grid\"").unwrap(),
+            KeyContext::QueryGrid
+        );
+        assert_eq!(serde_json::to_string(&KeyContext::QueryGrid).unwrap(), "\"query_grid\"");
     }
 
     #[test]
