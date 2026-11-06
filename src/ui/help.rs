@@ -385,9 +385,9 @@ mod tests {
                 .flat_map(|section| &section.rows)
                 .filter(|row| row.description.eq_ignore_ascii_case("Add slicer"))
                 .count(),
-            2
+            1
         );
-        // One direct binding and one distinct Space-menu binding.
+        // The Command menu leaves out commands with a grid key of their own.
         assert_eq!(
             sections[2]
                 .rows
