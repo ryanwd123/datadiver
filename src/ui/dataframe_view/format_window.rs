@@ -83,14 +83,14 @@ impl DataFrameView {
 
     /// The columns rules can name: the grid's first, in its order, then hidden ones.
     fn format_columns(&self) -> Vec<diver_format::Column> {
-        let mut columns = self
-            .format_scope()
-            .map(|scope| crate::application::conditional_format::rule_columns(&scope.schema))
-            .unwrap_or_default();
-        let shown: std::collections::HashMap<&str, usize> =
-            self.session.result.columns.iter().enumerate().map(|(index, column)| (column.0.as_str(), index)).collect();
-        columns.sort_by_key(|column| shown.get(column.name.as_str()).copied().unwrap_or(usize::MAX));
-        columns
+        use crate::application::conditional_format::{grid_order, rule_columns};
+        let columns = self.format_scope().map(|scope| rule_columns(&scope.schema)).unwrap_or_default();
+        grid_order(&columns, &self.shown_column_names()).into_iter().map(|index| columns[index].clone()).collect()
+    }
+
+    /// The grid's columns, in its order.
+    pub(crate) fn shown_column_names(&self) -> Vec<String> {
+        self.session.result.columns.iter().map(|column| column.0.clone()).collect()
     }
 
     /// Redraws the manager's window when what it shows has changed, such as

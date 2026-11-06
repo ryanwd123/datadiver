@@ -54,6 +54,8 @@ polars = { version = "0.55.2", default-features = false, features = [
     "interpolate", "repeat_by", "month_start", "month_end", "offset_by", "zip_with", "cov",
     "top_k", "index_of", "string_normalize", "find_many", "list_to_struct",
 ] }
+# Already built for Polars; format sets pick columns by regex.
+regex = "1"
 rust_xlsxwriter = "0.100"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }

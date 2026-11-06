@@ -971,6 +971,7 @@ mod tests {
             formats: Some(vec![crate::domain::documents::ConditionalFormat {
                 rules: "if c > 100 then bold".into(),
                 columns: vec!["amount".into()],
+                selector: String::new(),
             }]),
             file: None,
         };

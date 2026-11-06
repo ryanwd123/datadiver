@@ -77,7 +77,20 @@ pub struct FormatManager {
     pub(crate) colors_open: bool,
     pub(crate) picker: ColorPicker,
     pub(crate) hex: Editor,
+    /// The selected set's column pattern.
+    pub(crate) selector: Editor,
+    /// What the selected set's pattern picks from which names, so painting
+    /// doesn't match it again until one of them changes.
+    matched: RefCell<Option<SelectorMatch>>,
     events: Vec<FormatManagerEvent>,
+}
+
+/// A pattern matched against column names: the indices it picks, or what
+/// is wrong with it.
+struct SelectorMatch {
+    pattern: String,
+    names: Vec<String>,
+    picked: Result<Vec<usize>, String>,
 }
 
 impl FormatManager {
@@ -89,10 +102,14 @@ impl FormatManager {
         columns: Vec<diver_format::Column>,
         active: Option<String>,
     ) -> Self {
-        let selected = match active.as_ref().and_then(|name| formats.iter().position(|f| f.columns.contains(name))) {
+        let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
+        let applies = |format: &ConditionalFormat, name: &String| {
+            format.targets(&names).into_iter().any(|index| names[index] == name.as_str())
+        };
+        let selected = match active.as_ref().and_then(|name| formats.iter().position(|f| applies(f, name))) {
             Some(index) => index,
             None if formats.is_empty() || active.is_some() => {
-                formats.push(ConditionalFormat { rules: String::new(), columns: active.into_iter().collect() });
+                formats.push(ConditionalFormat { rules: String::new(), columns: active.into_iter().collect(), ..Default::default() });
                 formats.len() - 1
             }
             None => 0,
@@ -115,6 +132,8 @@ impl FormatManager {
             colors_open: false,
             picker,
             hex,
+            selector: Editor::single_line().with_placeholder(r#"Pick by name: 2021..2025, "Region", /^q\d/, -total"#),
+            matched: RefCell::new(None),
             events: Vec::new(),
         };
         manager.load_selected();
@@ -130,7 +149,7 @@ impl FormatManager {
     }
 
     pub fn contains(&self, id: WidgetId) -> bool {
-        id == self.editor.id || id == self.hex.id
+        id == self.editor.id || id == self.hex.id || id == self.selector.id
     }
 
     /// Takes in formats and columns changed outside the manager, such as by
@@ -154,7 +173,43 @@ impl FormatManager {
         let text = self.formats.get(self.selected).map(|f| f.rules.clone()).unwrap_or_default();
         self.editor.set_text(&text);
         self.editor.set_selection(text.len()..text.len());
+        let pattern = self.formats.get(self.selected).map(|f| f.selector.clone()).unwrap_or_default();
+        if self.selector.text() != pattern {
+            self.selector.set_text(pattern);
+        }
         self.check();
+    }
+
+    /// The columns (by index) the selected set's pattern picks, or what is
+    /// wrong with the pattern.
+    fn selector_picks(&self) -> Result<Vec<usize>, String> {
+        let pattern = self.formats.get(self.selected).map(|f| f.selector.as_str()).unwrap_or_default();
+        let columns = self.columns.borrow();
+        let mut matched = self.matched.borrow_mut();
+        let current = matched.as_ref().is_some_and(|m| {
+            m.pattern == pattern && m.names.len() == columns.len() && m.names.iter().zip(columns.iter()).all(|(a, b)| *a == b.name)
+        });
+        if !current {
+            let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+            let picked = if pattern.trim().is_empty() {
+                Ok(Vec::new())
+            } else {
+                crate::domain::column_selector::ColumnSelector::parse(pattern).map(|selector| selector.select(&names))
+            };
+            *matched = Some(SelectorMatch { pattern: pattern.to_string(), names, picked });
+        }
+        matched.as_ref().expect("matched above").picked.clone()
+    }
+
+    /// Typing in the pattern input applies it at once.
+    fn selector_changed(&mut self) {
+        let pattern = self.selector.text().to_string();
+        if let Some(format) = self.formats.get_mut(self.selected)
+            && format.selector != pattern
+        {
+            format.selector = pattern;
+            self.changed();
+        }
     }
 
     fn check(&mut self) {
@@ -326,6 +381,21 @@ impl FormatManager {
             self.presets_open = false;
             return true;
         }
+        if *focus == Some(self.selector.id) {
+            // Escape and Enter go back to the rules.
+            if event.is("escape") {
+                self.focus(focus);
+                return true;
+            }
+            let outcome = self.selector.key(event);
+            if outcome.changed {
+                self.selector_changed();
+            }
+            if outcome.submit {
+                self.focus(focus);
+            }
+            return outcome.handled || outcome.submit;
+        }
         if *focus == Some(self.hex.id) {
             // Escape goes back to the rules rather than closing the window.
             if event.is("escape") {
@@ -354,6 +424,11 @@ impl FormatManager {
     }
 
     pub fn type_text(&mut self, typed: &str, focus: Option<WidgetId>) -> bool {
+        if focus == Some(self.selector.id) {
+            self.selector.type_text(typed);
+            self.selector_changed();
+            return true;
+        }
         if focus == Some(self.hex.id) {
             self.hex.type_text(typed);
             self.hex_changed();
@@ -418,6 +493,13 @@ impl FormatManager {
                     self.picked(false);
                 }
             }
+            Hit::Editor(id, part) if *id == self.selector.id => {
+                if *focus != Some(self.selector.id) {
+                    self.editor.seal_undo();
+                }
+                self.selector.mouse_down(*part, pos, clicks, modifiers.shift);
+                *focus = Some(self.selector.id);
+            }
             Hit::Editor(id, part) if *id == self.hex.id => {
                 if *focus != Some(self.hex.id) {
                     self.editor.seal_undo();
@@ -448,6 +530,8 @@ impl FormatManager {
             }
         } else if self.hex.is_dragging() {
             self.hex.mouse_drag(pos);
+        } else if self.selector.is_dragging() {
+            self.selector.mouse_drag(pos);
         } else if self.preset_scroll.dragging()
             && let Some(list) = self.preset_list
         {
@@ -461,6 +545,7 @@ impl FormatManager {
         self.preset_scroll.release();
         self.picker.mouse_up();
         self.hex.mouse_up();
+        self.selector.mouse_up();
         self.editor.mouse_up();
     }
 
@@ -539,7 +624,11 @@ impl FormatManager {
                 .unwrap_or("(no rules yet)");
             let inner = item.inset_xy(8.0, 5.0);
             canvas.text(rect(inner.x, inner.y, inner.w, small_line), summary, small, colors::FOREGROUND, Align::Left);
-            let columns = if format.columns.is_empty() { "no columns".to_string() } else { format.columns.join(", ") };
+            let mut parts = format.columns.clone();
+            if !format.selector.trim().is_empty() {
+                parts.push(format!("matching {}", format.selector.trim()));
+            }
+            let columns = if parts.is_empty() { "no columns".to_string() } else { parts.join(", ") };
             canvas.text(rect(inner.x, inner.y + small_line, inner.w, small_line), &columns, small, colors::MUTED, Align::Left);
             canvas.hit_cursor(item, hit, Cursor::Hand);
         }
@@ -560,6 +649,24 @@ impl FormatManager {
             button(canvas, toggle, label, small, ButtonStyle::Ghost, true, Hit::Button(Button::FormatColorsToggle));
         }
         let applied = self.formats.get(self.selected).map(|f| f.columns.clone()).unwrap_or_default();
+        // The pattern input, and how many columns it picks or what's wrong with it.
+        let picks = self.selector_picks();
+        let id = self.selector.id;
+        let input = column.next(Editor::line_box_height(small));
+        self.selector.paint(canvas, input, small, focus == Some(id), |part| Hit::Editor(id, part));
+        let (status, status_color) = match &picks {
+            Err(problem) => (problem.clone(), colors::DANGER),
+            Ok(_) if self.selector.text().trim().is_empty() => (
+                r#"or click columns · words must all match, "exact" names, a..b runs in grid order, /regex/, -leaves out, | or"#.to_string(),
+                colors::MUTED,
+            ),
+            Ok(picked) => (
+                format!("Matches {} column{} · marked ● below", picked.len(), if picked.len() == 1 { "" } else { "s" }),
+                colors::MUTED,
+            ),
+        };
+        canvas.text(column.next(small_line), &status, small, status_color, Align::Left);
+        let picked = picks.unwrap_or_default();
         let chip_height = (small_line + 8.0).round();
         let names: Vec<String> = self.columns.borrow().iter().map(|c| c.name.clone()).collect();
         let mut x = main.x;
@@ -572,11 +679,12 @@ impl FormatManager {
             }
             let chip = rect(x, y, width, chip_height);
             let on = applied.contains(name);
-            canvas.fill_rounded(chip, chip_height / 2.0, if on { colors::SELECTED } else { colors::STRIPE });
+            let matched = picked.contains(&index);
+            canvas.fill_rounded(chip, chip_height / 2.0, if on || matched { colors::SELECTED } else { colors::STRIPE });
             if on {
                 canvas.stroke_rounded(chip, chip_height / 2.0, colors::SELECTED_STRONG, 1.0);
             }
-            let mark = if on { "✓" } else { "+" };
+            let mark = if on { "✓" } else if matched { "●" } else { "+" };
             canvas.text(rect(chip.x + 8.0, chip.y, 12.0, chip.h), mark, small, colors::MUTED, Align::Left);
             canvas.text(rect(chip.x + 22.0, chip.y, chip.w - 26.0, chip.h), name, small, colors::FOREGROUND, Align::Left);
             canvas.hit_cursor(chip, Hit::Button(Button::FormatColumn(index)), Cursor::Hand);
@@ -594,7 +702,7 @@ impl FormatManager {
             let rules = self.formats.get(self.selected).map(|f| f.rules.trim()).unwrap_or_default();
             let message = if rules.is_empty() {
                 "No rules yet: type one, or add a preset.".to_string()
-            } else if applied.is_empty() {
+            } else if applied.is_empty() && picked.is_empty() {
                 format!("No problems · pick the columns these {} rules apply to", self.rules_running)
             } else {
                 format!("No problems · {} rule{} running", self.rules_running, if self.rules_running == 1 { "" } else { "s" })
@@ -782,7 +890,7 @@ mod tests {
 
     #[test]
     fn opens_on_the_active_columns_set_or_a_new_one_for_it() {
-        let saved = vec![ConditionalFormat { rules: "bold".into(), columns: vec!["region".into()] }];
+        let saved = vec![ConditionalFormat { rules: "bold".into(), columns: vec!["region".into()], ..Default::default() }];
         let opened = manager(saved.clone(), Some("region"));
         assert_eq!((opened.formats.len(), opened.selected, opened.editor.text()), (1, 0, "bold".to_string()));
         let fresh = manager(saved, Some("sales"));
@@ -813,6 +921,31 @@ mod tests {
         manager.new_set(&mut focus);
         manager.toggle_column(0);
         assert_eq!(changes(&mut manager).last().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pattern_picks_columns_and_says_what_is_wrong_with_it() {
+        let saved = vec![ConditionalFormat { rules: "bold".into(), selector: "reg".into(), ..Default::default() }];
+        // The set whose pattern picks the grid's column opens first.
+        let mut manager = manager(saved, Some("region"));
+        assert_eq!((manager.formats.len(), manager.selector.text()), (1, "reg"));
+        assert_eq!(manager.selector_picks(), Ok(vec![1]));
+        let mut focus = Some(manager.selector.id);
+        manager.selector.select_all();
+        manager.type_text("/(", focus);
+        assert!(manager.selector_picks().unwrap_err().contains("isn't closed"));
+        manager.selector.select_all();
+        manager.type_text("/^s/ | \"region\"", focus);
+        assert_eq!(manager.selector_picks(), Ok(vec![0, 1]));
+        let last = changes(&mut manager).pop().unwrap();
+        assert_eq!(last[0].selector, "/^s/ | \"region\"");
+        // Columns changing match the pattern again.
+        manager.sync_scope(&last, vec![Column::new("salary", ValueKind::Number), Column::new("sales", ValueKind::Number)]);
+        assert_eq!(manager.selector_picks(), Ok(vec![0, 1]));
+        assert!(manager.formats[0].selector.contains("region"));
+        // Enter goes back to the rules.
+        manager.key(&KeyEvent::new("enter", Modifiers::NONE, None), &mut focus);
+        assert_eq!(focus, Some(manager.editor.id));
     }
 
     #[test]

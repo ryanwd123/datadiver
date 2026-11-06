@@ -579,7 +579,7 @@ impl DataFrameView {
         let formats = self.session.working.as_ref().map(|view| view.formats.clone()).unwrap_or_default();
         let formatting = match self.format_scope() {
             Some(scope) if !formats.is_empty() => {
-                crate::application::conditional_format::GridFormatting::new(&formats, scope)
+                crate::application::conditional_format::GridFormatting::new(&formats, scope, &self.shown_column_names())
             }
             _ => None,
         };

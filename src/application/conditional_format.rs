@@ -53,6 +53,14 @@ pub fn value_kind(sql_type: &str) -> ValueKind {
     }
 }
 
+/// The indices of `columns` with those `shown` first, in the grid's order.
+pub fn grid_order(columns: &[Column], shown: &[String]) -> Vec<usize> {
+    let at: HashMap<&str, usize> = shown.iter().enumerate().map(|(index, name)| (name.as_str(), index)).collect();
+    let mut order: Vec<usize> = (0..columns.len()).collect();
+    order.sort_by_key(|&index| at.get(columns[index].name.as_str()).copied().unwrap_or(usize::MAX));
+    order
+}
+
 /// The columns rules can name, from a store's schema.
 pub fn rule_columns(schema: &[ColumnSchema]) -> Vec<Column> {
     schema.iter().map(|column| rule_column(column.name.clone(), &column.sql_type)).collect()
@@ -181,17 +189,17 @@ pub struct GridFormatting {
 }
 
 impl GridFormatting {
-    /// `None` when no format applies to a column of `scope`.
-    pub fn new(formats: &[ConditionalFormat], scope: FormatScope) -> Option<Self> {
+    /// `None` when no format applies to a column of `scope`. `shown` is
+    /// the grid's columns in its order, which a format's selector reads;
+    /// the rest follow it in the store's order.
+    pub fn new(formats: &[ConditionalFormat], scope: FormatScope, shown: &[String]) -> Option<Self> {
         let columns = rule_columns(&scope.schema);
+        let order = grid_order(&columns, shown);
+        let names: Vec<&str> = order.iter().map(|&index| columns[index].name.as_str()).collect();
         let programs: Vec<(Program, Vec<usize>)> = formats
             .iter()
             .filter_map(|format| {
-                let targets: Vec<usize> = format
-                    .columns
-                    .iter()
-                    .filter_map(|name| columns.iter().position(|column| column.name == *name))
-                    .collect();
+                let targets: Vec<usize> = format.targets(&names).into_iter().map(|at| order[at]).collect();
                 let program = diver_format::check(&format.rules, &columns).program;
                 (!targets.is_empty() && !program.is_empty()).then_some((program, targets))
             })
@@ -375,7 +383,7 @@ mod tests {
     }
 
     fn format(rules: &str, columns: &[&str]) -> ConditionalFormat {
-        ConditionalFormat { rules: rules.into(), columns: columns.iter().map(|c| c.to_string()).collect() }
+        ConditionalFormat { rules: rules.into(), columns: columns.iter().map(|c| c.to_string()).collect(), ..Default::default() }
     }
 
     #[test]
@@ -385,7 +393,7 @@ mod tests {
             format("scale(black, white)", &["n"]),
             format("if c > \"nope\" then italic", &["n"]),
         ];
-        let mut formatting = GridFormatting::new(&formats, scope()).unwrap();
+        let mut formatting = GridFormatting::new(&formats, scope(), &[]).unwrap();
         assert!(formatting.formats(0) && formatting.formats(1));
         let rows = [row("a", Some("10")), row("b", Some("20"))];
         // Nothing is known yet, so nothing is drawn.
@@ -411,9 +419,29 @@ mod tests {
 
     #[test]
     fn formats_without_columns_or_rules_draw_nothing() {
-        assert!(GridFormatting::new(&[format("bold", &[])], scope()).is_none());
-        assert!(GridFormatting::new(&[format("bolf", &["n"])], scope()).is_none());
-        assert!(GridFormatting::new(&[], scope()).is_none());
+        assert!(GridFormatting::new(&[format("bold", &[])], scope(), &[]).is_none());
+        assert!(GridFormatting::new(&[format("bolf", &["n"])], scope(), &[]).is_none());
+        assert!(GridFormatting::new(&[], scope(), &[]).is_none());
+    }
+
+    #[test]
+    fn selectors_pick_columns_in_the_grids_order() {
+        let picked = |selector: &str, shown: &[&str]| {
+            let format = ConditionalFormat { rules: "bold".into(), selector: selector.into(), ..Default::default() };
+            let shown: Vec<String> = shown.iter().map(|name| name.to_string()).collect();
+            let formatting = GridFormatting::new(&[format], scope(), &shown);
+            [0, 1].map(|column| formatting.as_ref().is_some_and(|f| f.formats(column)))
+        };
+        assert_eq!(picked("n", &["name", "n"]), [true, true]);
+        assert_eq!(picked("\"n\"", &["name", "n"]), [false, true]);
+        assert_eq!(picked("/^n$/ | nam", &["name", "n"]), [true, true]);
+        // A range runs over the columns as the grid shows them.
+        assert_eq!(picked("..\"name\"", &["name", "n"]), [true, false]);
+        assert_eq!(picked("..\"name\"", &["n", "name"]), [true, true]);
+        // A pattern that doesn't parse picks nothing; listed columns still apply.
+        assert_eq!(picked("/(/", &["name", "n"]), [false, false]);
+        let both = ConditionalFormat { rules: "bold".into(), columns: vec!["name".into()], selector: "/(/".into() };
+        assert!(GridFormatting::new(&[both], scope(), &[]).unwrap().formats(0));
     }
 
     #[test]

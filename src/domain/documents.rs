@@ -517,12 +517,35 @@ impl DatabaseView {
 }
 
 /// Conditional formatting: rules in the formatting language (see the
-/// `diver_format` crate) and the columns they format.
+/// `diver_format` crate) and the columns they format: those listed, and
+/// those `selector` picks (see [`crate::domain::column_selector`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConditionalFormat {
     pub rules: String,
     #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selector: String,
+}
+
+impl ConditionalFormat {
+    /// The indices of the `names` (in the grid's order) the format applies
+    /// to; an invalid selector picks nothing more.
+    pub fn targets<S: AsRef<str>>(&self, names: &[S]) -> Vec<usize> {
+        let mut targets: Vec<usize> = self
+            .columns
+            .iter()
+            .filter_map(|column| names.iter().position(|name| name.as_ref() == column))
+            .collect();
+        if !self.selector.trim().is_empty()
+            && let Ok(selector) = crate::domain::column_selector::ColumnSelector::parse(&self.selector)
+        {
+            targets.extend(selector.select(names));
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        targets
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

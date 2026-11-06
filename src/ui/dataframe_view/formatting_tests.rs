@@ -127,10 +127,12 @@ fn every_kind_of_mark_paints() {
                                 sparkline(\"n\", \"n\"); if rank(c) = 1 then bold"
                             .into(),
                         columns: vec!["n".into()],
+                        selector: String::new(),
                     },
                     crate::domain::documents::ConditionalFormat {
                         rules: "icon: check; if c = 'b' then hide_text, border: 1px dotted".into(),
                         columns: vec!["kind".into()],
+                        selector: String::new(),
                     },
                 ]
             })
@@ -242,14 +244,17 @@ fn rules_read_list_items_and_struct_fields_on_both_engines() {
                             rules: "display(c[0] * 1000, '#,##0.0', blank='-'); if c[0] > 1 and c[-1] = 9 then bold"
                                 .into(),
                             columns: vec!["scores".into()],
+                            selector: String::new(),
                         },
                         crate::domain::documents::ConditionalFormat {
                             rules: "if c.inner.n + \"scores\"[0] = 8 or c.kind = 'it''s' then bold".into(),
                             columns: vec!["info".into()],
+                            selector: String::new(),
                         },
                         crate::domain::documents::ConditionalFormat {
                             rules: "if \"info\".\"place name\" = 'a, b' then bold".into(),
                             columns: vec!["id".into()],
+                            selector: String::new(),
                         },
                     ]
                 })

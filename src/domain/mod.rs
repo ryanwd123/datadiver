@@ -2,6 +2,7 @@ pub mod actions;
 pub mod ai;
 pub mod aggregation_sql;
 pub mod cell_detail;
+pub mod column_selector;
 pub mod documents;
 pub mod drill;
 pub mod export;

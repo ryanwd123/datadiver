@@ -246,7 +246,7 @@ Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid
 
 ## Conditional formatting
 
-Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Rules are written in a small language and separated by `;`:
+Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Columns are clicked, or picked by a pattern that keeps up with columns as they change, such as a pivot's: words (`sales`), exact names (`"Order Date"`), regular expressions (`/^q\d$/`), runs of columns in grid order (`"abc".."def"`, or `2021..2025` from the first column containing 2021 through the last containing 2025), `-word` to leave out, and `|` for alternatives. Rules are written in a small language and separated by `;`:
 
 ```text
 if duplicate(c) then bg: #ffc7ce, text: #9c0006;

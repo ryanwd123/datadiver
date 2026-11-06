@@ -689,7 +689,7 @@ impl DataFrameView {
             };
             let numbers: Vec<String> = of(diver_format::ValueKind::Number).collect();
             let format = |rules: &str, column: Option<&String>| {
-                column.map(|column| ConditionalFormat { rules: rules.into(), columns: vec![column.clone()] })
+                column.map(|column| ConditionalFormat { rules: rules.into(), columns: vec![column.clone()], ..Default::default() })
             };
             let formats: Vec<ConditionalFormat> = [
                 format("if duplicate(c) then bg: #ffc7ce, text: #9c0006", of(diver_format::ValueKind::Text).next().as_ref()),

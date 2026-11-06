@@ -8,6 +8,23 @@ Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It ope
 
 A view has any number of **format sets**. Each set is some rules and the columns they apply to; the active column's set opens first. Pick a rule from **Add a preset** to start from a common one.
 
+## Choosing columns
+
+Click columns to add them to a set, or type a pattern above them to pick columns by name. A pattern keeps up with the columns as they change, such as a pivot's. It works like the search box, over the columns in the order the grid shows them:
+
+| Pattern | Picks |
+| --- | --- |
+| `sales` | names containing "sales", ignoring case; several words must all match |
+| `"Order Date"` | the column with exactly that name |
+| `/^q[1-4]$/` | names the regular expression matches, ignoring case |
+| `"abc".."def"` | the columns from `abc` through `def` |
+| `2021..2025` | from the first column containing 2021 through the last containing 2025 |
+| `..total` or `2024..` | from the first column, or through the last |
+| `-total` | leaves out names containing "total" |
+| `north \| south` | names matching either side |
+
+The set applies to the columns you clicked and those the pattern picks; ● marks the picked ones. A pattern with a problem picks nothing until it's fixed.
+
 ## Rules
 
 Rules are separated by `;` and run in order for each cell of the set's columns. What a later rule sets wins, and `stop` skips the rules after it.
