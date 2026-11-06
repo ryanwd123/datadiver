@@ -139,7 +139,17 @@ pub const ACTIONS: &[ActionDef] = &[
         name: "display",
         form: Form::Call,
         signature: "display(<value>, [<format>], blank=)",
-        doc: "Shows `value` in the cell in place of its own value, like `display(c[0])` or               `display(c * 10, '#,##0.00')`. The format is Excel's: `'0.0%'`, `'$#,##0;($#,##0)'`,               `'YYYY-MM-DD'`, `'mmm d, yyyy'`. `blank` is what shows when the value is blank.",
+        doc: "Shows `value` in the cell in place of its own value, like `display(c[0])` or \
+              `display(c * 10, '#,##0.00')`. The format is Excel's: `'0.0%'`, `'$#,##0;($#,##0)'`, \
+              `'YYYY-MM-DD'`, `'mmm d, yyyy'`. `blank` is what shows when the value is blank.",
+    },
+    ActionDef {
+        name: "tooltip",
+        form: Form::Call,
+        signature: "tooltip(<value>, [<format>], blank=)",
+        doc: "Shows `value` while the pointer rests on the cell, like `tooltip('Over budget')` or \
+              `tooltip(\"target\", '\"Target: \"#,##0')`. The format is `display`'s; quoted text \
+              in it shows as written. Each tooltip the rules set adds a line.",
     },
     ActionDef {
         name: "hide_text",
@@ -162,7 +172,7 @@ pub fn action(name: &str) -> Option<&'static ActionDef> {
 /// Whether positional argument `index` of call action `call` is an
 /// expression rather than a single value.
 pub fn takes_expression(call: &str, index: usize) -> bool {
-    call.eq_ignore_ascii_case("display") && index == 0
+    (call.eq_ignore_ascii_case("display") || call.eq_ignore_ascii_case("tooltip")) && index == 0
 }
 
 /// The named arguments of the call actions, and what each takes.
@@ -190,6 +200,7 @@ pub fn named_args(call: &str) -> &'static [(&'static str, ArgValue, &'static str
             ("kind", ArgValue::Kind, "line or bars."),
         ],
         "display" => &[("blank", ArgValue::Expr, "What shows when the value is blank (nothing by default).")],
+        "tooltip" => &[("blank", ArgValue::Expr, "What shows when the value is blank (no tooltip by default).")],
         _ => &[],
     }
 }

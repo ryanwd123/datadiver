@@ -323,3 +323,35 @@ fn the_colors_panel_shows_hides_and_edits_the_color_at_the_caret() {
     let manager = open_manager(&viewer);
     assert!(manager.find(|hit| matches!(hit, Hit::ColorPicker(_, Part::Field))).is_some());
 }
+
+#[test]
+fn a_rule_tooltip_shows_while_the_pointer_rests_on_its_cell() {
+    use crate::ui::hit::GridHit;
+    let home = tempfile::tempdir().unwrap();
+    let path = sales(home.path());
+    let viewer = Viewer::file(&path);
+    viewer.select(0, 2);
+    viewer.render();
+    let manager = open_manager(&viewer);
+    manager.input("if c > 15 then tooltip('Big order'); tooltip(c, '\"Count \"0')");
+    viewer.settle();
+    let tooltip = |row: usize| {
+        viewer.update(|view, _| view.grid.mouse_leave());
+        viewer.render();
+        let cell = viewer.find(|hit| *hit == Hit::Grid(GridHit::Cell { row, column: 2 })).expect("the cell is painted");
+        viewer.hover(cell.center());
+        viewer.advance_clock(std::time::Duration::from_millis(600));
+        viewer.render();
+        viewer.read(|view| view.grid.tooltip.as_ref().map(|tooltip| tooltip.text.clone()))
+    };
+    assert_eq!(tooltip(1).as_deref(), Some("Big order\nCount 30"));
+    assert_eq!(tooltip(0).as_deref(), Some("Count 10"));
+    // Cells of columns without the rule have no tooltip.
+    viewer.update(|view, _| view.grid.mouse_leave());
+    let cell = viewer.find(|hit| *hit == Hit::Grid(GridHit::Cell { row: 1, column: 0 })).unwrap();
+    viewer.hover(cell.center());
+    viewer.advance_clock(std::time::Duration::from_millis(600));
+    viewer.render();
+    assert!(viewer.read(|view| view.grid.tooltip.is_none()));
+
+}

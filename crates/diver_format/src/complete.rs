@@ -399,12 +399,12 @@ fn visual_arg_items(call: &str, index: usize, columns: &[Column]) -> Vec<Complet
             .collect(),
         ("icons", 1) => vec![Completion::new("reverse", CompletionKind::Value, "1").detail("high values get the first icon")],
         ("sparkline", _) => column_items(columns, false),
-        ("display", 0) => expression_items(columns),
-        ("display", 1) => format_items(),
+        ("display" | "tooltip", 0) => expression_items(columns),
+        ("display" | "tooltip", 1) => format_items(),
         _ => Vec::new(),
     };
     let named_from = match call {
-        "scale" | "display" => 2,
+        "scale" | "display" | "tooltip" => 2,
         "sparkline" => 1,
         _ => 1,
     };

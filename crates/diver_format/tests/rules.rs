@@ -82,6 +82,23 @@ fn display_shows_another_value_in_a_format() {
 }
 
 #[test]
+fn tooltips_add_a_line_for_each_rule_that_sets_one() {
+    let tips = |rules: &str| -> Vec<Option<String>> { run(rules, 1).into_iter().map(|s| s.tooltip).collect() };
+    let gap = tips("if c > \"target\" then tooltip('Over target'); tooltip(\"target\", '\"Target: \"#,##0')");
+    assert_eq!(gap[0].as_deref(), Some("Over target\nTarget: 5"));
+    assert_eq!(gap[1].as_deref(), Some("Target: 0"));
+    // A blank value adds no line unless `blank=` says what.
+    assert_eq!(tips("tooltip(c)")[3], None);
+    assert_eq!(tips("tooltip(c, blank='No sales')")[3].as_deref(), Some("No sales"));
+    // A tooltip leaves the cell's look alone, so it doesn't count as display.
+    let styles = run("tooltip(upper(\"name\"))", 1);
+    assert_eq!(styles[0].display, None);
+    assert_eq!(styles[0].tooltip.as_deref(), Some("ANN"));
+    assert!(messages("tooltip()")[0].contains("needs a value"));
+    assert!(messages("tooltip(c, '0', 'x')")[0].contains("a value and a format"));
+}
+
+#[test]
 fn duplicates_and_blanks() {
     let names = run("if duplicate(c) then bg: mistyrose", 0);
     let shaded: Vec<bool> = names.iter().map(|s| s.background.is_some()).collect();

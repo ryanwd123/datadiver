@@ -239,6 +239,8 @@ pub struct GridView {
     layout: Layout,
     /// Cells drawn cut short in the last frame, which offer their full text.
     overflowing: HashSet<(usize, usize)>,
+    /// The tooltips formatting rules gave cells in the last frame.
+    notes: HashMap<(usize, usize), String>,
     hover: Option<(usize, usize)>,
     hover_task: Option<Task>,
     pub(crate) tooltip: Option<CellTooltip>,
@@ -371,6 +373,7 @@ impl GridView {
             formatting_generation: 0,
             layout: Layout::default(),
             overflowing: HashSet::new(),
+            notes: HashMap::new(),
             hover: None,
             hover_task: None,
             tooltip: None,
@@ -1169,7 +1172,7 @@ impl GridView {
     }
 
     /// Tracks the hovered cell, showing its full text after a pause when it
-    /// is cut short.
+    /// is cut short, and the tooltip its formatting gives it.
     pub fn mouse_move<V: GridHost>(&mut self, hit: Option<GridHit>, cx: &mut Cx<V>) {
         let cell = match hit {
             Some(GridHit::Cell { row, column }) => Some((row, column)),
@@ -1192,7 +1195,7 @@ impl GridView {
             cx.notify();
         }
         self.hover_task = None;
-        let Some((row, column)) = cell.filter(|cell| self.overflowing.contains(cell)) else {
+        let Some((row, column)) = cell.filter(|cell| self.overflowing.contains(cell) || self.notes.contains_key(cell)) else {
             return;
         };
         let revision = self.result.result_revision;
@@ -1219,7 +1222,17 @@ impl GridView {
             .first()
             .and_then(|cached| cached.values.get(self.result.column_indices[column]))
             .and_then(Option::as_deref);
-        let text = display_cell(value, &self.result.dtypes[column], self.formats[column], usize::MAX);
+        // The full value when the cell cuts it short, then the rules' note.
+        let full = self
+            .overflowing
+            .contains(&(row, column))
+            .then(|| display_cell(value, &self.result.dtypes[column], self.formats[column], usize::MAX));
+        let text = match (full, self.notes.get(&(row, column))) {
+            (Some(full), Some(note)) => format!("{full}\n\n{note}"),
+            (Some(full), None) => full,
+            (None, Some(note)) => note.clone(),
+            (None, None) => return,
+        };
         self.tooltip = Some(CellTooltip {
             row,
             column,
@@ -1537,6 +1550,7 @@ impl GridView {
         canvas.fill(rect(bounds.x, header.bottom() - 1.0, bounds.w, 1.0), grid_border);
         // Rows.
         self.overflowing.clear();
+        self.notes.clear();
         canvas.hit(rows_area, Hit::Grid(GridHit::Body));
         if row_count == 0 {
             canvas.text(
@@ -1699,6 +1713,9 @@ impl GridView {
                         }
                         if hidden || layout.is_trimmed() {
                             self.overflowing.insert((row, column));
+                        }
+                        if let Some(note) = style.as_ref().and_then(|style| style.tooltip.clone()) {
+                            self.notes.insert((row, column), note);
                         }
                         canvas.hit(cell, Hit::Grid(GridHit::Cell { row, column }));
                     }

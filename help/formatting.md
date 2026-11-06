@@ -57,6 +57,8 @@ Whole-column tests count the rows the slicers and filters leave, not a search's.
 | `bar(…)` | `bar(green, red, fill=gradient, min=, max=, by=)` |
 | `icons(…)` | `icons(arrows, reverse, low=33%, high=67%)` |
 | `sparkline(…)` | `sparkline("q1", "q2", "q3", kind=bars)` or `sparkline(c)` |
+| `display(…)` | `display(c[0])`, `display(c, '#,##0.00', blank='-')` |
+| `tooltip(…)` | `tooltip('Over target')`, `tooltip("target", '"Target: "#,##0')` |
 | `hide_text`, `stop` | `bar(blue), hide_text` |
 
 Colors are CSS names, `#rgb`, `#rrggbb`, `#rrggbbaa` or `rgb(r, g, b)`. Icon sets for `icons()` are arrows, triangles, traffic, checks, flags, stars and signal.
@@ -70,6 +72,15 @@ display(c[0]); if c[1] = 'late' then bg: mistyrose
 ```
 
 The optional format is Excel's, such as `'#,##0.00'`, `'0.0%'`, `'$#,##0;($#,##0)'`, `'#,##0,"K"'`, `'YYYY-MM-DD'` or `'mmm d, yyyy h:mm AM/PM'`. `blank='-'` sets what shows when the value is blank. Copying and search still use the cell's own value.
+
+## Tooltips
+
+`tooltip(value, format)` shows a value while the pointer rests on the cell. It takes the same arguments as `display`, and quoted text in the format shows as written. Each tooltip the rules set adds a line, after the cell's full text when the cell cuts it short:
+
+```text
+if c > "target" then tooltip('Over target');
+tooltip("target", '"Target: "#,##0')
+```
 
 ## Help while typing
 

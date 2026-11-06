@@ -59,6 +59,7 @@ bar(steelblue, fill=gradient)
 | `icons(…)` | `icons(arrows, reverse, low=33%, high=67%)` (arrows, triangles, traffic, checks, flags, stars, signal) |
 | `sparkline(…)` | `sparkline("q1", "q2", "q3", color=steelblue, kind=bars)` or `sparkline(c)` for a list column |
 | `display(…)` | `display(c[0])`, `display(c * 10, '#,##0.00')`, `display(c, 'mmm d, yyyy', blank='-')` |
+| `tooltip(…)` | `tooltip('Over target')`, `tooltip("target", '"Target: "#,##0')`: a line shown while the pointer rests on the cell |
 | `hide_text`, `stop` | `bar(blue), hide_text` |
 
 Colors are the CSS names, `#rgb`, `#rrggbb`, `#rrggbbaa` or `rgb(r, g, b)`.

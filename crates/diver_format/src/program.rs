@@ -173,11 +173,12 @@ pub enum Op {
     Bar(BarSpec),
     Sparkline(SparkSpec),
     Display(DisplaySpec),
+    Tooltip(DisplaySpec),
     HideText,
     Stop,
 }
 
-/// `display(value, format, blank=)`.
+/// `display(value, format, blank=)`, and `tooltip(…)`, which takes the same.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplaySpec {
     pub value: Cx,
@@ -289,7 +290,7 @@ impl Program {
                         range(&mut add, s.by, &[&s.min, &s.mid, &s.max])
                     }
                     Ok(Op::Bar(b)) => range(&mut add, b.by, &[&b.min, &b.max]),
-                    Ok(Op::Display(d)) => {
+                    Ok(Op::Display(d) | Op::Tooltip(d)) => {
                         walk(&d.value, &mut add);
                         if let Some(blank) = &d.blank {
                             walk(blank, &mut add);
@@ -345,6 +346,18 @@ fn apply(env: &Env, ops: &[Op], style: &mut CellStyle) -> bool {
             Op::Bar(spec) => style.bar = env.bar(spec).or(style.bar),
             Op::Sparkline(spec) => style.sparkline = Some(env.sparkline(spec)),
             Op::Display(spec) => style.display = Some(env.display(spec)),
+            Op::Tooltip(spec) => {
+                let line = env.display(spec);
+                if !line.is_empty() {
+                    match &mut style.tooltip {
+                        Some(text) => {
+                            text.push('\n');
+                            text.push_str(&line);
+                        }
+                        None => style.tooltip = Some(line),
+                    }
+                }
+            }
             Op::HideText => style.hide_text = true,
             Op::Stop => stop = true,
         }

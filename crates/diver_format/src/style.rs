@@ -67,6 +67,9 @@ pub struct CellStyle {
     pub sparkline: Option<Sparkline>,
     /// Text shown in place of the cell's value, from `display(…)`.
     pub display: Option<String>,
+    /// Shown while the pointer rests on the cell, from `tooltip(…)`: a line
+    /// for each tooltip the rules set.
+    pub tooltip: Option<String>,
     pub hide_text: bool,
 }
 

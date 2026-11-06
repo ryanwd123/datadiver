@@ -675,12 +675,13 @@ impl Options<'_, '_, '_> {
                 let bars = self.word("kind", catalog::SPARK_KINDS)? == Some("bars");
                 Some(Op::Sparkline(SparkSpec { columns, color, bars }))
             }
-            "display" => {
+            "display" | "tooltip" => {
+                let example = if name == "display" { "display(c[0]) or display(c, '#,##0.00')" } else { "tooltip('Over budget') or tooltip(\"target\", '\"Target \"#,##0')" };
                 let Some(value) = positional.first() else {
-                    return self.checker.error(span, "`display` needs a value: display(c[0]) or display(c, '#,##0.00')");
+                    return self.checker.error(span, format!("`{name}` needs a value: {example}"));
                 };
                 if let Some(extra) = positional.get(2) {
-                    return self.checker.error(&extra.span, "`display` takes a value and a format");
+                    return self.checker.error(&extra.span, format!("`{name}` takes a value and a format"));
                 }
                 let value = self.checker.expr(value)?;
                 let format = match positional.get(1) {
@@ -697,7 +698,8 @@ impl Options<'_, '_, '_> {
                     None => None,
                 };
                 let blank = self.expr("blank").ok()?;
-                Some(Op::Display(DisplaySpec { value, format, blank }))
+                let spec = DisplaySpec { value, format, blank };
+                Some(if name == "display" { Op::Display(spec) } else { Op::Tooltip(spec) })
             }
             other => unreachable!("visual {other}"),
         }

@@ -256,6 +256,13 @@ impl Viewer {
         self.app.click(self.id, target.center());
     }
 
+    /// Rests the pointer at `pos`.
+    pub fn hover(&self, pos: Point) {
+        self.render();
+        self.app.mouse_move(self.id, pos, false);
+        self.render();
+    }
+
     pub fn click_at(&self, pos: Point) {
         self.app.click(self.id, pos);
     }
