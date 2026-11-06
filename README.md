@@ -147,15 +147,11 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 
 | Key | Action |
 | --- | --- |
-| C / Shift+C | Copy / copy as… |
-| S | Save |
-| / | Search |
-| G / A / P / Z | Group By / Aggregations / Pivot By / Add slicer |
 | E | Export result to file |
-| T | Show or hide totals (queries) |
-| M | Conditional formatting |
 | H / Shift+H | Hide selected columns / show or hide columns (tables) |
 | X | Run view action |
+
+Commands with their own grid key (copy, save, sort, and so on) aren't repeated in the Command menu.
 
 ## Opening data
 
@@ -194,7 +190,7 @@ Search words are highlighted in visible cells; column-scoped words are highlight
 
 ## Slicers
 
-**Add slicer** (**Z**, or **Ctrl+K Z**) offers three kinds of card:
+**Add slicer** (**Z**) offers three kinds of card:
 
 - **SQL filter** is always first in the list, and a view can have one. Type any SQL condition (in the file's [engine](#query-engines)) over the source columns and press **Enter**, for example `amount > 100 AND region <> 'Europe'` or `amount % 2 = 0`. The card is not tied to a column.
 - **Value cards** list a column's values when it has at most 1,000 of them. Click, Ctrl+click, or drag to select. The search icon in the card header opens a filter box: type to narrow the list, press **Enter** to select every matching value, and **Esc** to close it. Values are greyed out when no row matches the other slicers and the `=` / `-` filters, but search does not grey them out.
@@ -246,7 +242,7 @@ Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid
 
 ## Conditional formatting
 
-Press **M** (or **Ctrl+K M**) in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Columns are clicked, or picked by a pattern that keeps up with columns as they change, such as a pivot's: words (`sales`), exact names (`"Order Date"`), regular expressions (`/^q\d$/`), runs of columns in grid order (`"abc".."def"`, or `2021..2025` from the first column containing 2021 through the last containing 2025), `-word` to leave out, and `|` for alternatives. Rules are written in a small language and separated by `;`:
+Press **M** in the grid to open the formatting manager. It opens in a window of its own that you can move and resize beside the grid, and it comes back where you left it relative to the main window. A view has any number of format sets, each rules and the columns they apply to; the active column's set opens first. Columns are clicked, or picked by a pattern that keeps up with columns as they change, such as a pivot's: words (`sales`), exact names (`"Order Date"`), regular expressions (`/^q\d$/`), runs of columns in grid order (`"abc".."def"`, or `2021..2025` from the first column containing 2021 through the last containing 2025), `-word` to leave out, and `|` for alternatives. Rules are written in a small language and separated by `;`:
 
 ```text
 if duplicate(c) then bg: #ffc7ce, text: #9c0006;
@@ -330,7 +326,7 @@ Actions turn the active row into a lookup: open a web search, a record in an int
 
 In the command, `{Column}` inserts the active row's value for that column, and `{{` / `}}` insert literal braces. Commands starting with `http://` or `https://` open in the browser, with inserted values URL-encoded, for example `https://www.google.com/search?q={Customer}`. Any other command starts a program directly without a shell: the first word is the program, double quotes group an argument (`code "C:/notes/{Id}.md"`), and an inserted value always stays inside its argument. For shell features such as pipes or `start`, write the shell yourself (`cmd /C start "" "{Path}"`).
 
-In the editor, a preview under the command shows it filled in with the active row's values, **Run** tries the command in the form without saving it (each saved action has its own **Run** too), and **Use** loads one of the examples into the form. Actions are saved with the view, so save it (**Ctrl+K S**) to keep them.
+In the editor, a preview under the command shows it filled in with the active row's values, **Run** tries the command in the form without saving it (each saved action has its own **Run** too), and **Use** loads one of the examples into the form. Actions are saved with the view, so save it (**Ctrl+S**) to keep them.
 
 ## History and undo
 

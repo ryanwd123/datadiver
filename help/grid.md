@@ -54,15 +54,11 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 
 | Key after Ctrl+K | Action |
 | --- | --- |
-| C / Shift+C | Copy / copy as… |
-| S | Save the view |
-| / | Search |
-| G / A / P / Z | Group By / Aggregations / Pivot By / add a slicer |
 | E | Export the result to a file |
-| T | Show or hide totals |
-| M | Conditional formatting |
-| H / Shift+H | Hide the selected columns / choose columns |
+| H / Shift+H | Hide the selected columns / choose columns (tables) |
 | X | Run a view action |
+
+Commands with a key of their own in the grid, such as copy, save or sort, aren't repeated in the menu.
 
 ## Copying
 

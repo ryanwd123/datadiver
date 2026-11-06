@@ -1965,11 +1965,16 @@ fn helper_menu_lists_grid_keys_that_run_when_clicked() {
 
 #[test]
 fn command_menu_lists_its_commands_and_runs_only_its_keys() {
+    use crate::ui::platform::system::fake;
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);
     press_in_grid(&viewer, "ctrl-k");
-    for command in [CommandId::Copy, CommandId::Save, CommandId::Export, CommandId::ConditionalFormatting] {
+    for command in [CommandId::Export, CommandId::RunAction] {
         assert!(has_button(&viewer, Button::CommandMenuItem(command)), "{command:?}");
+    }
+    // Commands with a key of their own in the grid aren't repeated here.
+    for command in [CommandId::Copy, CommandId::Save, CommandId::ConditionalFormatting] {
+        assert!(!has_button(&viewer, Button::CommandMenuItem(command)), "{command:?}");
     }
     assert!(!has_button(&viewer, Button::GridKey(crate::application::keymap::ActionId::Copy)));
     // A grid key does nothing here.
@@ -1978,15 +1983,15 @@ fn command_menu_lists_its_commands_and_runs_only_its_keys() {
     assert!(viewer.read(|view| view.command_menu_open));
     assert_eq!(numeric_format(&viewer, "sales").unwrap().grouping, grouping);
     // Its own keys run and close it, as does a click.
-    press(&viewer, "s");
+    let prompts = fake::with(|system| system.new_path_prompts);
+    press(&viewer, "e");
     assert!(!viewer.read(|view| view.command_menu_open));
-    assert!(viewer.has_dialog());
-    viewer.close_dialog();
+    assert_eq!(fake::with(|system| system.new_path_prompts), prompts + 1);
     press(&viewer, "ctrl-k");
     viewer.render();
-    click_button(&viewer, Button::CommandMenuItem(CommandId::Save));
+    click_button(&viewer, Button::CommandMenuItem(CommandId::Export));
     assert!(!viewer.read(|view| view.command_menu_open));
-    assert!(viewer.has_dialog());
+    assert_eq!(fake::with(|system| system.new_path_prompts), prompts + 2);
 }
 
 fn frozen_count(viewer: &Viewer) -> usize {

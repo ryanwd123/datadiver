@@ -4,7 +4,7 @@ A view saves what you set up on a source, so you can open it again: the search, 
 
 ## Saving views
 
-Press **Ctrl+S** (or **Ctrl+K S**) to save a view and give it a name. Saved views are listed in **Ctrl+P** and in the database tree, and open with everything as you left it.
+Press **Ctrl+S** to save a view and give it a name. Saved views are listed in **Ctrl+P** and in the database tree, and open with everything as you left it.
 
 Views store the source's path and the setup, not the data. Opening a view reads its source again, so sharing a view also means making its source available.
 

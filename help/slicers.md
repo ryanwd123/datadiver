@@ -4,7 +4,7 @@ Slicers are cards in a sidebar that filter the rows by a column. Filters are qui
 
 ## Adding a slicer
 
-Press **Z** (or **Ctrl+K Z**) to add a slicer. Pick a kind of card from the list:
+Press **Z** to add a slicer. Pick a kind of card from the list:
 
 - **SQL filter**, always first, takes any SQL condition.
 - **Value cards** list a column's values.

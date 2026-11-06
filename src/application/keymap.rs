@@ -222,26 +222,10 @@ pub enum ActionId {
     ToggleThousandsGrouping,
     IncreaseDecimalPrecision,
     DecreaseDecimalPrecision,
-    CommandMenuCopy,
-    CommandMenuCopyAs,
-    CommandMenuSave,
-    CommandMenuSearch,
-    CommandMenuAddSlicer,
-    CommandMenuGroup,
-    CommandMenuAggregation,
-    CommandMenuPivot,
-    CommandMenuSortAscending,
-    CommandMenuSortDescending,
-    CommandMenuClearSort,
-    CommandMenuToggleFreeze,
-    CommandMenuUnfreezeAll,
     CommandMenuHideColumns,
     CommandMenuChooseColumns,
     CommandMenuExport,
-    CommandMenuToggleTotals,
-    CommandMenuConditionalFormatting,
     CommandMenuRunAction,
-    CommandMenuReload,
     FilterToValue,
     ExcludeValue,
     PasteFilter,
@@ -1571,148 +1555,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         default_bindings: &["alt-right"],
     },
     ActionSpec {
-        id: ActionId::CommandMenuCopy,
-        category: ActionCategory::CommandMenu,
-        name: "Copy",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Copy),
-        default_bindings: &["c"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuCopyAs,
-        category: ActionCategory::CommandMenu,
-        name: "Copy as…",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::CopyAs),
-        default_bindings: &["shift-c"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuSave,
-        category: ActionCategory::CommandMenu,
-        name: "Save",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Save),
-        default_bindings: &["s"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuSearch,
-        category: ActionCategory::CommandMenu,
-        name: "Search",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Search),
-        default_bindings: &["/"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuGroup,
-        category: ActionCategory::CommandMenu,
-        name: "Group By",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Group),
-        default_bindings: &["g"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuAddSlicer,
-        category: ActionCategory::CommandMenu,
-        name: "Add slicer",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::AddSlicer),
-        default_bindings: &["z"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuAggregation,
-        category: ActionCategory::CommandMenu,
-        name: "Aggregations",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Aggregation),
-        default_bindings: &["a"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuPivot,
-        category: ActionCategory::CommandMenu,
-        name: "Pivot By",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::Pivot),
-        default_bindings: &["p"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuSortAscending,
-        category: ActionCategory::CommandMenu,
-        name: "Sort ascending",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::SortAscending),
-        default_bindings: &["["],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuSortDescending,
-        category: ActionCategory::CommandMenu,
-        name: "Sort descending",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::SortDescending),
-        default_bindings: &["]"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuClearSort,
-        category: ActionCategory::CommandMenu,
-        name: "Clear sort",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::ClearSort),
-        default_bindings: &["shift-x"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuToggleFreeze,
-        category: ActionCategory::CommandMenu,
-        name: "Freeze or unfreeze column",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::ToggleFrozen),
-        default_bindings: &["f"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuUnfreezeAll,
-        category: ActionCategory::CommandMenu,
-        name: "Unfreeze all columns",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::UnfreezeAll),
-        default_bindings: &["shift-f"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuToggleFreeze,
-        category: ActionCategory::CommandMenu,
-        name: "Freeze or unfreeze column",
-        context: KeyContext::QueryCommandMenu,
-        command: Some(CommandId::ToggleFrozen),
-        default_bindings: &["f"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuUnfreezeAll,
-        category: ActionCategory::CommandMenu,
-        name: "Unfreeze all columns",
-        context: KeyContext::QueryCommandMenu,
-        command: Some(CommandId::UnfreezeAll),
-        default_bindings: &["shift-f"],
-    },
-    ActionSpec {
         id: ActionId::CommandMenuExport,
         category: ActionCategory::CommandMenu,
         name: "Export result to file",
         context: KeyContext::CommandMenu,
         command: Some(CommandId::Export),
         default_bindings: &["e"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuToggleTotals,
-        category: ActionCategory::CommandMenu,
-        name: "Show or hide totals",
-        context: KeyContext::QueryCommandMenu,
-        command: Some(CommandId::ToggleTotals),
-        default_bindings: &["t"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuConditionalFormatting,
-        category: ActionCategory::CommandMenu,
-        name: "Conditional formatting",
-        context: KeyContext::CommandMenu,
-        command: Some(CommandId::ConditionalFormatting),
-        default_bindings: &["m"],
     },
     ActionSpec {
         id: ActionId::CommandMenuHideColumns,
@@ -1737,14 +1585,6 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::CommandMenu,
         command: Some(CommandId::RunAction),
         default_bindings: &["x"],
-    },
-    ActionSpec {
-        id: ActionId::CommandMenuReload,
-        category: ActionCategory::CommandMenu,
-        name: "Reload",
-        context: KeyContext::TableCommandMenu,
-        command: Some(CommandId::Reload),
-        default_bindings: &["r"],
     },
 ];
 
@@ -2085,10 +1925,17 @@ mod tests {
     }
 
     #[test]
-    fn helper_menu_reloads_tables_with_r() {
+    fn command_menu_only_has_commands_without_a_grid_key() {
         let map = KeymapFile::default();
-        assert_eq!(map.binding_for("r", KeyContext::TableCommandMenu), Some(ActionId::CommandMenuReload));
-        assert_eq!(map.binding_for("r", KeyContext::QueryCommandMenu), None);
+        for context in [KeyContext::TableCommandMenu, KeyContext::QueryCommandMenu] {
+            assert_eq!(map.binding_for("e", context), Some(ActionId::CommandMenuExport));
+            assert_eq!(map.binding_for("x", context), Some(ActionId::CommandMenuRunAction));
+            for stroke in ["c", "s", "/", "g", "m", "f", "r"] {
+                assert_eq!(map.binding_for(stroke, context), None, "{stroke}");
+            }
+        }
+        assert_eq!(map.binding_for("h", KeyContext::TableCommandMenu), Some(ActionId::CommandMenuHideColumns));
+        assert_eq!(map.binding_for("h", KeyContext::QueryCommandMenu), None);
     }
 
     #[test]
@@ -2137,10 +1984,6 @@ mod tests {
             Some(ActionId::ToggleFrozen)
         );
         assert_eq!(map.binding_for("alt-f", KeyContext::TableGrid), None);
-        assert_eq!(
-            map.binding_for("f", KeyContext::TableCommandMenu),
-            Some(ActionId::CommandMenuToggleFreeze)
-        );
         assert_eq!(
             map.binding_for("f", KeyContext::QueryGrid),
             Some(ActionId::ToggleFrozen)
