@@ -17,8 +17,8 @@ pub fn read_source(
     sources.load(path, options, mode)
 }
 
-/// How `path` is read: its own file settings, or the default engine, and the
-/// profile's Preserve order setting. Reads
+/// How `path` is read: its own file settings, or the profile's default
+/// engine and categorical text, and the profile's Preserve order setting. Reads
 /// the profile, so call it on a worker.
 pub fn read_options(
     repository: &ViewRepository,
@@ -43,6 +43,7 @@ pub fn file_read(
         engine: file.engine_or(settings.default_engine),
         preserve_order: settings.preserve_order,
         row_limit: usize::try_from(settings.query_limit).unwrap_or(usize::MAX),
+        categorical: file.categorical_or(settings.polars_categorical),
     };
     (options, file)
 }

@@ -47,6 +47,26 @@ pub(crate) fn is_gzip_csv(path: &Path) -> bool {
 }
 
 /// Reads every row of `path` into memory.
+/// `frame` with its text columns as categoricals, which hold each distinct
+/// value once: less memory, and faster grouping, when values repeat.
+pub fn with_categorical_text(frame: DataFrame) -> Result<DataFrame, String> {
+    let text: Vec<PlSmallStr> = frame
+        .columns()
+        .iter()
+        .filter(|column| column.dtype() == &DataType::String)
+        .map(|column| column.name().clone())
+        .collect();
+    if text.is_empty() {
+        return Ok(frame);
+    }
+    let categorical = DataType::from_categories(Categories::global());
+    frame
+        .lazy()
+        .with_columns(text.into_iter().map(|name| col(name).cast(categorical.clone())).collect::<Vec<_>>())
+        .collect()
+        .map_err(polars_error)
+}
+
 pub fn read_frame(path: &Path) -> Result<DataFrame, String> {
     read_frame_limited(path, None).map(|(frame, _)| frame)
 }

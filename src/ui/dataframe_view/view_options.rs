@@ -12,6 +12,7 @@ pub(crate) enum ViewOption {
     AutoRun,
     Engine,
     ReadMode,
+    Categorical,
     CrossFilter,
     AvailableFirst,
 }
@@ -61,6 +62,14 @@ impl DataFrameView {
             // The file's setting changes before the file is read again.
             let engine = self.file_settings.engine.unwrap_or(self.session.source.engine);
             rows.push((ViewOption::Engine, "Query engine", format!("{} · Enter switches", engine.label()), None));
+            if engine == Engine::Polars {
+                rows.push((
+                    ViewOption::Categorical,
+                    "Polars: categorical text",
+                    "Read text columns as categorical, which saves memory when values repeat".into(),
+                    Some(self.categorical()),
+                ));
+            }
         }
         let slicers = self.file_settings.slicers;
         rows.push((
@@ -124,6 +133,7 @@ impl DataFrameView {
                 self.toggle_scan(cx);
                 return;
             }
+            ViewOption::Categorical => self.toggle_categorical(cx),
             ViewOption::CrossFilter => self.toggle_cross_filter(cx),
             ViewOption::AvailableFirst => self.toggle_available_first(cx),
         }

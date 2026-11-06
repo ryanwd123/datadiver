@@ -1167,6 +1167,48 @@ fn source_checks_skip_unchanged_files_but_still_see_edits() {
 }
 
 #[test]
+fn categorical_text_is_a_file_option_with_a_default_in_settings() {
+    use super::view_options::ViewOption;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let path = home.path().join("sales.csv");
+    std::fs::write(&path, "region,n\nNorth,1\nSouth,2\nNorth,3\n").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path.clone()));
+    let region_type = |viewer: &Viewer| {
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.session.source.schema[0].sql_type.clone()
+        })
+    };
+    assert_eq!(region_type(&viewer), "VARCHAR");
+    viewer.view_option(ViewOption::Categorical);
+    viewer.run_until_parked();
+    assert_eq!(region_type(&viewer), "ENUM");
+    // Search reads categorical text like any other.
+    viewer.update(|view, cx| view.set_search_text("nor".into(), cx));
+    viewer.run_until_parked();
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 2);
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    assert_eq!(repository.load_table_preferences(&path).unwrap().file.categorical, Some(true));
+
+    // A file without its own choice follows the default in settings.
+    let other = home.path().join("other.csv");
+    std::fs::write(&other, "city\nOslo\n").unwrap();
+    let mut settings = repository.load_settings().unwrap();
+    settings.polars_categorical = true;
+    repository.save_settings(&settings).unwrap();
+    open(&viewer, FileEntry::Source(other.clone()));
+    assert_eq!(region_type(&viewer), "ENUM");
+    // The file's own choice wins over the default.
+    viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleCategorical, cx));
+    viewer.run_until_parked();
+    assert_eq!(region_type(&viewer), "VARCHAR");
+    viewer.update(|view, _| view.table_writer.flush().unwrap());
+    assert_eq!(repository.load_table_preferences(&other).unwrap().file.categorical, Some(false));
+}
+
+#[test]
 fn read_mode_scans_a_file_in_place_and_reads_it_into_memory_again() {
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());

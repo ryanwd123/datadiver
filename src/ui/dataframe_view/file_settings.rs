@@ -13,6 +13,7 @@ use crate::ui::widgets::list::Item;
 pub(crate) enum SettingsItem {
     DefaultEngine,
     FileEngine,
+    DefaultCategorical,
     PreserveOrder,
     FileViews,
     GridFont,
@@ -99,6 +100,51 @@ impl DataFrameView {
 
     pub(crate) fn set_file_engine(&mut self, engine: Engine, cx: &mut Cx<Self>) {
         self.change_file_settings(|file| file.engine = Some(engine), cx);
+    }
+
+    /// Whether Polars reads the open file's text columns as categoricals:
+    /// the file's own choice, or the default in settings.
+    pub(crate) fn categorical(&self) -> bool {
+        let default = self.repository.load_settings().map(|settings| settings.polars_categorical).unwrap_or_default();
+        self.file_settings.categorical_or(default)
+    }
+
+    /// Switches categorical text for the open file, keeps the choice with
+    /// the file, and reads it again that way.
+    pub(crate) fn toggle_categorical(&mut self, cx: &mut Cx<Self>) {
+        if self.settings_file().is_none() {
+            self.copy_status = Some("Categorical text applies to files Polars reads".into());
+            cx.notify();
+            return;
+        }
+        let on = !self.categorical();
+        self.change_file_settings(|file| file.categorical = Some(on), cx);
+        if self.session.source.engine != Engine::Polars {
+            self.copy_status = Some(format!(
+                "Categorical text {} for this file; it applies when Polars reads it",
+                if on { "on" } else { "off" }
+            ));
+            cx.notify();
+        }
+    }
+
+    /// Switches the default for files without their own choice, and reads
+    /// the open file again when it follows the default.
+    fn toggle_default_categorical(&mut self, cx: &mut Cx<Self>) {
+        let result = self.repository.load_settings().and_then(|mut settings| {
+            settings.polars_categorical = !settings.polars_categorical;
+            self.repository.save_settings(&settings)
+        });
+        if let Err(error) = result {
+            self.error = Some(format!("Could not save settings: {error}"));
+            return;
+        }
+        if let Some(path) = self.settings_file()
+            && self.file_settings.categorical.is_none()
+            && self.session.source.engine == Engine::Polars
+        {
+            self.load_source(path, false, LoadMode::Check, cx);
+        }
     }
 
     /// Switches Preserve order for every file DuckDB reads, a setting of the
@@ -219,6 +265,14 @@ impl DataFrameView {
             ));
         }
         rows.push((
+            SettingsItem::DefaultCategorical,
+            "Polars: categorical text by default".to_owned(),
+            format!(
+                "{} · Read text columns as categorical, which saves memory when values repeat; View options sets it per file · Enter switches",
+                if settings.polars_categorical { "On" } else { "Off" }
+            ),
+        ));
+        rows.push((
             SettingsItem::PreserveOrder,
             "DuckDB: preserve row order".to_owned(),
             format!(
@@ -274,9 +328,14 @@ impl DataFrameView {
         let Some((item, ..)) = self.settings_list().get(index).cloned() else {
             return;
         };
-        if matches!(item, SettingsItem::DefaultEngine | SettingsItem::PreserveOrder | SettingsItem::FileViews) {
+        if matches!(
+            item,
+            SettingsItem::DefaultEngine | SettingsItem::DefaultCategorical | SettingsItem::PreserveOrder | SettingsItem::FileViews
+        ) {
             // Switching stays in the list, so it shows the new value.
-            if item == SettingsItem::PreserveOrder {
+            if item == SettingsItem::DefaultCategorical {
+                self.toggle_default_categorical(cx);
+            } else if item == SettingsItem::PreserveOrder {
                 self.toggle_preserve_order(cx);
             } else if item == SettingsItem::FileViews {
                 self.toggle_file_views(cx);
@@ -302,7 +361,7 @@ impl DataFrameView {
         }
         self.close_dialog(cx);
         match item {
-            SettingsItem::DefaultEngine | SettingsItem::PreserveOrder | SettingsItem::FileViews => {}
+            SettingsItem::DefaultEngine | SettingsItem::DefaultCategorical | SettingsItem::PreserveOrder | SettingsItem::FileViews => {}
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),

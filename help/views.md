@@ -18,7 +18,7 @@ Turn on **Auto-save** in **View options** (the gear at the end of the search row
 
 The gear at the end of the search row opens **View options**, the settings that apply to what is open:
 
-- the [query engine](data#query-engines), **Read mode** and **Preserve order** for a file;
+- the [query engine](data#query-engines), **Read mode**, **Preserve order** and **Polars: categorical text** for a file;
 - **Auto-save**, and **Auto-run** for SQL sources;
 - the [slicer options](slicers#slicer-options).
 

@@ -12,7 +12,7 @@ use crate::domain::sql::SqlTrace;
 use super::sql::EvaluationClock;
 pub use super::sql::{TotalsRow, is_total_column};
 use crate::infrastructure::polars::expressions::{
-    display_name, parse_sql_expression, polars_error, quote_identifier, rendered,
+    display_name, parse_sql_expression, polars_error, quote_identifier, rendered, text_for_categoricals,
     scalar_series,
 };
 use crate::infrastructure::polars::store::{PolarsStore, dimension_expression};
@@ -465,7 +465,7 @@ fn bind_dimensions(source: &PolarsStore, config: &QueryConfig) -> Result<Vec<Bou
             }
             Dimension::Expression { sql } => {
                 let name = source.dimension_name(sql)?;
-                let (expression, _) = dimension_expression(sql)?;
+                let (expression, _) = dimension_expression(sql, source.schema())?;
                 BoundDimension { expression, name }
             }
         };
@@ -552,7 +552,7 @@ fn measure(
 ) -> Result<Measure, String> {
     let saved_name = aggregation.name.as_deref().filter(|name| !name.is_empty());
     let (expression, text) = match &aggregation.sql {
-        Some(sql) => (parse_sql_expression(sql)?, sql.clone()),
+        Some(sql) => (text_for_categoricals(parse_sql_expression(sql)?, schema), sql.clone()),
         None => (
             structured_expression(schema, aggregation, clock)?,
             structured_sql(schema, aggregation, clock)?,

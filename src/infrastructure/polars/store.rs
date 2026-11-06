@@ -205,7 +205,7 @@ impl PolarsStore {
     /// the source schema without reading rows.
     pub fn dimension_name(&self, sql: &str) -> Result<String, String> {
         crate::domain::aggregation_sql::validate_dimension(sql)?;
-        let (expression, name) = dimension_expression(sql)?;
+        let (expression, name) = dimension_expression(sql, &self.columns)?;
         let mut frame = self
             .query_frame(crate::domain::aggregation_sql::mentions_rowid(sql))
             .select([expression.alias(name.as_str())]);
@@ -736,7 +736,7 @@ impl PolarsStore {
                 Ok(rendered(col(name.as_str()), &column.dtype()))
             }
             Dimension::Expression { sql } => {
-                let (expression, _) = dimension_expression(sql)?;
+                let (expression, _) = dimension_expression(sql, &self.columns)?;
                 let dtype = self.expression_type(
                     expression.clone(),
                     crate::domain::aggregation_sql::mentions_rowid(sql),
@@ -817,7 +817,7 @@ impl PolarsStore {
                 // Blank text leaves the card inactive.
                 if !text.trim().is_empty() {
                     predicates.push(if filter.sql {
-                        sql_predicate(text)?
+                        sql_predicate(text, &self.columns)?
                     } else {
                         let column = self.filter_column(&filter.column)?;
                         self.condition_predicate(column, text)?
@@ -882,7 +882,7 @@ impl PolarsStore {
         if text.trim().is_empty() {
             return Ok(());
         }
-        let predicate = sql_predicate(text)?;
+        let predicate = sql_predicate(text, &self.columns)?;
         self.validate_predicate(predicate, crate::domain::aggregation_sql::mentions_rowid(text))
     }
 
@@ -1316,13 +1316,13 @@ fn any_value(value: &Value) -> Result<AnyValue<'static>, String> {
     })
 }
 
-/// A row-level dimension expression and its output name: the alias after
-/// `AS`, or the expression's own text.
-pub fn dimension_expression(sql: &str) -> Result<(Expr, String), String> {
+/// A row-level dimension expression over `schema` and its output name: the
+/// alias after `AS`, or the expression's own text.
+pub fn dimension_expression(sql: &str, schema: &[ColumnSchema]) -> Result<(Expr, String), String> {
     let body = crate::domain::aggregation_sql::dimension_body(sql)?;
     let name = crate::domain::aggregation_sql::dimension_alias(sql)
         .unwrap_or_else(|| super::expressions::display_name(body));
-    let expression = super::expressions::parse_sql_expression(body)?;
+    let expression = super::expressions::text_for_categoricals(super::expressions::parse_sql_expression(body)?, schema);
     // A dimension gives one value per row; aggregates and window functions
     // belong in the aggregations instead.
     if (&expression)
@@ -1336,9 +1336,10 @@ pub fn dimension_expression(sql: &str) -> Result<(Expr, String), String> {
     Ok((expression, name))
 }
 
-/// An SQL card's predicate. Rows where it is null do not match.
-fn sql_predicate(text: &str) -> Result<Expr, String> {
-    Ok(super::expressions::parse_sql_expression(text)?.fill_null(lit(false)))
+/// An SQL card's predicate over `schema`. Rows where it is null do not match.
+fn sql_predicate(text: &str, schema: &[ColumnSchema]) -> Result<Expr, String> {
+    let predicate = super::expressions::parse_sql_expression(text)?;
+    Ok(super::expressions::text_for_categoricals(predicate, schema).fill_null(lit(false)))
 }
 
 /// Rows whose value is one of `values`; `ScalarKey::Null` matches null.

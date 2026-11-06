@@ -58,6 +58,8 @@ Switch a file with **Query engine** in **View options** (the gear at the end of 
 
 **Preserve order**, for DuckDB, keeps rows in file order. Turning it off reads large files faster.
 
+**Polars: categorical text**, in **View options**, reads a file's text columns as categoricals, which hold each distinct value once. That saves memory, and speeds up grouping, when values repeat, such as regions or product codes. The columns show the type `ENUM`, and search, filters, slicers, grouping, SQL and export work as with plain text. The choice is kept with the file; **Settings** sets the default for files without a choice of their own.
+
 ## Read mode
 
 **Read mode**, in **View options**, decides whether a file is read into memory at all.

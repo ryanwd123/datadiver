@@ -234,6 +234,120 @@ mod parity_tests {
         }
     }
 
+    /// Reading text as categoricals changes the column type only: grouping,
+    /// pivots, text aggregations, conditions, searches, filters and sorts
+    /// give the same rows as plain text.
+    #[test]
+    fn categorical_text_gives_the_same_rows_as_plain_text() {
+        use crate::domain::documents::{Condition, ConditionOp, ConditionValue, ValueFilter};
+        use crate::infrastructure::store::{ColumnFilter, ViewQuery};
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("orders.csv");
+        let mut text = String::from("region,kind,city,amount\n");
+        for n in 0..50 {
+            let region = ["North", "South", "East"][n % 3];
+            let kind = ["a", "b"][n % 2];
+            let city = if n % 7 == 3 { String::new() } else { ["Oslo", "Lima", "Kyiv", "Bern"][(n * 31) % 4].into() };
+            text.push_str(&format!("{region},{kind},{city},{}\n", (n * 13) % 17));
+        }
+        std::fs::write(&path, text).unwrap();
+        let load = |categorical| {
+            let options = ReadOptions { engine: Engine::Polars, categorical, ..ReadOptions::default() };
+            sources.load(&path, options, LoadMode::Check).unwrap()
+        };
+        let (plain, categorical) = (load(false), load(true));
+        assert_eq!(categorical.schema()[0].sql_type, "ENUM");
+        assert_eq!(plain.schema()[0].sql_type, "VARCHAR");
+        // A read of each kind is kept apart.
+        assert_eq!(load(true).schema()[0].sql_type, "ENUM");
+
+        let clock = EvaluationClock::system();
+        let mut north = aggregation("amount", AggregationOp::Sum);
+        north.name = Some("north".into());
+        north.conditions = vec![Condition {
+            column: "region".into(),
+            operation: ConditionOp::Equal,
+            values: vec![ConditionValue::Literal(ScalarKey::String("North".into()))],
+        }];
+        let aggregations = vec![
+            aggregation("amount", AggregationOp::Sum),
+            aggregation("city", AggregationOp::Minimum),
+            aggregation("city", AggregationOp::Maximum),
+            aggregation("city", AggregationOp::First),
+            aggregation("city", AggregationOp::NonNullCount),
+            aggregation("city", AggregationOp::DistinctNonNullCount),
+            aggregation("city", AggregationOp::UniqueValuesList),
+            north,
+            Aggregation::sql_expression("max(upper(city))".into(), Some("upper".into())),
+            Aggregation::sql_expression("sum(case when city = 'Oslo' then 1 else 0 end)".into(), Some("oslo".into())),
+        ];
+        let filters = [ValueFilter { target: Dimension::Column("kind".into()), values: vec![Some("a".into())], exclude: false }];
+        let upper = [ValueFilter {
+            target: Dimension::Expression { sql: "upper(region)".into() },
+            values: vec![Some("NORTH".into())],
+            exclude: true,
+        }];
+        let region = Dimension::Column("region".into());
+        let city = Dimension::Expression { sql: "upper(city) AS city".into() };
+        for (group_by, pivot_by, filters) in [
+            (&region, vec![], &[][..]),
+            (&region, vec![Dimension::Column("kind".into())], &[][..]),
+            (&region, vec![], &filters[..]),
+            (&city, vec![], &upper[..]),
+            (&region, vec![city.clone()], &[][..]),
+        ] {
+            let config = QueryConfig {
+                group_by: vec![group_by.clone()],
+                pivot_by,
+                aggregations: aggregations.clone(),
+                ..Default::default()
+            };
+            let run = |store: &Store| execute_filtered(store, &config, &[], filters, &clock, 1000, &mut SqlTrace::default()).unwrap();
+            assert_eq!(rows(&run(&plain)), rows(&run(&categorical)), "{config:?}");
+        }
+
+        let view = |search: &str, filters: Vec<ColumnFilter>, sort: &str| ViewQuery {
+            tokens: crate::domain::query::parse(search).unwrap(),
+            filters,
+            sort: vec![SortKey { column: sort.into(), descending: false }],
+            ..ViewQuery::default()
+        };
+        let card = |column: &str, values: Vec<ScalarKey>, condition: Option<&str>| ColumnFilter {
+            column: column.into(),
+            values,
+            condition: condition.map(Into::into),
+            sql: false,
+        };
+        for query in [
+            view("nor", Vec::new(), "city"),
+            view("region=South -lima", Vec::new(), "amount"),
+            view("city:o", vec![card("region", vec![ScalarKey::String("East".into())], None)], "region"),
+            view("", vec![card("city", vec![ScalarKey::Null], None)], "region"),
+            view("", vec![card("city", Vec::new(), Some(":ky"))], "city"),
+            view("", vec![card("city", Vec::new(), Some("bern..lima"))], "city"),
+            view("", vec![ColumnFilter { sql: true, ..card("", Vec::new(), Some("city = 'Oslo' or upper(region) like 'E%'")) }], "city"),
+            view("", vec![ColumnFilter { sql: true, ..card("", Vec::new(), Some("length(city) > 3 and city <> 'Kyiv'")) }], "city"),
+        ] {
+            let ids = |store: &Store| store.query_row_ids(&query).unwrap();
+            assert_eq!(ids(&plain), ids(&categorical), "{query:?}");
+        }
+        let slicer = |store: &Store| store.slicer_values("city", &[], &filters).unwrap();
+        assert_eq!(slicer(&plain), slicer(&categorical));
+        let names = ["region".to_string(), "city".to_string()];
+        assert_eq!(plain.distinct_values(&names, &[]).unwrap(), categorical.distinct_values(&names, &[]).unwrap());
+        assert_eq!(plain.top_values("city", 3).unwrap(), categorical.top_values("city", 3).unwrap());
+        assert_eq!(plain.column_bounds("city").unwrap(), categorical.column_bounds("city").unwrap());
+        let values = ["Oslo".to_string(), "Bern".to_string()];
+        // Counts come in no particular order.
+        let counts = |store: &Store| {
+            let mut counts = store.value_counts(&ViewQuery::default(), "city", &values).unwrap();
+            counts.sort();
+            counts
+        };
+        assert_eq!(counts(&plain), counts(&categorical));
+    }
+
     #[test]
     fn unique_values_keep_first_seen_order_across_engines() {
         use crate::domain::documents::{Condition, ConditionOp, ConditionValue};

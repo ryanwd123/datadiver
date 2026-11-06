@@ -82,6 +82,9 @@ pub struct Settings {
     /// The profile database keeps a view of each watched file in its
     /// `files` schema, so SQL can read `files.sales_csv`.
     pub file_views: bool,
+    /// Polars reads text columns as categoricals, for files without their
+    /// own choice.
+    pub polars_categorical: bool,
     pub editor: EditorSettings,
 }
 
@@ -173,6 +176,7 @@ impl Default for Settings {
             default_engine: Default::default(),
             preserve_order: true,
             file_views: true,
+            polars_categorical: false,
             editor: EditorSettings::default(),
         }
     }

@@ -13,6 +13,7 @@ pub enum CommandId {
     QueryEngine,
     TogglePreserveOrder,
     ToggleScan,
+    ToggleCategorical,
     ToggleCrossFilter,
     ToggleAvailableFirst,
     StartupSql,
@@ -188,6 +189,12 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::ToggleScan,
         key: "toggle_scan",
         label: "Read mode: scan this file in place or read it into memory",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::ToggleCategorical,
+        key: "toggle_categorical",
+        label: "Polars: read this file's text columns as categorical",
         default_binding: None,
     },
     Command {

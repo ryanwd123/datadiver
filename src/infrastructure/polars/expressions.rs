@@ -261,6 +261,20 @@ const DATE_PARTS: [&str; 15] = [
     "epoch",
 ];
 
+/// `expression` reading each categorical column of `schema` as text, since
+/// Polars' SQL string functions such as `upper` take only text.
+pub fn text_for_categoricals(expression: Expr, schema: &[crate::infrastructure::store::ColumnSchema]) -> Expr {
+    let categorical: Vec<&str> =
+        schema.iter().filter(|column| column.sql_type == "ENUM").map(|column| column.name.as_str()).collect();
+    if categorical.is_empty() {
+        return expression;
+    }
+    expression.map_expr(|node| match node {
+        Expr::Column(name) if categorical.contains(&name.as_str()) => col(name).cast(DataType::String),
+        node => node,
+    })
+}
+
 /// One SQL expression, such as `year("date") AS year` or `sum(sales)`, as a
 /// Polars expression. An `AS` alias names the result.
 pub fn parse_sql_expression(sql: &str) -> Result<Expr, String> {

@@ -126,6 +126,10 @@ fn write_xlsx(frame: &DataFrame, path: &Path) -> Result<(), String> {
                 AnyValue::Boolean(value) => {
                     sheet.write_boolean(cell, column_index, *value).map_err(error)?;
                 }
+                // Categorical values have no dtype of their own to ask about below.
+                AnyValue::Categorical(..) | AnyValue::CategoricalOwned(..) | AnyValue::Enum(..) | AnyValue::EnumOwned(..) => {
+                    sheet.write_string(cell, column_index, value.str_value().as_ref()).map_err(error)?;
+                }
                 AnyValue::Date(days) => {
                     let serial = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
                         .expect("unix epoch")
@@ -211,5 +215,24 @@ mod tests {
         let read = super::super::readers::read_frame(&xlsx).unwrap();
         assert_eq!(read.height(), 2);
         assert_eq!(read.column("b").unwrap().str().unwrap().get(1), Some("y"));
+    }
+
+    #[test]
+    fn categorical_text_writes_like_plain_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let plain = df!("a" => [1i64, 2, 3], "b" => [Some("x"), None, Some("x")]).unwrap();
+        let categorical = super::super::readers::with_categorical_text(plain.clone()).unwrap();
+        assert!(matches!(categorical.column("b").unwrap().dtype(), DataType::Categorical(..)));
+        for (name, format) in [("out.csv", FileFormat::Csv), ("out.parquet", FileFormat::Parquet), ("out.xlsx", FileFormat::Xlsx)] {
+            let written = |frame: &DataFrame, folder: &str| {
+                let path = directory.path().join(folder);
+                std::fs::create_dir_all(&path).unwrap();
+                let path = path.join(name);
+                write(&mut frame.clone(), &path, format).unwrap();
+                let read = super::super::readers::read_frame(&path).unwrap();
+                read.column("b").unwrap().cast(&DataType::String).unwrap().str().unwrap().iter().map(|v| v.map(str::to_owned)).collect::<Vec<_>>()
+            };
+            assert_eq!(written(&plain, "plain"), written(&categorical, "categorical"), "{name}");
+        }
     }
 }

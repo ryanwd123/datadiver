@@ -38,6 +38,10 @@ pub struct FileSettings {
     /// instead of reading it into memory, for files too big to hold.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub scan: bool,
+    /// Polars reads text columns as categoricals; `None` follows the
+    /// default in settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub categorical: Option<bool>,
     #[serde(flatten)]
     pub slicers: SlicerOptions,
 }
@@ -47,6 +51,7 @@ impl Default for FileSettings {
         Self {
             engine: None,
             scan: false,
+            categorical: None,
             slicers: SlicerOptions::default(),
         }
     }
@@ -75,6 +80,10 @@ impl Default for SlicerOptions {
 impl FileSettings {
     pub fn engine_or(&self, default: Engine) -> Engine {
         self.engine.unwrap_or(default)
+    }
+
+    pub fn categorical_or(&self, default: bool) -> bool {
+        self.categorical.unwrap_or(default)
     }
 }
 

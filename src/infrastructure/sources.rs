@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use polars::prelude::DataFrame;
 
-use super::polars::readers::read_frame_limited;
+use super::polars::readers::{read_frame_limited, with_categorical_text};
 use super::polars::store::PolarsStore;
 use super::source_database::{
     LoadMode, PersistentSourceIdentity, SourceDatabase, absolute_source_path, file_stamp,
@@ -31,6 +31,8 @@ pub struct ReadOptions {
     pub preserve_order: bool,
     /// The most rows read into memory: the Limit setting.
     pub row_limit: usize,
+    /// Polars only: read text columns as categoricals.
+    pub categorical: bool,
 }
 
 impl Default for ReadOptions {
@@ -39,6 +41,7 @@ impl Default for ReadOptions {
             engine: Engine::default(),
             preserve_order: true,
             row_limit: super::json_store::DEFAULT_QUERY_LIMIT as usize,
+            categorical: false,
         }
     }
 }
@@ -82,6 +85,8 @@ struct CachedFrame {
     row_limit: usize,
     /// The file had more rows than the limit.
     cut: bool,
+    /// Text columns were read as categoricals.
+    categorical: bool,
     version: u64,
     /// Dropped once no window shows the file.
     frame: Weak<DataFrame>,
@@ -171,7 +176,7 @@ impl Sources {
                     Some(SourceIdentity::Polars(identity)) => Some(identity),
                     _ => None,
                 };
-                self.load_frame(path, mode, options.row_limit, existing)
+                self.load_frame(path, mode, options.row_limit, options.categorical, existing)
             }
         }
     }
@@ -181,6 +186,7 @@ impl Sources {
         path: &Path,
         mode: LoadMode,
         row_limit: usize,
+        categorical: bool,
         existing: Option<&FrameIdentity>,
     ) -> Result<SourceLoad, String> {
         let source_path = absolute_source_path(path);
@@ -191,7 +197,7 @@ impl Sources {
             format!("cannot access source {}: {error}", path.display())
         })?;
         if mode == LoadMode::Check
-            && let Some((version, frame, cut)) = self.cached(&key, stamp, row_limit)
+            && let Some((version, frame, cut)) = self.cached(&key, stamp, row_limit, categorical)
         {
             let identity = FrameIdentity { key, version };
             if existing == Some(&identity) {
@@ -206,6 +212,7 @@ impl Sources {
         }
         for attempt in 0..2 {
             let (frame, cut) = read_frame_limited(&source_path, Some(row_limit))?;
+            let frame = if categorical { with_categorical_text(frame)? } else { frame };
             let after = stamp_of(&source_path)
                 .map_err(|error| format!("cannot verify source after reading: {error}"))?;
             if after != stamp {
@@ -229,6 +236,7 @@ impl Sources {
                         stamp,
                         row_limit,
                         cut,
+                        categorical,
                         version,
                         frame: Arc::downgrade(&frame),
                     },
@@ -244,14 +252,15 @@ impl Sources {
         unreachable!()
     }
 
-    /// The frame of the read that matches `stamp` and `row_limit`, while some
-    /// window holds it, and whether the file had more rows.
-    fn cached(&self, key: &str, stamp: (i128, u64), row_limit: usize) -> Option<(u64, Arc<DataFrame>, bool)> {
+    /// The frame of the read that matches `stamp`, `row_limit` and
+    /// `categorical`, while some window holds it, and whether the file had
+    /// more rows.
+    fn cached(&self, key: &str, stamp: (i128, u64), row_limit: usize, categorical: bool) -> Option<(u64, Arc<DataFrame>, bool)> {
         let frames = self.frames.lock().ok()?;
         let entry = frames.get(key)?;
         // A read that wasn't cut holds the whole file, enough for any larger limit.
         let covers = entry.row_limit == row_limit || (!entry.cut && row_limit > entry.row_limit);
-        (entry.stamp == stamp && covers)
+        (entry.stamp == stamp && covers && entry.categorical == categorical)
             .then(|| entry.frame.upgrade().map(|frame| (entry.version, frame, entry.cut)))
             .flatten()
     }
