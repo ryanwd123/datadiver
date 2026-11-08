@@ -723,6 +723,11 @@ impl DataFrameView {
         {
             self.grid.pending_tooltip = Some((3, column));
         }
+        if target == "formatted:selection" {
+            // A block across the formatted columns, to show the selection tint.
+            self.grid.select(crate::domain::selection::Cell { row: 1, column: 0 }, false);
+            self.grid.select(crate::domain::selection::Cell { row: 6, column: 5 }, true);
+        }
         if target == "formatting:presets" {
             self.open_presets_for_capture(cx);
         }

@@ -250,6 +250,10 @@ impl ThemeEditor {
                     cell_width,
                     cell_height,
                 );
+                if row == 1 && column_index == 1 {
+                    // The selection is a tint over the table.
+                    canvas.fill(cell, color(theme.background));
+                }
                 canvas.fill(cell, color(background));
                 canvas.stroke(
                     cell,

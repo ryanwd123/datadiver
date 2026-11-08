@@ -347,7 +347,7 @@ impl DataFrameView {
             topic if topic.starts_with("help:") => self.open_help_topic(&topic["help:".len()..], cx),
             "keymap" => self.open_keymap_editor(cx),
             "actions" | "action-menu" => self.capture_actions(target, cx),
-            "formatting" | "formatting:presets" | "formatted" | "formatted:tooltip" => self.capture_formatting(target, cx),
+            "formatting" | "formatting:presets" | "formatted" | "formatted:tooltip" | "formatted:selection" => self.capture_formatting(target, cx),
             "ai-providers" => self.open_ai_settings(cx),
             "database-tree" => self.toggle_database_tree(cx),
             "database-tree:sql" => {

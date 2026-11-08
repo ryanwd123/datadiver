@@ -24,6 +24,11 @@ impl ThemeColor {
         })
     }
 
+    /// The same color with its alpha byte replaced.
+    pub const fn with_alpha(self, alpha: u8) -> Self {
+        Self((self.0 & 0xffff_ff00) | alpha as u32)
+    }
+
     pub fn rgba(self) -> u32 {
         self.0
     }
@@ -77,7 +82,8 @@ impl Default for ThemeSettings {
             frozen_stripe_background: ThemeColor::rgb(0xd2deea),
             foreground: ThemeColor::rgb(0x1f2937),
             grid_border: ThemeColor::rgb(0xcbd2da),
-            selection_background: ThemeColor::rgb(0xdbeafe),
+            // A tint, so conditional formatting shows through a selection.
+            selection_background: ThemeColor::rgb(0x3b82f6).with_alpha(0x40),
             active_cell_border: ThemeColor::rgb(0xc9a24a),
         }
     }
