@@ -1,4 +1,4 @@
-C:/Users/ryanw/rust_stuff/quick_pivot_duckdb_on_disk/AGENTS.md
+@AGENTS.md
 
 ## Workspace crates
 
