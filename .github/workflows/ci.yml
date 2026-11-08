@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    env:
+      # Full debug info made rustc run out of memory on the test crate.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
