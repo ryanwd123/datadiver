@@ -15,19 +15,10 @@ This app is still in the development stage and has not been deployed anywhere. S
 
 ## Codebase navigation
 
-This project uses open-codebase-index.
-
-Before broadly reading or grepping source files, use the codebase index to locate the relevant code.
-
-Preferred workflow:
-1. Use `codebase_context` to understand the relevant area of the repository.
-2. Use `codebase_peek` to identify likely files/symbols when only locations are needed.
-3. Use `implementation_lookup` for known structs, functions, traits, or methods.
-4. Use `codebase_search` when actual matching source context is needed.
-5. Read only the specific source files/ranges identified as relevant.
-6. Use grep/ripgrep for exact identifiers or exhaustive text searches.
-
-Avoid reading large files or many files speculatively when the index can narrow the search first.
+When the open-codebase-index tools (`codebase_context`, `codebase_peek`,
+`implementation_lookup`, `codebase_search`) are available, use them to find
+the relevant code before reading broadly, since several source files run past
+2,500 lines. Use grep for exact identifiers or exhaustive text searches.
 
 
 ## Workflow
@@ -75,7 +66,7 @@ Releases are tag-driven. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.
 
 1. Make sure `main` is clean, pushed, and the latest CI run passed (`gh run list --limit 1`).
 2. Run the full test suite, both `cargo test` and `cargo test --features snapshots`.
-3. Run `.\scripts\release.ps1 X.Y.Z`. It bumps the version in `Cargo.toml`, runs the tests, commits "Release vX.Y.Z", tags, and pushes. Use semver: patch for fixes, minor for new features. Ask me if the version isn't clear.
+3. Run `.\scripts\release.ps1 X.Y.Z`. It bumps the version in `Cargo.toml`, runs `cargo test`, commits "Release vX.Y.Z", tags, and pushes `main` and the tag to the remote `main` tracks, which must be `github`. Use semver: patch for fixes, minor for new features. Ask me if the version isn't clear.
 4. Follow the build with `gh run watch` (about 30 minutes, mostly compiling DuckDB).
 5. Check that the release has both assets (`gh release view vX.Y.Z`) and that the wheel is on PyPI. Use `https://pypi.org/simple/datadiver/`, since the JSON API can return a cached 404 for a while.
 
