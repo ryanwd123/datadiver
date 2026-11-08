@@ -1700,11 +1700,13 @@ fn startup_restores_saved_position_and_size() {
     use crate::ui::platform::headless::TestApp;
     let home = tempfile::tempdir().unwrap();
     let repository = repository(home.path());
+    // Small enough to fit the screen of a CI runner (1024x768), where a
+    // larger window would be moved back on screen.
     let saved = WindowGeometry {
-        x: 120.0,
-        y: 60.0,
-        width: 950.0,
-        height: 650.0,
+        x: 40.0,
+        y: 30.0,
+        width: 800.0,
+        height: 600.0,
         maximized: false,
     };
     repository.save_window_geometry(&saved).unwrap();

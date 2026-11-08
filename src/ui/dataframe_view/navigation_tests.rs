@@ -655,8 +655,9 @@ fn ctrl_v_in_the_grid_opens_pasted_text_as_a_table_and_back_returns() {
         );
         std::path::PathBuf::from(view.session.source_path.clone().unwrap())
     });
-    let pasted_folder = crate::infrastructure::source_database::absolute_source_path(&home.path().join("pasted"));
-    assert_eq!(pasted.parent().unwrap(), pasted_folder);
+    // Both sides normalized, since a temp folder can have an 8.3 short name.
+    let absolute = crate::infrastructure::source_database::absolute_source_path;
+    assert_eq!(absolute(pasted.parent().unwrap()), absolute(&home.path().join("pasted")));
     assert_eq!(pasted.extension().unwrap(), "tsv");
     assert_eq!(column_names(&viewer), ["city", "sales"]);
     let rows = viewer.read(|view| {
