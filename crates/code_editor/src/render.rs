@@ -773,7 +773,6 @@ impl crate::editor::State {
         let th = md.h + 12.0;
         let left = x.min(area.r - tw - 4.0).max(area.l);
         let top = if y + 20.0 + th < area.b { y + 20.0 } else { (y - th - 8.0).max(area.t) };
-        r.fill(rt, left + 2.0, top + 2.0, left + tw + 2.0, top + th + 2.0, Ink::Shadow);
         r.fill(rt, left, top, left + tw, top + th, Ink::WidgetBg);
         r.stroke(rt, left + 0.5, top + 0.5, left + tw - 0.5, top + th - 0.5, 1.0, Ink::WidgetBorder);
         unsafe { rt.PushAxisAlignedClip(&rect(left + 1.0, top + 1.0, left + tw - 1.0, top + th - 1.0), D2D1_ANTIALIAS_MODE_ALIASED) };

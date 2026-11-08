@@ -1973,7 +1973,6 @@ impl GridView {
         let border = look.border.map_or(colors::BORDER, theme_color);
         let border_width = if look.border.is_some_and(|c| c.a == 0) { 0.0 } else { look.border_width.unwrap_or(1.0) };
         let radius = look.radius.unwrap_or(6.0).min(height / 2.0);
-        canvas.shadow(r, radius);
         canvas.fill_rounded(r, radius, background);
         if border_width > 0.0 {
             canvas.stroke_rounded(r, radius, border, border_width);

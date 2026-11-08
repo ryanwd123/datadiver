@@ -243,7 +243,6 @@ fn paint_tooltip<H: Clone>(canvas: &mut Canvas<H>, text: &str, pos: Point) {
         y = (pos.y - height - 8.0).max(4.0);
     }
     let r = rect(x, y, width, height);
-    canvas.shadow(r, 4.0);
     canvas.fill_rounded(r, 4.0, Color::rgb(0x2b2f36));
     canvas.draw_layout(&layout, point(x + 8.0, y + 5.0), Color::rgb(0xffffff));
 }

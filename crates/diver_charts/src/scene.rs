@@ -177,8 +177,6 @@ pub fn tooltip(tip: &Tooltip, target: Rect, bounds: Rect, theme: &Theme, measure
     let r = Rect::new(x.round(), y.round(), w, h);
 
     let mut s = Scene::new(0.0, 0.0);
-    let shadow = Color::hex(0x000000).with_alpha(if theme.dark { 70 } else { 22 });
-    s.push(Shape::Rect { rect: Rect::new(r.x, r.y + 2.0, r.w, r.h).grow(1.0), color: shadow, corners: Corners::all(7.0), stroke: None });
     s.push(Shape::Rect { rect: r, color: theme.tooltip, corners: Corners::all(6.0), stroke: Some((theme.border, 1.0)) });
     s.text(&tip.title, (r.x + pad, r.y + pad), Anchor::Start, Baseline::Top, theme.tip, theme.text2);
     for (n, row) in tip.rows.iter().enumerate() {
