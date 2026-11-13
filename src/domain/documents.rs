@@ -289,6 +289,11 @@ pub struct SqlConfig {
     /// Runs the whole script each time the view opens.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub auto_run: bool,
+    /// A SQL source's rows are read from its last statement each time they
+    /// are queried, like a database view, rather than kept in memory. Only
+    /// DuckDB streams.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub streaming: bool,
     /// The leading result columns kept in view, by name. SQL sets the column
     /// order, so only the part still leading the result is frozen.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -303,6 +308,7 @@ impl Default for SqlConfig {
             engine: Engine::DuckDb,
             result_sort: Vec::new(),
             auto_run: false,
+            streaming: false,
             frozen_columns: Vec::new(),
         }
     }

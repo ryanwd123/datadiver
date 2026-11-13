@@ -31,6 +31,9 @@ pub struct FrameSnapshot {
     pub cut_at: Option<usize>,
     /// The rows are in file order, so rows cut at the limit are the first ones.
     pub in_file_order: bool,
+    /// The rows are read in place through limited queries, never listed
+    /// whole: a database view, a scanned file, or a streaming SQL source.
+    pub lazy: bool,
 }
 
 impl FrameSnapshot {
@@ -43,7 +46,9 @@ impl FrameSnapshot {
         let row_count = store.row_count();
         let cut_at = store.cut_at();
         let in_file_order = store.in_file_order();
+        let lazy = store.is_database_view();
         Self {
+            lazy,
             schema: store.schema().to_vec().into(),
             store: Arc::new(Mutex::new(store)),
             source_revision,

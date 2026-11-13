@@ -83,6 +83,9 @@ pub struct DuckDbStore {
     owned_table: Option<OwnedTable>,
     /// The row limit a query result stopped at, leaving rows out.
     result_cut_at: Option<usize>,
+    /// The relation reads temporary objects of this store's connection, so
+    /// its queries run on that connection rather than a clone.
+    session_bound: bool,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -210,6 +213,24 @@ impl DuckDbStore {
         input: Option<QueryInput<'_>>,
         trace: &mut SqlTrace,
     ) -> Result<Self, String> {
+        if let Some(backing) = &self.persistent
+            && self.session_bound
+        {
+            // A clone would not see this connection's temporary objects, so
+            // the result is made here and handed to a connection of its own
+            // through the results catalog every connection reads.
+            static NUMBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            Self::materialize_on(&self.connection, stage, sql, values, input, trace)?;
+            let table = format!(
+                "{}.main.__dd_stream_{}",
+                super::sql_execution::RESULTS,
+                NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            self.connection
+                .execute_batch(&format!("CREATE TABLE {table} AS FROM __qp_result; DROP TABLE __qp_result;"))
+                .map_err(|error| error.to_string())?;
+            return Self::owning_table(backing.database.clone(), backing.database.connect()?, table);
+        }
         if let Some(backing) = &self.persistent
             && (backing.source_version.is_some() || self.relation.is_some())
         {
@@ -399,6 +420,7 @@ impl DuckDbStore {
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            session_bound: false,
             result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
@@ -433,6 +455,7 @@ impl DuckDbStore {
             row_count,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            session_bound: false,
             result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
@@ -478,6 +501,16 @@ impl DuckDbStore {
             store.relation = Some(RelationRows::Table);
             return Ok(store);
         }
+        Self::from_lazy_relation(connection, database, relation)
+    }
+
+    /// A store over `relation`, anything a FROM clause takes, which DuckDB
+    /// reads again on every query. Nothing is read to open it.
+    pub(crate) fn from_lazy_relation(
+        connection: Connection,
+        database: Arc<super::source_database::SourceDatabase>,
+        relation: String,
+    ) -> Result<Self, String> {
         let mut columns = {
             let mut statement = connection
                 .prepare(&format!("DESCRIBE SELECT * FROM {relation}"))
@@ -543,10 +576,17 @@ impl DuckDbStore {
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
             owned_table: None,
+            session_bound: false,
             result_cut_at: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    /// Marks the relation as reading temporary objects of this connection.
+    pub(crate) fn bound_to_session(mut self) -> Self {
+        self.session_bound = true;
+        self
     }
 
     /// Whether this store is a relation read only through limited queries.

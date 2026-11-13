@@ -197,6 +197,10 @@ impl DataFrameView {
             FileEntry::View(definition) => definition.sql_source.clone(),
             FileEntry::Source(_) | FileEntry::StartupSql => None,
         };
+        // A table view lists every row, so only queries read a streaming
+        // source in place. The source's own rows open as a query when it streams.
+        let source_draft = matches!(&entry, FileEntry::View(definition) if definition.id.is_empty() && definition.sql_source.is_some());
+        let stream_source = source_draft || matches!(&entry, FileEntry::View(definition) if matches!(definition.view, ViewKind::Query(_)));
         let search = if let Some((_, target)) = &self.navigation_target {
             target.search_text.clone()
         } else if carry_search {
@@ -226,7 +230,7 @@ impl DataFrameView {
                 let mut file = Default::default();
                 let mut scanned = false;
                 let source = if let Some(id) = &sql_source {
-                    FrameSnapshot::new(sql_source_rows(&repository, &database, id, query_limit)?, existing.source_revision + 1)
+                    FrameSnapshot::new(sql_source_rows(&repository, &database, id, query_limit, stream_source)?, existing.source_revision + 1)
                 } else if let Some(view) = &database_view {
                     FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
                 } else {
@@ -268,7 +272,12 @@ impl DataFrameView {
                             table_query: view.table_query.clone(),
                         });
                         let destination = match entry {
-                            FileEntry::View(definition) => view.session.navigate_to_view(Ok(source), definition),
+                            FileEntry::View(mut definition) => {
+                                if source_draft && source.lazy && matches!(definition.view, ViewKind::Table(_)) {
+                                    definition.view = ViewKind::Query(Default::default());
+                                }
+                                view.session.navigate_to_view(Ok(source), definition)
+                            }
                             FileEntry::StartupSql => unreachable!("startup SQL uses SQL navigation"),
                             FileEntry::Source(_) if scanned => {
                                 let scan = crate::domain::documents::DatabaseView::file(path.to_string_lossy());
@@ -466,6 +475,7 @@ impl DataFrameView {
         let repository = self.repository.clone();
         let table_writer = self.table_writer.clone();
         let query_limit = self.query_limit;
+        let stream_source = matches!(self.session.working.as_ref().map(|definition| &definition.view), Some(ViewKind::Query(_)));
         cx.spawn(
             move || match target {
                 SourceTarget::File(path) => {
@@ -476,7 +486,7 @@ impl DataFrameView {
                     .load_view(&view)
                     .map(|store| (store.into(), Default::default())),
                 SourceTarget::SqlSource(id) => {
-                    sql_source_rows(&repository, &database, &id, query_limit).map(|store| (store, Default::default()))
+                    sql_source_rows(&repository, &database, &id, query_limit, stream_source).map(|store| (store, Default::default()))
                 }
             },
             move |view: &mut Self, cx, result| {
@@ -939,12 +949,14 @@ fn dependents_phrase(dependents: &[DocumentDefinition]) -> String {
 }
 
 /// The rows of the saved SQL source `id`, run on a connection of their own,
-/// at most `limit` of them.
+/// at most `limit` of them. With `streaming`, a source set to stream is
+/// opened as a query read in place instead.
 pub(crate) fn sql_source_rows(
     repository: &crate::infrastructure::json_store::ViewRepository,
     database: &std::sync::Arc<crate::infrastructure::source_database::SourceDatabase>,
     id: &str,
     limit: u64,
+    streaming: bool,
 ) -> Result<crate::infrastructure::store::Store, String> {
     let source = repository.load_view(id).map_err(|error| match repository.archived(id) {
         _ if error.kind() != std::io::ErrorKind::NotFound => format!("Cannot open the SQL source: {error}"),
@@ -958,6 +970,6 @@ pub(crate) fn sql_source_rows(
         return Err(format!("{} is not a SQL source", source.name));
     };
     database.initialize()?;
-    crate::infrastructure::sql_execution::sql_source_rows(database.clone(), config, limit)
+    crate::infrastructure::sql_execution::sql_source_rows(database.clone(), config, limit, streaming)
         .map_err(|error| format!("{}: {error}", source.name))
 }

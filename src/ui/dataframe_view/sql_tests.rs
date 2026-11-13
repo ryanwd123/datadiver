@@ -2061,3 +2061,79 @@ fn accepting_a_function_adds_its_parentheses_and_shows_its_signature() {
     accept(&viewer, "SELECT * FROM read_csv_aut", 27);
     assert_eq!(sql_text(&viewer), "SELECT * FROM read_csv_auto()");
 }
+
+#[test]
+fn a_streaming_sql_source_is_queried_in_place_and_switches_back_to_memory() {
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut settings = repository.load_settings().unwrap();
+    settings.query_limit = 10;
+    repository.save_settings(&settings).unwrap();
+    let mut source = sql_view(
+        "Numbers",
+        SqlConfig {
+            // The setup's temporary table lasts as long as the rows are read.
+            text: "CREATE OR REPLACE TEMP TABLE base AS SELECT range AS n, range % 4 AS k FROM range(1000);\nSELECT * FROM base -- every row\n;".into(),
+            streaming: true,
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut source).unwrap();
+    let viewer = viewer(repository.clone(), None);
+    let state = || {
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let lazy = view.session.source.store.lock().unwrap().is_database_view();
+            (lazy, view.is_table(), view.session.result.row_count())
+        })
+    };
+
+    // The source's rows open as a query read in place, cut at the row limit.
+    open_entry(&viewer, &DocumentDefinition::draft_sql_source(&source));
+    viewer.settle();
+    assert_eq!(state(), (true, false, 10));
+    assert_eq!(viewer.read(|view| view.sql_source_streaming()), Some(true));
+
+    // Grouping reads every row, not only the ones shown.
+    viewer.update(|view, cx| {
+        let mut config = view.session.query_config();
+        config.group_by = vec![crate::domain::documents::Dimension::Column("k".into())];
+        view.session.set_query_config(config, "Numbers".into()).unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.settle();
+    assert_eq!(state(), (true, false, 4));
+
+    // A table view of the source lists rows, so it keeps them in memory.
+    let mut table = DocumentDefinition::draft_sql_source(&source);
+    table.name = "Numbers table".into();
+    repository.save_view(&mut table).unwrap();
+    open_entry(&viewer, &table);
+    viewer.settle();
+    assert_eq!(state(), (false, true, 10));
+
+    // Read mode in View options switches the source back to memory.
+    open_entry(&viewer, &DocumentDefinition::draft_sql_source(&source));
+    viewer.settle();
+    viewer.render();
+    viewer.view_option(ViewOption::SqlReadMode);
+    viewer.settle();
+    assert_eq!(state(), (false, true, 10));
+    assert_eq!(viewer.read(|view| view.sql_source_streaming()), Some(false));
+    let saved = repository.load_view(&source.id).unwrap();
+    assert!(matches!(&saved.view, ViewKind::Sql(config) if !config.streaming));
+
+    // A source that does not end with a query cannot stream.
+    let mut statement = sql_view(
+        "Setup only",
+        SqlConfig {
+            text: "CREATE OR REPLACE TEMP TABLE base AS SELECT 1 AS n".into(),
+            streaming: true,
+            ..Default::default()
+        },
+    );
+    repository.save_view(&mut statement).unwrap();
+    open_entry(&viewer, &DocumentDefinition::draft_sql_source(&statement));
+    viewer.settle();
+    assert!(viewer.read(|view| view.error.as_ref().is_some_and(|error| error.contains("ends with a query"))));
+}

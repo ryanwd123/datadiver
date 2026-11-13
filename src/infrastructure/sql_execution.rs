@@ -28,7 +28,7 @@ use crate::domain::sql_editor::{
 /// An in-memory database attached to the profile for complete SQL results.
 /// Attached databases are shared by every connection, so result stores read
 /// it through their own connection.
-const RESULTS: &str = "__dd_results";
+pub(crate) const RESULTS: &str = "__dd_results";
 /// Names result tables uniquely across every editor in the process.
 static RESULT_NUMBER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -639,6 +639,42 @@ impl SqlExecution {
         result
     }
 
+    /// Opens a SQL source without reading its rows: runs every statement but
+    /// the last on a connection the store keeps, with the temporary objects
+    /// they made, and reads the last statement again on every query.
+    pub fn source_stream(database: Arc<SourceDatabase>, text: &str) -> Result<DuckDbStore, String> {
+        let execution = Self::new(database)?;
+        let ranges = statements(text);
+        let (last, setup) = ranges.split_last().ok_or("The SQL source has no statement")?;
+        let mutated = setup.iter().any(|range| may_mutate(&text[range.clone()]));
+        if setup.iter().any(|range| may_change_functions(&text[range.clone()])) {
+            execution.database.invalidate_functions();
+        }
+        let result = (|| {
+            for (index, range) in setup.iter().enumerate() {
+                execution
+                    .execute(&text[range.clone()], 0)
+                    .map_err(|error| format!("Statement {}: {error}", index + 1))?;
+            }
+            let sql = &text[last.clone()];
+            if !is_filterable_query(sql) {
+                return Err(format!(
+                    "Statement {}: a streaming SQL source ends with a query (SELECT, WITH, FROM, VALUES, PIVOT, DESCRIBE)",
+                    ranges.len()
+                ));
+            }
+            Ok(sql.trim_end().trim_end_matches(';').to_owned())
+        })();
+        if mutated {
+            execution.database.invalidate();
+        }
+        let Self { connection, database, .. } = execution;
+        // The query goes on its own lines so a trailing comment cannot hide the `)`.
+        DuckDbStore::from_lazy_relation(connection, database, format!("(\n{}\n)", result?))
+            .map(DuckDbStore::bound_to_session)
+            .map_err(|error| format!("Statement {}: {error}", ranges.len()))
+    }
+
     pub fn run(&self, text: &str, limit: u64) -> SqlRun {
         let started = Instant::now();
         let mut mutated = false;
@@ -1062,17 +1098,27 @@ fn sql_type(data_type: &DataType) -> Result<String, String> {
     })
 }
 
-/// The rows a SQL source returns, run by the engine it chose.
+/// The rows a SQL source returns, run by the engine it chose. With
+/// `streaming`, a source set to stream is opened without reading its rows;
+/// see [`streams`].
 pub fn sql_source_rows(
     database: Arc<SourceDatabase>,
     config: &crate::domain::documents::SqlConfig,
     limit: u64,
+    streaming: bool,
 ) -> Result<super::store::Store, String> {
     use crate::domain::documents::Engine;
     match config.engine {
+        Engine::DuckDb if streaming && streams(config) => SqlExecution::source_stream(database, &config.text).map(Into::into),
         Engine::DuckDb => SqlExecution::source_rows(database, &config.text, limit).map(Into::into),
         Engine::Polars => super::polars::sql::source_rows(&config.text, limit).map(Into::into),
     }
+}
+
+/// Whether a SQL source's rows are read in place: it is set to stream and
+/// DuckDB runs it. Polars SQL keeps its rows in memory.
+pub fn streams(config: &crate::domain::documents::SqlConfig) -> bool {
+    config.streaming && !config.script && config.engine == crate::domain::documents::Engine::DuckDb
 }
 
 /// Whether DuckDB's binder takes `name()` in a select list: false when it

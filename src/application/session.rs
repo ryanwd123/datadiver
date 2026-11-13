@@ -495,7 +495,8 @@ impl WindowSession {
             return false;
         };
         // Relations without DuckDB's rowid can only be read through a query.
-        if definition
+        if self.source.lazy
+            || definition
             .database_view
             .as_ref()
             .is_some_and(|view| view.kind != RelationKind::Table)

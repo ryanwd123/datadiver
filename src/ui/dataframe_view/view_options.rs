@@ -12,6 +12,7 @@ pub(crate) enum ViewOption {
     AutoRun,
     Engine,
     ReadMode,
+    SqlReadMode,
     Categorical,
     CrossFilter,
     AvailableFirst,
@@ -44,6 +45,14 @@ impl DataFrameView {
         if sql.is_some() && !matches!(self.session.identity, SessionIdentity::StartupSql) {
             let engine = super::sql_editor::sql_engine_label(self.sql_engine());
             rows.push((ViewOption::Engine, "Engine", format!("{engine} · Enter switches"), None));
+        }
+        if let Some(streaming) = self.sql_source_streaming() {
+            let detail = if streaming {
+                "Streaming: DuckDB runs the last statement again on every query · Enter keeps its rows in memory"
+            } else {
+                "In memory · Enter streams the last statement on every query instead, for results too big to hold"
+            };
+            rows.push((ViewOption::SqlReadMode, "Read mode", detail.into(), None));
         }
         if self.query_file().is_some() {
             rows.push((
@@ -139,6 +148,17 @@ impl DataFrameView {
                 self.close_dialog(cx);
                 self.toggle_scan(cx);
                 return;
+            }
+            ViewOption::SqlReadMode => {
+                // The source's rows open again, so the list closes rather than show the old mode.
+                let rows = !self.session.is_sql();
+                if rows {
+                    self.close_dialog(cx);
+                }
+                self.toggle_sql_streaming(cx);
+                if rows {
+                    return;
+                }
             }
             ViewOption::Categorical => self.toggle_categorical(cx),
             ViewOption::CrossFilter => self.toggle_cross_filter(cx),

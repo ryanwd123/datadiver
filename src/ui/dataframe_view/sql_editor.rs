@@ -629,6 +629,66 @@ WHERE place <= 2";
         cx.notify();
     }
 
+    /// Whether the open SQL source streams its rows: in its editor, or
+    /// showing its rows. `None` for anything else, and for Polars SQL, which
+    /// keeps its rows in memory.
+    pub(crate) fn sql_source_streaming(&self) -> Option<bool> {
+        let definition = self.session.working.as_ref()?;
+        let config = match &definition.view {
+            ViewKind::Sql(config) if !matches!(self.session.identity, SessionIdentity::StartupSql) => config.clone(),
+            _ if definition.id.is_empty() => match self.repository.load_view(definition.sql_source.as_ref()?).ok()?.view {
+                ViewKind::Sql(config) => config,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        (!config.script && config.engine == Engine::DuckDb).then_some(config.streaming)
+    }
+
+    /// Switches a SQL source between keeping its rows in memory and reading
+    /// its last statement in place. The source stores the choice; its rows,
+    /// when they are what is open, open again that way.
+    pub(crate) fn toggle_sql_streaming(&mut self, cx: &mut Cx<Self>) {
+        let Some(streaming) = self.sql_source_streaming() else {
+            self.copy_status = Some("Streaming applies to SQL sources that DuckDB runs".into());
+            cx.notify();
+            return;
+        };
+        if let Some(ViewKind::Sql(config)) = self.session.working.as_mut().map(|d| &mut d.view) {
+            config.streaming = !streaming;
+            self.session.dirty = true;
+            if matches!(self.session.identity, SessionIdentity::SavedSql(_)) {
+                self.persist_view();
+            }
+            self.copy_status = Some(
+                if streaming {
+                    "Views of this SQL source keep its rows in memory"
+                } else {
+                    "Views of this SQL source stream its last statement"
+                }
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
+        let Some(id) = self.sql_source() else {
+            return;
+        };
+        let saved = self.repository.load_view(&id).and_then(|mut source| {
+            if let ViewKind::Sql(config) = &mut source.view {
+                config.streaming = !streaming;
+            }
+            self.repository.save_view(&mut source).map(|_| source)
+        });
+        match saved {
+            Ok(source) => self.navigate_to_file(FileEntry::View(DocumentDefinition::draft_sql_source(&source)), true, false, false, cx),
+            Err(error) => {
+                self.error = Some(format!("Cannot save the SQL source: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
     pub(crate) fn stop_sql(&mut self) {
         // A Polars query may not reach its next batch for a long while, so
         // the editor lets it go at once; what it returns is dropped.

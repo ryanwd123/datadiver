@@ -21,6 +21,8 @@ SQL runs on DuckDB against the profile database and attached databases, and can 
 
 The row [limit](grid#the-row-limit) caps the rows a result keeps, without limiting writes. When the last statement is a plain query run outside a transaction, the whole result is kept, so slicers, filters, search and sort see every row.
 
+A SQL source keeps the rows of its last statement in memory, up to the row limit. **Read mode** in **View options** switches a DuckDB source to **streaming**: nothing is copied, and DuckDB runs the last statement again for every query, like a database view. Use it for results too big to hold. A streaming source opens as a query, so the grid shows rows up to the row limit while grouping, pivoting, aggregations and slicers read all of them. Its last statement must be a query, and the statements before it run once when the source opens. Saved table views of a streaming source still read its rows into memory.
+
 A SQL source or script can run on **Polars** instead, in **View options**. Polars SQL reads files with `read_csv('…')` and `read_parquet('…')`, and completion and checks then follow Polars SQL.
 
 ## Editing
