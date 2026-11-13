@@ -396,7 +396,7 @@ impl Items<'_> {
                     ItemKind::Function
                 };
                 let detail = f.signatures.first().cloned();
-                let insert = quote_if_needed(&f.name);
+                let insert = function_name(&f.name);
                 self.out.push(CompletionItem {
                     label: f.name.clone(),
                     kind: item_kind,
@@ -405,7 +405,8 @@ impl Items<'_> {
                     detail,
                     documentation: f.description.clone(),
                     sort_key: rank::FUNCTION,
-                    call: kind != FunctionKind::Macro,
+                    // `current_date` and its like take no parentheses.
+                    call: kind != FunctionKind::Macro && f.signatures.first().is_none_or(|s| s.contains('(')),
                 });
             }
         }
@@ -779,6 +780,21 @@ pub fn needs_quotes(name: &str) -> bool {
         || Kw::lookup(name).is_some_and(|kw| {
             kw.category() != KwCategory::Unreserved && kw.category() != KwCategory::Contextual
         })
+}
+
+/// A function's name as a call writes it. Keywords that name functions,
+/// like `nullif`, `coalesce` and `left`, are called bare, and quoting those
+/// the grammar reads itself would not find them.
+fn function_name(name: &str) -> String {
+    let reserved = Kw::lookup(name).is_some_and(|kw| kw.category() == KwCategory::Reserved);
+    if reserved { quote(name) } else { quote_if_needed_ignoring_keywords(name) }
+}
+
+fn quote_if_needed_ignoring_keywords(name: &str) -> String {
+    let mut chars = name.chars();
+    let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if plain { name.to_string() } else { quote(name) }
 }
 
 pub fn quote(name: &str) -> String {

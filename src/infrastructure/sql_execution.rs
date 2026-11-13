@@ -383,6 +383,7 @@ impl SqlExecution {
             }
         }
         self.add_expression_forms(&mut out);
+        add_grammar_functions(&mut out);
         Ok(out)
     }
 
@@ -1121,6 +1122,40 @@ pub fn streams(config: &crate::domain::documents::SqlConfig) -> bool {
     config.streaming && !config.script && config.engine == crate::domain::documents::Engine::DuckDb
 }
 
+/// Calls DuckDB's grammar reads itself, so `duckdb_functions()` leaves them
+/// out: each with its signature and what it does. `CAST`, `TRY_CAST`,
+/// `EXISTS` and `COLUMNS` are offered as keywords instead.
+const GRAMMAR_FUNCTIONS: &[(&str, &str, &str)] = &[
+    ("coalesce", "coalesce(expr, ...)", "The first argument that is not NULL, or NULL when all are. Later arguments are not evaluated."),
+    ("ifnull", "ifnull(expr, other)", "expr, or other when expr is NULL. A two-argument coalesce."),
+    ("if", "if(condition, a, b)", "a when the condition is true, otherwise b."),
+    ("extract", "extract(part FROM date)", "A part of a date, time, timestamp or interval, such as year, month, day, hour or epoch."),
+    ("grouping", "grouping(column, ...)", "With GROUPING SETS, ROLLUP or CUBE: a bit mask telling which of the columns the row's group left out."),
+    ("grouping_id", "grouping_id(column, ...)", "With GROUPING SETS, ROLLUP or CUBE: a bit mask telling which of the columns the row's group left out."),
+    ("try", "try(expr)", "expr, or NULL when evaluating it fails."),
+    ("current_date", "current_date", "Today's date, at the start of the transaction. Written without parentheses."),
+    ("current_time", "current_time", "The time of day at the start of the transaction. Written without parentheses."),
+    ("current_timestamp", "current_timestamp", "The date and time at the start of the transaction. Written without parentheses."),
+    ("localtime", "localtime", "The local time of day at the start of the transaction. Written without parentheses."),
+    ("localtimestamp", "localtimestamp", "The local date and time at the start of the transaction. Written without parentheses."),
+];
+
+/// Adds [`GRAMMAR_FUNCTIONS`] that the catalog did not list.
+fn add_grammar_functions(functions: &mut Vec<diver_sql::FunctionInfo>) {
+    for (name, signature, description) in GRAMMAR_FUNCTIONS {
+        if functions.iter().any(|f| f.name == *name && f.kind != diver_sql::FunctionKind::Table) {
+            continue;
+        }
+        functions.push(diver_sql::FunctionInfo {
+            name: (*name).to_owned(),
+            schema: None,
+            kind: diver_sql::FunctionKind::Scalar,
+            signatures: vec![(*signature).to_owned()],
+            description: Some((*description).to_owned()),
+        });
+    }
+}
+
 /// Whether DuckDB's binder takes `name()` in a select list: false when it
 /// says the function is table-only or there's no such scalar function.
 fn expression_binds(connection: &Connection, name: &str) -> bool {
@@ -1555,6 +1590,40 @@ mod tests {
         assert!(from.iter().any(|l| l == "range"), "{from:?}");
         assert!(labels("select * from unne").iter().any(|l| l == "unnest"));
         assert!(labels("select * from read_cs").iter().any(|l| l == "read_csv"));
+    }
+
+    #[test]
+    fn calls_the_grammar_reads_complete_unquoted_and_duckdb_takes_them() {
+        use crate::domain::sql_editor::completions;
+        let (_dir, service) = service();
+        let catalog = service.sql_catalog().unwrap();
+        service.connection.execute_batch("CREATE TEMP TABLE t AS SELECT 1 AS a, DATE '2020-01-01' AS d").unwrap();
+        for (name, signature, _) in GRAMMAR_FUNCTIONS {
+            let sql = format!("select {}", &name[..name.len() - 1]);
+            let item = completions(&sql, sql.len(), &catalog)
+                .into_iter()
+                .find(|item| item.label == *name)
+                .unwrap_or_else(|| panic!("{name} is not offered"));
+            assert_eq!(item.insert_text, *name);
+            // Accepting one adds parentheses only where the call has them.
+            assert_eq!(item.call, signature.contains('('), "{name}");
+            // The signature is a call DuckDB reads, once its arguments are filled in.
+            let call = signature
+                .replace("expr, ...", "a, 2")
+                .replace("column, ...", "a")
+                .replace("expr, other", "a, 2")
+                .replace("condition, a, b", "a = 1, 1, 2")
+                .replace("part FROM date", "year FROM d")
+                .replace("expr", "a");
+            let group = if name.starts_with("grouping") { " GROUP BY a" } else { "" };
+            service
+                .connection
+                .prepare(&format!("SELECT {call} FROM t{group}"))
+                .unwrap_or_else(|error| panic!("{call}: {error}"));
+        }
+        // A function the catalog lists under a keyword's name is not quoted either.
+        let nullif = completions("select nulli", 12, &catalog).into_iter().find(|item| item.label == "nullif").unwrap();
+        assert_eq!(nullif.insert_text, "nullif");
     }
 
     #[test]
