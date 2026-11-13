@@ -27,7 +27,7 @@ Everything DataDiver keeps is in one profile folder, `%LOCALAPPDATA%\datadiver` 
 
 | Path | Contents |
 | --- | --- |
-| `datadiver.duckdb` | Anything you create in SQL |
+| `datadiver.duckdb` | Anything you create in SQL, when **DuckDB: keep a profile database** is on |
 | `settings.json` | Preferences, favorites and AI providers |
 | `keymap.json`, `theme.json` | Your shortcuts and theme |
 | `duckdb_startup.sql` | The startup SQL script |

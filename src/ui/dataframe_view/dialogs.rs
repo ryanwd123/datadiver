@@ -727,13 +727,16 @@ impl DataFrameView {
                 sources.retain(|path| seen.insert(path.to_string_lossy().to_lowercase()));
                 sources.sort_by_key(|path| path.to_string_lossy().to_lowercase());
                 groups[2] = sources.into_iter().map(FileEntry::Source).collect();
+                let file_views = state.settings.picker_file_views;
                 groups[4] = database
                     .views()?
                     .into_iter()
+                    .filter(|view| file_views || view.schema != crate::infrastructure::source_database::FILE_VIEWS_SCHEMA)
                     .map(DocumentDefinition::draft_database_view)
                     .map(FileEntry::View)
                     .collect();
-                Ok::<_, String>(groups)
+                let hidden = state.settings.hidden_files.iter().map(|path| path.to_lowercase()).collect();
+                Ok::<_, String>((groups, hidden))
             },
             move |view: &mut Self, cx, entries| {
                 if view.file_revision != revision {
@@ -741,7 +744,10 @@ impl DataFrameView {
                 }
                 view.file_loading = false;
                 match entries {
-                    Ok(groups) => view.file_groups = groups,
+                    Ok((groups, hidden)) => {
+                        view.file_groups = groups;
+                        view.file_hidden = hidden;
+                    }
                     Err(error) => view.error = Some(format!("File scan failed: {error}")),
                 }
                 view.refresh_file_palette();
@@ -762,9 +768,12 @@ impl DataFrameView {
         };
         let query = dialog.palette.query_text().to_lowercase();
         let terms = query.split_whitespace().collect::<Vec<_>>();
+        let (hidden, show_hidden) = (&self.file_hidden, self.file_show_hidden);
+        let is_hidden = |entry: &FileEntry| entry.hidden_key().is_some_and(|key| hidden.contains(&key));
         let groups = self.file_groups.each_ref().map(|group| {
             group
                 .iter()
+                .filter(|entry| show_hidden || !is_hidden(entry))
                 .filter(|entry| matches_terms(&entry.search_text(), &terms))
                 .cloned()
                 .collect::<Vec<_>>()
@@ -801,12 +810,67 @@ impl DataFrameView {
         let items = new_sections
             .iter()
             .enumerate()
-            .flat_map(|(section, entries)| entries.iter().map(move |entry| Item::new(entry.label()).section(section)))
+            .flat_map(|(section, entries)| {
+                entries.iter().map(move |entry| {
+                    let mut item = Item::new(entry.label()).section(section);
+                    if is_hidden(entry) {
+                        item.muted = true;
+                        item.detail = Some("Hidden".into());
+                    }
+                    item
+                })
+            })
             .collect();
         *sections = new_sections;
         dialog.palette.list.set_sections(titles);
         dialog.palette.set_items(items);
         dialog.palette.list.empty_text = if loading { "Scanning files…" } else { "No files or views" }.into();
+    }
+
+    /// Hides the selected file from the file picker, or shows it again.
+    fn toggle_selected_file_hidden(&mut self, cx: &mut Cx<Self>) {
+        let Some(FileEntry::Source(path)) = self.selected_file_entry() else {
+            return;
+        };
+        let key = path.to_string_lossy().to_lowercase();
+        let hide = !self.file_hidden.contains(&key);
+        let result = self.repository.load_settings().and_then(|mut settings| {
+            settings.hidden_files.retain(|hidden| hidden.to_lowercase() != key);
+            if hide {
+                settings.hidden_files.push(path.to_string_lossy().into_owned());
+            }
+            self.repository.save_settings(&settings)
+        });
+        if let Err(error) = result {
+            self.error = Some(format!("Could not save settings: {error}"));
+            cx.notify();
+            return;
+        }
+        let selected = match &self.dialog {
+            Some(Dialog::Palette(dialog)) => dialog.palette.selected_item(),
+            _ => None,
+        };
+        if hide {
+            self.file_hidden.insert(key);
+        } else {
+            self.file_hidden.remove(&key);
+        }
+        self.refresh_file_palette();
+        // A file that left the list hands the highlight to the one after it.
+        if let Some(Dialog::Palette(dialog)) = &mut self.dialog
+            && let Some(selected) = selected
+            && let Some(last) = dialog.palette.list.visible_count().checked_sub(1)
+        {
+            dialog.palette.list.select_item(Some(selected.min(last)));
+        }
+        cx.notify();
+    }
+
+    /// Lists hidden files in the file picker, dimmed, or leaves them out.
+    fn toggle_show_hidden_files(&mut self, cx: &mut Cx<Self>) {
+        self.file_show_hidden = !self.file_show_hidden;
+        self.refresh_file_palette();
+        cx.notify();
     }
 
     fn selected_file_entry(&self) -> Option<FileEntry> {
@@ -1281,6 +1345,14 @@ impl DataFrameView {
                     self.archive_selected_view(cx);
                     return true;
                 }
+                if event.key == "h" && event.modifiers.control && !event.modifiers.alt && matches!(dialog.kind, PaletteKind::Files(_)) {
+                    if event.modifiers.shift {
+                        self.toggle_show_hidden_files(cx);
+                    } else {
+                        self.toggle_selected_file_hidden(cx);
+                    }
+                    return true;
+                }
                 if event.key == "delete" && event.modifiers.shift && matches!(dialog.kind, PaletteKind::Recovery(_)) {
                     self.delete_selected_archive(cx);
                     return true;
@@ -1426,6 +1498,14 @@ impl DataFrameView {
             }
             Hit::Button(Button::FilesArchive) => {
                 self.archive_selected_view(cx);
+                return;
+            }
+            Hit::Button(Button::FilesHide) => {
+                self.toggle_selected_file_hidden(cx);
+                return;
+            }
+            Hit::Button(Button::FilesShowHidden) => {
+                self.toggle_show_hidden_files(cx);
                 return;
             }
             Hit::Button(Button::FilesRecover) => {
@@ -1712,16 +1792,26 @@ impl DataFrameView {
                     canvas.text(footer_rect, text_value, &fonts.small, colors::MUTED, Align::Left);
                 }
                 if let PaletteKind::Files(sections) = &dialog.kind {
-                    let archive_enabled = dialog
-                        .palette
-                        .selected_item()
-                        .and_then(|index| sections.iter().flatten().nth(index))
-                        .is_some_and(FileEntry::is_archivable);
+                    let selected = dialog.palette.selected_item().and_then(|index| sections.iter().flatten().nth(index));
+                    let archive_enabled = selected.is_some_and(FileEntry::is_archivable);
+                    let hidden_key = selected.and_then(FileEntry::hidden_key);
+                    let hide_label = if hidden_key.as_ref().is_some_and(|key| self.file_hidden.contains(key)) {
+                        "Unhide · Ctrl+H"
+                    } else {
+                        "Hide · Ctrl+H"
+                    };
+                    let show_label = if self.file_show_hidden {
+                        "Leave out hidden · Ctrl+Shift+H".to_owned()
+                    } else {
+                        format!("Show hidden ({}) · Ctrl+Shift+H", self.file_hidden.len())
+                    };
                     let mut buttons = Row::new(footer_rect, 8.0);
                     for (label, hit, enabled) in [
                         ("Folders", Button::FilesFolders, true),
                         ("Archive · Ctrl+Delete", Button::FilesArchive, archive_enabled),
                         ("Recover", Button::FilesRecover, true),
+                        (hide_label, Button::FilesHide, hidden_key.is_some()),
+                        (show_label.as_str(), Button::FilesShowHidden, self.file_show_hidden || !self.file_hidden.is_empty()),
                     ] {
                         let r = buttons.left(button_width(label, font));
                         button(canvas, r, label, font, ButtonStyle::Outline, enabled, Hit::Button(hit));

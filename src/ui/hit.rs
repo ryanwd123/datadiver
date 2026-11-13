@@ -173,5 +173,7 @@ pub enum Button {
     // Files palette footer.
     FilesFolders,
     FilesArchive,
+    FilesHide,
+    FilesShowHidden,
     FilesRecover,
 }

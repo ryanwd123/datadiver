@@ -91,6 +91,8 @@ impl Drop for LoadedTable {
 
 struct DatabaseState {
     connection: Connection,
+    /// Whether the database is the profile's file rather than in memory.
+    persistent: bool,
     startup_error: Option<String>,
     /// By path key.
     files: HashMap<String, LoadedFile>,
@@ -148,7 +150,7 @@ impl SourceDatabase {
             .state
             .lock()
             .map_err(|_| "database writer lock poisoned")?;
-        if let Some(state) = state.as_mut() {
+        if let Some(state) = state.as_mut().filter(|state| state.persistent) {
             state
                 .connection
                 .execute_batch("CHECKPOINT")
@@ -228,6 +230,11 @@ impl SourceDatabase {
             .lock()
             .map_err(|_| "database writer lock poisoned")?;
         self.ensure_initialized(&mut state)
+    }
+
+    /// Whether an open database is the profile's file; `None` before it opens.
+    pub fn persistent(&self) -> Option<bool> {
+        Some(self.state.lock().ok()?.as_ref()?.persistent)
     }
 
     pub fn startup_error(&self) -> Option<String> {
@@ -356,6 +363,32 @@ impl SourceDatabase {
         if state.is_some() {
             return Ok(());
         }
+        let config = self.path.parent().unwrap();
+        let persistent = super::json_store::profile_database_enabled(config);
+        let connection = if persistent {
+            self.open_profile_file()?
+        } else {
+            Connection::open_in_memory().map_err(|error| format!("cannot open an in-memory database: {error}"))?
+        };
+        connection
+            .execute_batch(&format!("ATTACH ':memory:' AS {FILES_CATALOG}"))
+            .map_err(|error| error.to_string())?;
+        let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
+        let startup_error = run_startup_script(&connection, &script).err();
+        let startup_error = startup_error.or_else(|| share_path_settings(&connection).err());
+        *state = Some(DatabaseState {
+            connection,
+            persistent,
+            startup_error,
+            files: HashMap::new(),
+            next_file_id: 1,
+        });
+        Ok(())
+    }
+
+    /// Opens `datadiver.duckdb` in the profile folder, bringing an older
+    /// file up to this version.
+    fn open_profile_file(&self) -> Result<Connection, String> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("cannot create settings folder: {error}"))?;
@@ -398,19 +431,7 @@ impl SourceDatabase {
                 return Err(format!("unsupported DataDiver database version: {version}"));
             }
         }
-        connection
-            .execute_batch(&format!("ATTACH ':memory:' AS {FILES_CATALOG}"))
-            .map_err(|error| error.to_string())?;
-        let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
-        let startup_error = run_startup_script(&connection, &script).err();
-        let startup_error = startup_error.or_else(|| share_path_settings(&connection).err());
-        *state = Some(DatabaseState {
-            connection,
-            startup_error,
-            files: HashMap::new(),
-            next_file_id: 1,
-        });
-        Ok(())
+        Ok(connection)
     }
 
     /// Reads `path` into a table of the in-memory files catalog, or reuses
@@ -1342,9 +1363,49 @@ mod tests {
         assert!(database.startup_error().is_some());
     }
 
+    /// Turns on the setting that keeps the database in the profile folder.
+    fn keep_profile_database(home: &Path) {
+        fs::write(home.join("settings.json"), r#"{"profile_database": true}"#).unwrap();
+    }
+
+    #[test]
+    fn the_database_stays_in_memory_unless_the_profile_keeps_one() {
+        let home = tempfile::tempdir().unwrap();
+        let memory = home.path().join("memory");
+        {
+            let database = SourceDatabase::for_profile(&memory);
+            assert_eq!(database.persistent(), None);
+            database.connect().unwrap().execute_batch("CREATE TABLE main.kept AS SELECT 1 AS n").unwrap();
+            assert_eq!(database.persistent(), Some(false));
+            // Every connection reads the one in-memory database.
+            let other = database.connect().unwrap();
+            assert_eq!(other.query_row("SELECT n FROM main.kept", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+            database.checkpoint().unwrap();
+        }
+        assert!(!memory.join("datadiver.duckdb").exists());
+        let reopened = SourceDatabase::for_profile(&memory);
+        assert!(reopened.connect().unwrap().prepare("SELECT n FROM main.kept").is_err());
+
+        let kept = home.path().join("kept");
+        fs::create_dir_all(&kept).unwrap();
+        keep_profile_database(&kept);
+        {
+            let database = SourceDatabase::for_profile(&kept);
+            database.connect().unwrap().execute_batch("CREATE TABLE main.kept AS SELECT 1 AS n").unwrap();
+            assert_eq!(database.persistent(), Some(true));
+        }
+        assert!(kept.join("datadiver.duckdb").is_file());
+        let reopened = SourceDatabase::for_profile(&kept);
+        assert_eq!(
+            reopened.connect().unwrap().query_row("SELECT n FROM main.kept", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1
+        );
+    }
+
     #[test]
     fn startup_sql_runs_once_per_database_instance_and_attachments_reach_cloned_connections() {
         let home = tempfile::tempdir().unwrap();
+        keep_profile_database(home.path());
         let attached_path = home.path().join("attached.duckdb");
         let attached = Connection::open(&attached_path).unwrap();
         attached
@@ -1938,6 +1999,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
     #[test]
     fn version_2_profiles_drop_the_old_file_cache_and_keep_other_schemas() {
         let home = tempfile::tempdir().unwrap();
+        keep_profile_database(home.path());
         {
             let connection = Connection::open(home.path().join("datadiver.duckdb")).unwrap();
             connection

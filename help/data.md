@@ -5,7 +5,7 @@ DataDiver opens CSV, TSV, Excel (`.xlsx`) and Parquet files, tables and views in
 ## Files
 
 - **Ctrl+O** opens a file. A path on the command line works too.
-- **Ctrl+P** (**Files and views**) lists recent files, watched files and folders, saved views, SQL sources and scripts. Type to narrow the list and press **Enter** to open, or **Shift+Enter** to open in a new window.
+- **Ctrl+P** (**Files and views**) lists recent files, watched files and folders, saved views, SQL sources and scripts. Type to narrow the list and press **Enter** to open, or **Shift+Enter** to open in a new window. **Ctrl+H** hides the highlighted file from the list, which helps when a watched folder holds files you never open. **Ctrl+Shift+H** lists hidden files too, dimmed, and **Ctrl+H** on one of them shows it again.
 - **Drag and drop** files onto a window. The first opens there and the rest open in new windows.
 - **Ctrl+R** reads the file again, and **Ctrl+Shift+R** reads it again and resets the view.
 
@@ -20,7 +20,7 @@ Watched files are listed under **Sources** for quick opening; nothing is read un
 - Press **N** in the grid and drop files on the overlay, or use **Add watched files** in the command palette, to watch single files.
 - **Add folder** watches a whole folder. Its supported files appear under **Ctrl+P** and in the database tree, and new files show up as they arrive.
 
-Each watched file also gets a view in the profile database's `files` schema, so SQL can read it by name: `sales.csv` becomes `files.sales_csv`. Names are lowercase with punctuation replaced by underscores, and a second file with the same name gets a number, such as `files.sales_csv_2`. The view reads the file each time it is queried, so it always shows the file as it is now. **DuckDB: views of watched files** in Settings turns these views off.
+Each watched file also gets a view in the profile database's `files` schema, so SQL can read it by name: `sales.csv` becomes `files.sales_csv`. Names are lowercase with punctuation replaced by underscores, and a second file with the same name gets a number, such as `files.sales_csv_2`. The view reads the file each time it is queried, so it always shows the file as it is now. **DuckDB: views of watched files** in Settings turns these views off. **Ctrl+P** leaves them out, since each repeats a file it already lists; **File picker: views of watched files** in Settings lists them there.
 
 ## The clipboard
 
@@ -30,7 +30,7 @@ Each watched file also gets a view in the profile database's `files` schema, so 
 
 Dropping a DuckDB or SQLite database file on a window attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the [SQL editor](sql).
 
-The profile database, `datadiver.duckdb` in the profile folder, keeps anything you create in SQL. The [startup script](sql#the-startup-script) can attach other databases every time it opens.
+Tables, views and macros you create in SQL live in DuckDB's main database, which is in memory and ends when DataDiver closes. Turn on **DuckDB: keep a profile database** in Settings to keep them in `datadiver.duckdb` in the profile folder instead; the change applies the next time DataDiver starts. Only one DataDiver process can open that file at a time. The [startup script](sql#the-startup-script) can attach other databases every time it opens.
 
 ## The database tree
 

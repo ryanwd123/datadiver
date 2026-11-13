@@ -157,6 +157,7 @@ Commands with their own grid key (copy, save, sort, and so on) aren't repeated i
 
 - **Files:** **Ctrl+O** opens CSV, TSV, Excel, and Parquet files. A path on the command line works too. A file opens as a table read into memory by its [query engine](#query-engines), so it can be scrolled, sorted, and filtered whole. Opened files are remembered under **Recent files**.
 - **Watched files and folders:** watched files are listed under **Sources** for quick opening; nothing is read until you open one. Press **N** in the grid and drop files on the overlay, or use **Add watched files** in the command palette, to watch single files. **Add folder** watches a whole folder, and its supported files appear under **Ctrl+P** and in the database tree. Each watched file also gets a view in the profile database's `files` schema, so SQL can read it as `files.<name>` (see [File views](#file-views)).
+- **Hiding files:** in **Ctrl+P**, **Ctrl+H** hides the highlighted file from the list, for watched folders holding files you never open. **Ctrl+Shift+H** lists hidden files too, dimmed, and **Ctrl+H** on one shows it again.
 - **Clipboard:** **Ctrl+V** in the grid saves pasted text, such as cells copied from Excel or a web page, as a TSV or CSV file and opens it like any other source. Files copied in Explorer open directly.
 - **Drag and drop:** dropping files on a window opens the first one there and the rest in new windows. Dropping a DuckDB or SQLite database attaches it read-only and shows it in the database tree. To write to it, run `DETACH name; ATTACH 'path' AS name;` in the SQL editor.
 - **Database tree:** **Ctrl+B** opens a sidebar that lists saved views, SQL scripts, tables and views in the profile database and any attached databases, SQL sources, watched files and folders, recent files, and DuckDB's `duckdb_*()` metadata functions. Type to filter, press **Enter** to open, or **Shift+Enter** to open in a new window. The refresh button picks up tables created while it is open.
@@ -383,13 +384,17 @@ With the DuckDB engine, each file has one table in an internal in-memory catalog
 
 ### File views
 
-The profile database keeps a view of each watched file, and of each supported file in a watched folder, in its `files` schema: `sales.csv` becomes `files.sales_csv`. Names are lowercase, with punctuation replaced by underscores; a second file with the same name gets a number, such as `files.sales_csv_2`, in path order. A view reads its file each time it is queried, so it always shows the file as it is now, and it works from any DuckDB client that opens the profile database. Views follow the watched files and folders: they are made when a window opens and when you watch or stop watching something, and while the database tree is open, when files come or go in a watched folder. DataDiver changes only the views it made, so your own objects in `files` stay. **DuckDB: views of watched files** in **Settings** (**Ctrl+,**) turns them off, which drops them; it is on by default.
+The profile database keeps a view of each watched file, and of each supported file in a watched folder, in its `files` schema: `sales.csv` becomes `files.sales_csv`. Names are lowercase, with punctuation replaced by underscores; a second file with the same name gets a number, such as `files.sales_csv_2`, in path order. A view reads its file each time it is queried, so it always shows the file as it is now, and it works from any DuckDB client that opens the profile database. Views follow the watched files and folders: they are made when a window opens and when you watch or stop watching something, and while the database tree is open, when files come or go in a watched folder. DataDiver changes only the views it made, so your own objects in `files` stay. **DuckDB: views of watched files** in **Settings** (**Ctrl+,**) turns them off, which drops them; it is on by default. **Ctrl+P** leaves these views out, since each repeats a file it already lists; **File picker: views of watched files** in **Settings** lists them there.
+
+### The profile database
+
+Tables, views and macros you create in SQL live in DuckDB's main database. By default it is in memory and ends when DataDiver closes, so nothing is written to disk and several DataDiver processes can run at once. Turn on **DuckDB: keep a profile database** in **Settings** to keep it in `datadiver.duckdb` in the profile folder; the change applies the next time DataDiver starts, and only one process can open the file at a time.
 
 On Windows, the profile is stored in `%LOCALAPPDATA%\datadiver`; other platforms use `~/.local/share/datadiver`. Custom `--home` profiles store everything in the specified directory. The profile contains:
 
 | Path | Contents |
 | --- | --- |
-| `datadiver.duckdb` | Anything you create in SQL |
+| `datadiver.duckdb` | Anything you create in SQL, when **DuckDB: keep a profile database** is on |
 | `settings.json` | Preferences, favorites, and AI providers |
 | `keymap.json`, `theme.json` | Custom shortcuts and theme |
 | `duckdb_startup.sql` | The startup SQL script |

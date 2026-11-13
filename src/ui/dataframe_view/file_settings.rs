@@ -16,6 +16,8 @@ pub(crate) enum SettingsItem {
     DefaultCategorical,
     PreserveOrder,
     FileViews,
+    PickerFileViews,
+    ProfileDatabase,
     GridFont,
     EditorFont,
     EditorOptions,
@@ -191,6 +193,23 @@ impl DataFrameView {
         cx.notify();
     }
 
+    /// Switches keeping DuckDB's database in the profile folder. The open
+    /// database stays as it is, since every open table reads it.
+    fn toggle_profile_database(&mut self, cx: &mut Cx<Self>) {
+        let result = self.repository.load_settings().and_then(|mut settings| {
+            settings.profile_database = !settings.profile_database;
+            self.repository.save_settings(&settings).map(|()| settings.profile_database)
+        });
+        match result {
+            Ok(on) => {
+                let state = if on { "on" } else { "off" };
+                self.copy_status = Some(format!("Profile database {state} the next time DataDiver starts"));
+            }
+            Err(error) => self.error = Some(format!("Could not save settings: {error}")),
+        }
+        cx.notify();
+    }
+
     /// The file open now, read into memory or scanned in place.
     pub(crate) fn read_mode_file(&self) -> Option<PathBuf> {
         self.settings_file().or_else(|| self.query_file().map(PathBuf::from))
@@ -288,6 +307,29 @@ impl DataFrameView {
                 if settings.file_views { "On" } else { "Off" }
             ),
         ));
+        rows.push((
+            SettingsItem::PickerFileViews,
+            "File picker: views of watched files".to_owned(),
+            format!(
+                "{} · List the files schema's views under Database views in Ctrl+P, where each repeats a file already listed · Enter switches",
+                if settings.picker_file_views { "On" } else { "Off" }
+            ),
+        ));
+        // The open database follows the setting it started with.
+        let running = self.sources.database().persistent().filter(|running| *running != settings.profile_database);
+        rows.push((
+            SettingsItem::ProfileDatabase,
+            "DuckDB: keep a profile database".to_owned(),
+            format!(
+                "{}{} · Save tables, views and macros made in SQL to datadiver.duckdb; off keeps them in memory until DataDiver closes · Enter switches",
+                if settings.profile_database { "On" } else { "Off" },
+                match running {
+                    Some(true) => " after a restart (on now)",
+                    Some(false) => " after a restart (off now)",
+                    None => "",
+                }
+            ),
+        ));
         let font = |family: &Option<String>| family.clone().unwrap_or_else(|| "Default".into());
         rows.extend([
             (SettingsItem::GridFont, "Grid font".to_owned(), format!("{} · {} pt", font(&self.font.family), self.font.size)),
@@ -330,7 +372,12 @@ impl DataFrameView {
         };
         if matches!(
             item,
-            SettingsItem::DefaultEngine | SettingsItem::DefaultCategorical | SettingsItem::PreserveOrder | SettingsItem::FileViews
+            SettingsItem::DefaultEngine
+                | SettingsItem::DefaultCategorical
+                | SettingsItem::PreserveOrder
+                | SettingsItem::FileViews
+                | SettingsItem::PickerFileViews
+                | SettingsItem::ProfileDatabase
         ) {
             // Switching stays in the list, so it shows the new value.
             if item == SettingsItem::DefaultCategorical {
@@ -339,6 +386,16 @@ impl DataFrameView {
                 self.toggle_preserve_order(cx);
             } else if item == SettingsItem::FileViews {
                 self.toggle_file_views(cx);
+            } else if item == SettingsItem::PickerFileViews {
+                let result = self.repository.load_settings().and_then(|mut settings| {
+                    settings.picker_file_views = !settings.picker_file_views;
+                    self.repository.save_settings(&settings)
+                });
+                if let Err(error) = result {
+                    self.error = Some(format!("Could not save settings: {error}"));
+                }
+            } else if item == SettingsItem::ProfileDatabase {
+                self.toggle_profile_database(cx);
             } else {
                 let result = self.repository.load_settings().and_then(|mut settings| {
                     settings.default_engine = match settings.default_engine {
@@ -361,7 +418,12 @@ impl DataFrameView {
         }
         self.close_dialog(cx);
         match item {
-            SettingsItem::DefaultEngine | SettingsItem::DefaultCategorical | SettingsItem::PreserveOrder | SettingsItem::FileViews => {}
+            SettingsItem::DefaultEngine
+            | SettingsItem::DefaultCategorical
+            | SettingsItem::PreserveOrder
+            | SettingsItem::FileViews
+            | SettingsItem::PickerFileViews
+            | SettingsItem::ProfileDatabase => {}
             SettingsItem::FileEngine => self.open_engine_palette(cx),
             SettingsItem::GridFont => self.open_font_picker(FontTarget::Grid, cx),
             SettingsItem::EditorFont => self.open_font_picker(FontTarget::Editor, cx),

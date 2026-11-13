@@ -71,6 +71,11 @@ pub struct Settings {
     pub watched_folders: Vec<String>,
     /// Single files kept in the cache, outside every watched folder.
     pub watched_files: Vec<String>,
+    /// Files left out of the file picker until it shows hidden files.
+    pub hidden_files: Vec<String>,
+    /// The file picker lists the `files` schema's views of watched files,
+    /// which repeat the files it already lists.
+    pub picker_file_views: bool,
     pub favorites: [Option<FavoriteTarget>; 9],
     pub ai: crate::domain::ai::AiSettings,
     /// The engine for files without their own choice.
@@ -82,6 +87,10 @@ pub struct Settings {
     /// The profile database keeps a view of each watched file in its
     /// `files` schema, so SQL can read `files.sales_csv`.
     pub file_views: bool,
+    /// DuckDB keeps what SQL creates in `datadiver.duckdb` in the profile
+    /// folder. Off, the database is in memory and ends with the session.
+    /// Read when the database opens, so a change needs a restart.
+    pub profile_database: bool,
     /// Polars reads text columns as categoricals, for files without their
     /// own choice.
     pub polars_categorical: bool,
@@ -171,11 +180,14 @@ impl Default for Settings {
             keybindings: Default::default(),
             watched_folders: Vec::new(),
             watched_files: Vec::new(),
+            hidden_files: Vec::new(),
+            picker_file_views: false,
             favorites: Default::default(),
             ai: Default::default(),
             default_engine: Default::default(),
             preserve_order: true,
             file_views: true,
+            profile_database: false,
             polars_categorical: false,
             editor: EditorSettings::default(),
         }
@@ -883,6 +895,11 @@ fn safe_name(name: &str) -> String {
 fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     let text = fs::read_to_string(path)?;
     serde_json::from_str(&text).map_err(io::Error::other)
+}
+
+/// Whether the profile in `config` keeps its DuckDB database on disk.
+pub fn profile_database_enabled(config: &Path) -> bool {
+    read_json_or_default::<Settings>(&config.join("settings.json")).is_ok_and(|settings| settings.profile_database)
 }
 
 fn read_json_or_default<T: DeserializeOwned + Default>(path: &Path) -> io::Result<T> {

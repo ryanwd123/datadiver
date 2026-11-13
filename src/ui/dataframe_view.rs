@@ -130,6 +130,14 @@ impl FileEntry {
         self.is_saved_view() || matches!(self, Self::View(view) if view.sql_source.is_some())
     }
 
+    /// How the file picker's hidden files name this entry, when it is a file.
+    pub(crate) fn hidden_key(&self) -> Option<String> {
+        match self {
+            Self::Source(path) => Some(path.to_string_lossy().to_lowercase()),
+            Self::View(_) | Self::StartupSql => None,
+        }
+    }
+
     pub(crate) fn label(&self) -> String {
         match self {
             Self::View(view) => view.name.clone(),
@@ -619,6 +627,10 @@ pub struct DataFrameView {
     slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
     pub(crate) file_groups: [Vec<FileEntry>; 6],
     pub(crate) file_loading: bool,
+    /// Lowercase paths of the files hidden from the file picker.
+    pub(crate) file_hidden: std::collections::HashSet<String>,
+    /// The file picker lists hidden files too, dimmed.
+    pub(crate) file_show_hidden: bool,
     file_revision: u64,
     pub(crate) space_menu_open: bool,
     /// The Command menu, opened with Ctrl+K: keys for commands used less often.
@@ -899,6 +911,8 @@ impl DataFrameView {
             slicer_discovery: None,
             file_groups: std::array::from_fn(|_| Vec::new()),
             file_loading: false,
+            file_hidden: Default::default(),
+            file_show_hidden: false,
             file_revision: 0,
             space_menu_open: false,
             command_menu_open: false,

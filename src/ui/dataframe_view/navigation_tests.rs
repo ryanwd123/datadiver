@@ -1078,6 +1078,85 @@ fn watched_files_get_views_in_the_files_schema_unless_turned_off() {
 }
 
 #[test]
+fn the_file_picker_leaves_out_file_views_and_hidden_files_until_asked() {
+    use super::dialogs::Dialog;
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("data");
+    std::fs::create_dir_all(&folder).unwrap();
+    for name in ["a.csv", "b.csv", "c.csv"] {
+        std::fs::write(folder.join(name), "n\n1\n").unwrap();
+    }
+    let repository = repository(home.path());
+    let mut settings = repository.load_settings().unwrap();
+    assert!(!settings.picker_file_views);
+    settings.watched_folders = vec![folder.to_string_lossy().into_owned()];
+    repository.save_settings(&settings).unwrap();
+    let viewer = viewer(repository.clone());
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        view.database.connect().unwrap().execute_batch("CREATE VIEW main.mine AS SELECT 1 AS n").unwrap()
+    });
+    let open_picker = || {
+        viewer.update(|view, cx| view.open_file_palette(cx));
+        viewer.run_until_parked();
+        viewer.render();
+    };
+    let rows = || {
+        viewer.read(|view| match &view.dialog {
+            Some(Dialog::Palette(dialog)) => {
+                let list = &dialog.palette.list;
+                list.visible_items().iter().map(|&index| (list.items()[index].label.clone(), list.items()[index].muted)).collect::<Vec<_>>()
+            }
+            _ => panic!("Files is not open"),
+        })
+    };
+    let shown = |muted: bool| rows().into_iter().filter(|row| row.1 == muted).map(|row| row.0).collect::<Vec<_>>();
+
+    // The files schema has a view of each file, which the picker leaves out.
+    open_picker();
+    assert_eq!(shown(false), ["main.mine", "a.csv", "b.csv", "c.csv"]);
+
+    // Ctrl+H hides the highlighted file and moves to the next one.
+    press_each(&viewer, &["down", "down", "ctrl-h"]);
+    assert_eq!(shown(false), ["main.mine", "a.csv", "c.csv"]);
+    let hidden = || repository.load_settings().unwrap().hidden_files;
+    assert!(hidden().len() == 1 && hidden()[0].ends_with("b.csv"), "{:?}", hidden());
+    press_each(&viewer, &["ctrl-h"]);
+    assert_eq!(shown(false), ["main.mine", "a.csv"]);
+    // A view has nothing to hide.
+    press_each(&viewer, &["up", "ctrl-h"]);
+    assert_eq!(shown(false), ["main.mine", "a.csv"]);
+
+    // Hidden files stay hidden the next time, until Ctrl+Shift+H lists them.
+    viewer.close_dialog();
+    open_picker();
+    assert_eq!(shown(false), ["main.mine", "a.csv"]);
+    press_each(&viewer, &["ctrl-shift-h"]);
+    assert_eq!(shown(false), ["main.mine", "a.csv"]);
+    assert_eq!(shown(true), ["b.csv", "c.csv"]);
+    // Ctrl+H on a hidden file shows it again.
+    press_each(&viewer, &["down", "down", "ctrl-h"]);
+    assert_eq!(shown(true), ["c.csv"]);
+    assert!(hidden().len() == 1 && hidden()[0].ends_with("c.csv"), "{:?}", hidden());
+    press_each(&viewer, &["ctrl-shift-h"]);
+    assert_eq!(shown(false), ["main.mine", "a.csv", "b.csv"]);
+    // The footer's button does the same.
+    viewer.click(|hit| matches!(hit, Hit::Button(Button::FilesShowHidden)));
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(shown(true), ["c.csv"]);
+    viewer.close_dialog();
+
+    // The setting lists the files schema's views again.
+    let mut settings = repository.load_settings().unwrap();
+    settings.picker_file_views = true;
+    repository.save_settings(&settings).unwrap();
+    open_picker();
+    let labels = shown(false);
+    assert!(labels.contains(&"files.a_csv".to_owned()), "{labels:?}");
+}
+
+#[test]
 fn database_tree_reads_again_only_when_what_it_lists_may_have_changed() {
     use crate::application::state::ApplicationState;
     let home = tempfile::tempdir().unwrap();
