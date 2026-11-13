@@ -633,6 +633,9 @@ pub struct DataFrameView {
     slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
     pub(crate) file_groups: [Vec<FileEntry>; 6],
     pub(crate) file_loading: bool,
+    /// The startup script's error, until the window's first result has
+    /// published without hiding it.
+    pub(crate) startup_error: Option<String>,
     pub(crate) find: find::FindState,
     /// Lowercase paths of the files hidden from the file picker.
     pub(crate) file_hidden: std::collections::HashSet<String>,
@@ -836,6 +839,11 @@ impl DataFrameView {
             },
             |view: &mut Self, cx, result: Result<(), String>| {
                 if let Err(error) = result {
+                    // The first result may publish after this and clear the
+                    // error line, so it is kept to show again then.
+                    if view.session.result.result_revision == 0 {
+                        view.startup_error = Some(error.clone());
+                    }
                     view.error = Some(error);
                     cx.notify();
                 }
@@ -930,6 +938,7 @@ impl DataFrameView {
             slicer_discovery: None,
             file_groups: std::array::from_fn(|_| Vec::new()),
             file_loading: false,
+            startup_error: None,
             find,
             file_hidden: Default::default(),
             file_show_hidden: false,

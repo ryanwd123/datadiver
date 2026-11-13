@@ -383,7 +383,8 @@ impl DataFrameView {
                             KeyContext::QueryGrid
                         };
                         view.grid.set_keymap(view.keymap.clone(), context);
-                        view.error = None;
+                        // The startup script's error outlasts the result that raced it.
+                        view.error = view.startup_error.take();
                         if let Some(candidate) = &query_candidate {
                             candidate.finish_success(view, cx);
                         }
