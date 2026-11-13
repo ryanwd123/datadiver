@@ -240,6 +240,8 @@ Press **G**, **P**, and **A** to open the Group By, Pivot By, and Aggregations m
 
 Group By and Pivot By each provide **+ Custom expression** and an SQL editor for the selected entry. For example, group by `date_trunc('month', "date") AS month` or pivot by `upper("region") AS RegionCode`. Expressions use source columns; aggregates and window functions belong outside these row-level dimension expressions. Use `AS` for a result name or keep DuckDB's default name. Typing `"` in these editors lists column names, ranked like the search box; typing a word lists the columns, keywords and (for DuckDB files, in the aggregation editor) aggregate functions it starts, and only what the file's engine supports. SQL cards list column names after `"`.
 
+The Group By, Pivot By, Aggregations and Order By managers each open in a window of their own, which you can move and resize beside the grid so the result stays in view while you build it; each comes back where you left it relative to the main window.
+
 The Aggregations manager has a **Columns / Functions** switch. **Functions** lists the aggregates of the file's engine (every DuckDB aggregate, or those Polars SQL has), searchable by name or description, with signatures and examples; press **Enter** to insert one into the expression. Turning a structured aggregation into a custom one writes its SQL in the same engine's dialect.
 
 Apply with **Ctrl+Enter**, or use **Revert** to restore the saved entry. Invalid edits show an inline error and preserve the last successful grid. **Tab/Shift+Tab** cycles between available columns, configured entries, and SQL; **Alt+↑/↓** reorders and **Delete** removes a configured entry. Managers stay open for further edits; close with **Escape** or the close button.

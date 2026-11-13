@@ -36,7 +36,7 @@ Expressions use the source columns, row by row; aggregates and window functions 
 - **Tab** and **Shift+Tab** move between the available columns, the configured entries and the SQL.
 - **Alt+Up** and **Alt+Down** reorder the selected entry, and **Delete** removes it.
 
-The managers stay open for more edits; close them with **Esc** or the close button.
+Each manager opens in a window of its own, which you can move and resize beside the grid so the result stays in view while you build it. A manager's window comes back where you left it relative to the main window. The managers stay open for more edits; close them with **Esc** or the close button.
 
 ## Order By
 

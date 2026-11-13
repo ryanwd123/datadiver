@@ -63,6 +63,7 @@ mod help_tests;
 mod formatting_tests;
 mod input;
 mod navigation;
+mod panel_window;
 mod paste_filter;
 #[cfg(test)]
 mod navigation_tests;
@@ -655,6 +656,12 @@ pub struct DataFrameView {
     pub(crate) dialog: Option<Dialog>,
     /// The conditional formatting manager, in a window of its own.
     pub(crate) format_window: Option<format_window::FormatWindow>,
+    /// The window of the open Group By, Pivot By, Aggregations or Order By manager.
+    pub(crate) panel_window: Option<panel_window::PanelWindow>,
+    /// Manager windows told to close that have not gone yet.
+    pub(crate) closing_panels: Vec<crate::ui::platform::WindowId>,
+    /// The grid's window, kept while one manager's window replaces another.
+    pub(crate) panel_owner: Option<crate::ui::platform::WindowId>,
     /// The help, in a window of its own.
     pub(crate) help_window: Option<help_window::HelpWindow>,
     /// The focused control; `None` leaves keys to the window.
@@ -939,6 +946,9 @@ impl DataFrameView {
             keymap_editor: None,
             dialog: None,
             format_window: None,
+            panel_window: None,
+            closing_panels: Vec::new(),
+            panel_owner: None,
             help_window: None,
             focus: Some(grid_id),
             window_geometry: None,

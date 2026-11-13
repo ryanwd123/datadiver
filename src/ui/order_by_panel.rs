@@ -190,19 +190,19 @@ impl OrderByPanel {
         }
     }
 
-    pub fn height(&self, fonts: &Fonts, window_height: f32) -> f32 {
-        let line = text::line_height(&fonts.ui);
-        let list_height = (window_height - 230.0).clamp(100.0, 300.0);
-        line + 8.0 + list_height + 8.0 + line * 2.0 + 8.0
+    /// The caret of the focused input, for the window's input method.
+    pub fn caret(&self, focus: Option<WidgetId>) -> Option<Rect> {
+        self.command.query.caret_rect().filter(|_| focus == Some(self.command.query.id))
     }
 
-    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>, window_height: f32) {
+    /// Paints the manager to fill `r`.
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
         let mut row = Row::new(r, 12.0);
         let half = (r.w - 12.0) / 2.0;
         let left = row.left(half);
         let right = row.left(half);
         let line = text::line_height(&fonts.ui);
-        let list_height = (window_height - 230.0).clamp(100.0, 300.0);
+        let list_height = (r.h - line * 3.0 - 24.0).max(100.0);
         let title_font = fonts.ui.semibold();
         let mut column = Column::new(left, 8.0);
         canvas.text(column.next(line), "Available columns", &title_font, colors::FOREGROUND, Align::Left);

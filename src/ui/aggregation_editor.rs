@@ -631,31 +631,17 @@ impl AggregationPanel {
         }
     }
 
-    fn heights(window_height: f32) -> (f32, f32, f32) {
-        let available = (window_height - 290.0).clamp(90.0, 440.0);
-        let list = (available * 0.3).clamp(68.0, 150.0);
-        let editor = (window_height - 560.0).clamp(70.0, 220.0);
-        (available, list, editor)
+    /// The caret of the focused input, for the window's input method.
+    pub fn caret(&self, focus: Option<WidgetId>) -> Option<Rect> {
+        let id = focus?;
+        [&self.sql, &self.command.query, &self.functions.query].into_iter().find(|input| input.id == id)?.caret_rect()
     }
 
-    pub fn height(&self, fonts: &Fonts, window_height: f32) -> f32 {
-        let line = text::line_height(&fonts.ui);
-        let (available, list, editor) = Self::heights(window_height);
-        let left = button_height(&fonts.ui) * 2.0 + 16.0 + available + 80.0;
-        let right = line + 8.0 + list + 8.0 + line + 16.0
-            + if self.editing() {
-                button_height(&fonts.ui) + line * 2.0 + editor + 32.0 + button_height(&fonts.ui)
-                    + if self.error.is_some() { 70.0 } else { 0.0 }
-            } else {
-                line + 8.0
-            };
-        left.max(right)
-    }
-
-    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>, window_height: f32) {
+    /// Paints the manager to fill `r`.
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
         let font = &fonts.ui;
         let line = text::line_height(font);
-        let (available, list_height, editor_height) = Self::heights(window_height);
+        let list_height = (r.h * 0.28).clamp(68.0, 260.0);
         let mut row = Row::new(r, 16.0);
         let left = row.left(r.w * 0.3);
         let right = row.rest();
@@ -715,7 +701,7 @@ impl AggregationPanel {
                         .and_then(|index| self.ordered.get(index).cloned());
                     let detail_height = if highlighted.is_some() { 160.0 } else { 0.0 };
                     let rest = column.rest();
-                    let list_area = rect(rest.x, rest.y, rest.w, (rest.h - detail_height - 8.0).min(available.max(120.0)).max(80.0));
+                    let list_area = rect(rest.x, rest.y, rest.w, (rest.h - detail_height - 8.0).max(80.0));
                     let (query_id, list_id) = (self.functions.query.id, self.functions.list.id);
                     self.functions.paint(canvas, list_area, font, focus == Some(query_id), |part| match part {
                         list::Part::Query(part) => Hit::Editor(query_id, part),
@@ -741,7 +727,7 @@ impl AggregationPanel {
                 }
             }
         } else {
-            let command_area = column.next(column.rest().h.min(available + 80.0));
+            let command_area = column.rest();
             let (query_id, list_id) = (self.command.query.id, self.command.list.id);
             self.command.paint(canvas, command_area, font, focus == Some(query_id), |part| match part {
                 list::Part::Query(part) => Hit::Editor(query_id, part),
@@ -802,7 +788,9 @@ impl AggregationPanel {
             };
             canvas.text(column.next(line), rule, &fonts.small, colors::MUTED, Align::Left);
         }
-        let editor = column.next(editor_height);
+        // The editor takes the room left above the error and the buttons.
+        let reserve = button_height(font) + 8.0 + if self.error.is_some() { 78.0 } else { 0.0 };
+        let editor = column.next((column.rest().h - reserve).max(70.0));
         let sql_id = self.sql.id;
         self.sql
             .paint(canvas, editor, &fonts.mono, focus == Some(sql_id), |part| Hit::Editor(sql_id, part));

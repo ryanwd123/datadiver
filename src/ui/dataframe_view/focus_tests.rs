@@ -2308,16 +2308,18 @@ fn aggregation_function_reference_inserts_a_call_into_custom_sql() {
 fn aggregation_sql_fills_its_area_and_scrolls_multiline_content() {
     let home = tempfile::tempdir().unwrap();
     let viewer = aggregation_editor(&home);
-    let sql = (0..40).map(|_| "-- SQL line\n").collect::<String>() + "count(*)";
+    let sql = (0..120).map(|_| "-- SQL line\n").collect::<String>() + "count(*)";
     aggregation(&viewer, |panel, focus| panel.start_custom(focus));
     let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
-    for (width, height) in [(1400., 900.), (1000., 700.)] {
+    // The editor takes the room its window leaves it, and grows with it.
+    let mut heights = Vec::new();
+    for (width, height) in [(1000., 600.), (1400., 900.)] {
         viewer.resize(width, height);
         set_aggregation_sql(&viewer, &sql);
         viewer.render();
         let editor = viewer
             .app
-            .hits(viewer.id)
+            .hits(viewer.active())
             .into_iter()
             .filter(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
             .map(|region| region.rect)
@@ -2328,15 +2330,20 @@ fn aggregation_sql_fills_its_area_and_scrolls_multiline_content() {
                 }))
             })
             .expect("the SQL editor is painted");
-        let expected_height = (height - 560_f32).clamp(70., 220.);
-        assert!((expected_height - editor.h).abs() <= 2., "{} vs {expected_height}", editor.h);
         let apply = find(&viewer, Hit::Button(Button::PanelApply));
+        // Apply sits just under the editor, at the bottom of the window.
+        assert!(apply.y >= editor.bottom() && apply.bottom() <= height, "{apply:?} under {editor:?}");
+        assert!(height - apply.bottom() < 24., "{apply:?} in {height}");
+        heights.push(editor.h);
         let before = aggregation(&viewer, |panel, _| panel.sql.scroll_offset());
-        viewer.app.scroll(viewer.id, editor.center(), point(0., -5.));
-        assert!(aggregation(&viewer, |panel, _| panel.sql.scroll_offset()) > before);
+        
+        // The caret sits at the end, so the text scrolls back up.
+        viewer.app.scroll(viewer.active(), editor.center(), point(0., 5.));
+        assert!(aggregation(&viewer, |panel, _| panel.sql.scroll_offset()) < before);
         assert_eq!(find(&viewer, Hit::Button(Button::PanelApply)), apply);
         assert_eq!(aggregation_sql(&viewer), sql);
     }
+    assert!(heights[1] > heights[0] + 100., "{heights:?}");
 }
 
 #[test]
@@ -3232,18 +3239,18 @@ fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
     };
     input("\"");
     assert_eq!(menu(), Some(vec!["region".into(), "sales".into()]));
-    // The list is drawn above the dialog, where it can be clicked.
+    // The list is drawn above the manager, where it can be clicked.
     viewer.render();
     let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
     let surface = viewer
         .app
-        .hits(viewer.id)
+        .hits(viewer.active())
         .iter()
         .rposition(|region| region.hit == Hit::Surface)
         .unwrap();
     let menu_region = viewer
         .app
-        .hits(viewer.id)
+        .hits(viewer.active())
         .iter()
         .rposition(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
         .unwrap();

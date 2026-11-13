@@ -244,6 +244,9 @@ pub struct ApplicationHistory {
     pub format_window: Option<WindowGeometry>,
     /// Whether the formatting window shows its colors panel.
     pub format_colors_open: bool,
+    /// The Group By, Pivot By, Aggregations and Order By windows, by
+    /// manager: each one's offset from its grid's window, and its size.
+    pub panel_windows: std::collections::BTreeMap<String, WindowGeometry>,
 }
 
 impl Default for ApplicationHistory {
@@ -256,6 +259,7 @@ impl Default for ApplicationHistory {
             primary_window: None,
             format_window: None,
             format_colors_open: false,
+            panel_windows: Default::default(),
         }
     }
 }
@@ -539,6 +543,13 @@ impl ViewRepository {
 
     pub fn save_format_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
         self.update_history(|history| history.format_window = Some(geometry.clone()))?;
+        Ok(())
+    }
+
+    pub fn save_panel_window_geometry(&self, kind: &str, geometry: &WindowGeometry) -> io::Result<()> {
+        self.update_history(|history| {
+            history.panel_windows.insert(kind.to_owned(), geometry.clone());
+        })?;
         Ok(())
     }
 

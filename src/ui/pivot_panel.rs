@@ -500,34 +500,21 @@ impl PivotPanel {
         }
     }
 
-    fn heights(window_height: f32) -> (f32, f32, f32) {
-        let available = (window_height - 290.0).clamp(90.0, 440.0);
-        let list = (available * 0.3).clamp(68.0, 150.0);
-        let editor = (window_height - 560.0).clamp(70.0, 220.0);
-        (available, list, editor)
+    /// The caret of the focused input, for the window's input method.
+    pub fn caret(&self, focus: Option<WidgetId>) -> Option<Rect> {
+        let id = focus?;
+        [&self.sql, &self.command.query].into_iter().find(|input| input.id == id)?.caret_rect()
     }
 
-    pub fn height(&self, fonts: &Fonts, window_height: f32) -> f32 {
-        let line = text::line_height(&fonts.ui);
-        let (available, list, editor) = Self::heights(window_height);
-        let left = line + 8.0 + button_height(&fonts.ui) + 8.0 + available + 80.0;
-        let right = button_height(&fonts.ui) + 8.0 + list + 8.0 + line + 16.0
-            + if self.editing() {
-                line * 3.0 + editor + 24.0 + button_height(&fonts.ui) + if self.error.is_some() { 70.0 } else { 0.0 }
-            } else {
-                line + 8.0
-            };
-        left.max(right)
-    }
-
-    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>, window_height: f32) {
+    /// Paints the manager to fill `r`.
+    pub fn paint(&mut self, canvas: &mut Canvas<Hit>, r: Rect, fonts: &Fonts, focus: Option<WidgetId>) {
         let font = &fonts.ui;
         let line = text::line_height(font);
         let title = match self.kind {
             PivotFieldKind::GroupBy => "Group By",
             PivotFieldKind::PivotBy => "Pivot By",
         };
-        let (available, list_height, editor_height) = Self::heights(window_height);
+        let list_height = (r.h * 0.28).clamp(68.0, 260.0);
         let mut row = Row::new(r, 16.0);
         let left = row.left(r.w * 0.3);
         let right = row.rest();
@@ -544,7 +531,7 @@ impl PivotPanel {
             !self.checking,
             Hit::Button(Button::PanelCustom),
         );
-        let command_area = column.next((column.rest().h).min(available + 80.0));
+        let command_area = column.rest();
         let (query_id, list_id) = (self.command.query.id, self.command.list.id);
         self.command.paint(canvas, command_area, font, focus == Some(query_id), |part| match part {
             list::Part::Query(part) => Hit::Editor(query_id, part),
@@ -584,7 +571,9 @@ impl PivotPanel {
             colors::MUTED,
             Align::Left,
         );
-        let editor = column.next(editor_height);
+        // The editor takes the room left above the error and the buttons.
+        let reserve = button_height(font) + 8.0 + if self.error.is_some() { 78.0 } else { 0.0 };
+        let editor = column.next((column.rest().h - reserve).max(70.0));
         let sql_id = self.sql.id;
         self.sql
             .paint(canvas, editor, &fonts.mono, focus == Some(sql_id), |part| Hit::Editor(sql_id, part));

@@ -135,6 +135,12 @@ impl Viewer {
         self.app.windows().contains(&self.id)
     }
 
+    /// The window input goes to: a manager's window while one is open on
+    /// this window, since opening it makes it the active one.
+    pub fn active(&self) -> WindowId {
+        self.read(|view| view.panel_window.as_ref().map(|window| window.id)).filter(|id| self.app.windows().contains(id)).unwrap_or(self.id)
+    }
+
     pub fn read<R>(&self, f: impl FnOnce(&DataFrameView) -> R) -> R {
         self.app.read(self.id, f)
     }
@@ -151,18 +157,22 @@ impl Viewer {
 
     pub fn render(&self) {
         self.app.render(self.id);
+        let active = self.active();
+        if active != self.id {
+            self.app.render(active);
+        }
     }
 
     /// Presses each of `keys`, written like `ctrl-shift-p`.
     pub fn press(&self, keys: &str) {
         for key in keys.split_whitespace() {
-            self.app.press(self.id, key);
+            self.app.press(self.active(), key);
         }
     }
 
     /// Types `text` into the focused input.
     pub fn input(&self, text: &str) {
-        self.app.type_text(self.id, text);
+        self.app.type_text(self.active(), text);
     }
 
     pub fn run_until_parked(&self) {
@@ -182,7 +192,7 @@ impl Viewer {
     }
 
     pub fn resize(&self, width: f32, height: f32) {
-        self.app.resize(self.id, width, height);
+        self.app.resize(self.active(), width, height);
         self.render();
     }
 
@@ -246,48 +256,61 @@ impl Viewer {
 
     /// The rectangle of the last frame's top-most region matching `matches`.
     pub fn find(&self, matches: impl Fn(&Hit) -> bool) -> Option<Rect> {
-        self.app.find(self.id, matches)
+        self.locate(matches).map(|(_, region)| region)
+    }
+
+    /// The window showing a region matching `matches`, and the region: the
+    /// active window's first, then this one's.
+    fn locate(&self, matches: impl Fn(&Hit) -> bool) -> Option<(WindowId, Rect)> {
+        let active = self.active();
+        if active != self.id
+            && let Some(region) = self.app.find(active, &matches)
+        {
+            return Some((active, region));
+        }
+        self.app.find(self.id, &matches).map(|region| (self.id, region))
     }
 
     /// Clicks the middle of the region matching `matches`.
     pub fn click(&self, matches: impl Fn(&Hit) -> bool) {
         self.render();
-        let target = self.find(matches).expect("a region to click");
-        self.app.click(self.id, target.center());
+        let (window, target) = self.locate(matches).expect("a region to click");
+        self.app.click(window, target.center());
     }
 
     /// Rests the pointer at `pos`.
     pub fn hover(&self, pos: Point) {
         self.render();
-        self.app.mouse_move(self.id, pos, false);
+        self.app.mouse_move(self.active(), pos, false);
         self.render();
     }
 
     pub fn click_at(&self, pos: Point) {
-        self.app.click(self.id, pos);
+        self.app.click(self.active(), pos);
     }
 
     pub fn drag(&self, from: Point, to: Point) {
-        self.app.drag(self.id, from, to);
+        self.app.drag(self.active(), from, to);
     }
 
     /// Presses at `from` with `modifiers` held, moves to `to`, and releases.
     pub fn drag_with(&self, from: Point, to: Point, modifiers: crate::ui::platform::Modifiers) {
         self.render();
-        self.app.mouse_down(self.id, from, modifiers, 1);
+        let window = self.active();
+        self.app.mouse_down(window, from, modifiers, 1);
         self.render();
         if to != from {
-            self.app.mouse_move(self.id, to, true);
+            self.app.mouse_move(window, to, true);
             self.render();
         }
-        self.app.mouse_up(self.id, to);
+        self.app.mouse_up(window, to);
         self.render();
     }
 
     pub fn right_click(&self, matches: impl Fn(&Hit) -> bool) {
         self.render();
-        let target = self.find(matches).expect("a region to click");
-        self.app.right_click(self.id, target.center());
+        let (window, target) = self.locate(matches).expect("a region to click");
+        self.app.right_click(window, target.center());
         self.render();
     }
 

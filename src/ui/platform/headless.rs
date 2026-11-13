@@ -222,6 +222,11 @@ impl<V: View> TestApp<V> {
 
     /// Delivers `event` to window `id`, returning whether the view used it.
     pub fn dispatch(&self, id: WindowId, event: Event<V::Hit>) -> bool {
+        // Input for a window that closed on the way, such as the release of
+        // the click that closed it, goes nowhere.
+        if self.runtime.window(id).is_none() {
+            return false;
+        }
         self.update(id, |view, cx| view.event(&event, cx))
     }
 
@@ -278,7 +283,7 @@ impl<V: View> TestApp<V> {
     }
 
     fn hit_at(&self, id: WindowId, pos: Point) -> Option<V::Hit> {
-        self.slot(id).hit_at(pos)
+        self.runtime.window(id)?.hit_at(pos)
     }
 
     pub fn mouse_down(&self, id: WindowId, pos: Point, modifiers: Modifiers, clicks: u32) {
@@ -326,7 +331,10 @@ impl<V: View> TestApp<V> {
         self.render(id);
         self.mouse_down(id, pos, Modifiers::NONE, 1);
         self.mouse_up(id, pos);
-        self.render(id);
+        // The click may have closed the window.
+        if self.runtime.window(id).is_some() {
+            self.render(id);
+        }
     }
 
     pub fn right_click(&self, id: WindowId, pos: Point) {

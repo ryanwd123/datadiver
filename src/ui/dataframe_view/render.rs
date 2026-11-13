@@ -33,7 +33,7 @@ impl DataFrameView {
             }
             return;
         }
-        let modal = self.dialog.is_some() || self.cache_drop_open;
+        let modal = self.modal_dialog() || self.cache_drop_open;
         let mouse = canvas.mouse();
         if modal {
             canvas.set_mouse(None);
@@ -432,7 +432,7 @@ impl DataFrameView {
         {
             panel.paint_overlay(canvas, &fonts, focus);
         }
-        if self.dialog.is_none() {
+        if !self.modal_dialog() {
             self.grid.paint_tooltip(canvas, &fonts);
         }
     }

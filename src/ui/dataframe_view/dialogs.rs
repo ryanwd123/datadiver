@@ -171,7 +171,12 @@ impl Dialog {
 impl DataFrameView {
     pub(crate) fn open_dialog(&mut self, dialog: Dialog, focus: Option<WidgetId>, cx: &mut Cx<Self>) {
         self.close_dialog(cx);
+        let window = dialog.window();
         self.dialog = Some(dialog);
+        match window {
+            Some((kind, title, width, height)) => self.open_panel_window(kind, title, width, height, cx),
+            None => self.panel_owner = None,
+        }
         self.set_focus(focus, cx);
         cx.notify();
     }
@@ -181,6 +186,7 @@ impl DataFrameView {
         let Some(dialog) = self.dialog.take() else {
             return;
         };
+        self.close_panel_window(cx);
         match dialog {
             Dialog::Pivot(mut panel) => panel.close(),
             Dialog::Aggregation(mut panel) => panel.close(),
@@ -1737,6 +1743,10 @@ impl DataFrameView {
 
     /// Draws the open dialog over the window.
     pub(crate) fn paint_dialog(&mut self, canvas: &mut Canvas<Hit>, cx: &mut Cx<Self>) {
+        // A manager in a window of its own leaves the grid's window clear.
+        if !self.modal_dialog() {
+            return;
+        }
         let Some(dialog) = &mut self.dialog else {
             return;
         };
@@ -1748,14 +1758,13 @@ impl DataFrameView {
         let font = &fonts.ui;
         let line = text::line_height(font);
         let padding = 16.0;
-        let wide = (window_width - 48.0).clamp(240.0, 1000.0);
         let (width, top) = match dialog {
             Dialog::Information(_) => (
                 (window_width * crate::ui::info::DIALOG_FRACTION).max(240.0),
                 window_height * (1.0 - crate::ui::info::DIALOG_FRACTION) / 2.0,
             ),
-            Dialog::Pivot(_) | Dialog::Aggregation(_) => (wide, 48.0),
-            Dialog::OrderBy(_) => (760.0, 48.0),
+            // These show in a window of their own.
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => return,
             Dialog::Palette(_) => (PALETTE_WIDTH, 24.0),
             Dialog::Theme(_) => (600.0, 48.0),
             Dialog::Actions(_) => (720.0, 48.0),
@@ -1785,9 +1794,7 @@ impl DataFrameView {
                 text::layout(&confirm.message, font, crate::ui::platform::TextOptions::wrapped(content_width)).height
             }
             Dialog::Information(_) => window_height * crate::ui::info::DIALOG_FRACTION - 110.0,
-            Dialog::Pivot(panel) => panel.height(&fonts, window_height),
-            Dialog::Aggregation(panel) => panel.height(&fonts, window_height),
-            Dialog::OrderBy(panel) => panel.height(&fonts, window_height),
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => 0.0,
             Dialog::Palette(dialog) => {
                 let list_max = (window_height - 200.0).clamp(100.0, 440.0);
                 dialog.palette.height(font, list_max) + if dialog.footer.is_some() || matches!(dialog.kind, PaletteKind::Files(_)) { button_height(font) + 8.0 } else { 0.0 }
@@ -1854,17 +1861,7 @@ impl DataFrameView {
                 canvas.paragraph(content, &confirm.message, font, colors::FOREGROUND);
             }
             Dialog::Information(panel) => panel.paint(canvas, content, &fonts, focus),
-            Dialog::Pivot(panel) => {
-                canvas.push_clip(content);
-                panel.paint(canvas, content, &fonts, focus, window_height);
-                canvas.pop_clip();
-            }
-            Dialog::Aggregation(panel) => {
-                canvas.push_clip(content);
-                panel.paint(canvas, content, &fonts, focus, window_height);
-                canvas.pop_clip();
-            }
-            Dialog::OrderBy(panel) => panel.paint(canvas, content, &fonts, focus, window_height),
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => {}
             Dialog::Palette(dialog) => {
                 let footer_room = if dialog.footer.is_some() || matches!(dialog.kind, PaletteKind::Files(_)) {
                     button_height(font) + 8.0
@@ -1961,8 +1958,6 @@ impl DataFrameView {
         }
         // Completion menus of the dialog's editors go above it.
         match dialog {
-            Dialog::Pivot(panel) => panel.paint_overlay(canvas, focus),
-            Dialog::Aggregation(panel) => panel.paint_overlay(canvas, focus),
             Dialog::Theme(form) => form.paint_picker(canvas, &fonts),
             _ => {}
         }

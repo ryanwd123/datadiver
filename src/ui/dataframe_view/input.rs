@@ -17,9 +17,14 @@ impl View for DataFrameView {
             self.paint_help_window(canvas, cx);
             return;
         }
+        if self.is_panel_window(cx) {
+            self.paint_panel_window(canvas, cx);
+            return;
+        }
         self.sync_profiles(cx);
         self.render(canvas, cx);
         self.refresh_format_window(cx);
+        self.refresh_panel_window(cx);
     }
 
     fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {
@@ -28,6 +33,9 @@ impl View for DataFrameView {
         }
         if self.is_help_window(cx) {
             return self.help_window_event(event, cx);
+        }
+        if self.is_panel_window(cx) {
+            return self.panel_window_event(event, cx);
         }
         self.sync_profiles(cx);
         let before = self.focus;
@@ -92,7 +100,7 @@ impl View for DataFrameView {
     }
 
     fn close_requested(&mut self, cx: &mut Cx<Self>) -> bool {
-        if !self.is_format_window(cx) && !self.is_help_window(cx) {
+        if !self.is_format_window(cx) && !self.is_help_window(cx) && !self.is_panel_window(cx) {
             self.prepare_close(cx);
         }
         true
@@ -107,6 +115,10 @@ impl View for DataFrameView {
             self.help_window_closed(cx);
             return;
         }
+        if self.is_panel_window(cx) {
+            self.panel_window_closed(cx);
+            return;
+        }
         self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
@@ -118,6 +130,9 @@ impl View for DataFrameView {
         }
         if self.help_window.as_ref().is_some_and(|help| help.id == window) {
             return None;
+        }
+        if self.panel_window_id(window) {
+            return self.panel_window_caret();
         }
         let focus = self.focus?;
         if focus == self.search_input.id {
@@ -159,7 +174,7 @@ impl DataFrameView {
             self.focus = focus;
             return handled;
         }
-        if self.dialog.is_some() {
+        if self.modal_dialog() {
             if self.dialog_key(event, cx) {
                 return true;
             }
@@ -409,7 +424,7 @@ impl DataFrameView {
         if let Some(editor) = &mut self.keymap_editor {
             return editor.type_text(typed, focus);
         }
-        if self.dialog.is_some() {
+        if self.modal_dialog() {
             return self.dialog_text(typed, cx);
         }
         if self.space_menu_open || self.command_menu_open || self.action_menu_open || self.cache_drop_open || self.sql_helper_open {
@@ -452,7 +467,7 @@ impl DataFrameView {
             }
             self.capture = None;
             let mut focus = self.focus;
-            if self.dialog.is_none()
+            if !self.modal_dialog()
                 && self.keymap_editor.is_none()
                 && let Some(panel) = &mut self.sql_panel
                 && self.sql_panel_open
@@ -473,7 +488,7 @@ impl DataFrameView {
             self.handle_keymap_editor_events(cx);
             return;
         }
-        if self.dialog.is_some() {
+        if self.modal_dialog() {
             if matches!(hit, Hit::Backdrop) {
                 self.close_dialog(cx);
                 self.capture = None;
@@ -630,7 +645,7 @@ impl DataFrameView {
             self.mouse_drag(pos, &capture, hit, cx);
             return;
         }
-        if self.dialog.is_none() && self.keymap_editor.is_none() {
+        if !self.modal_dialog() && self.keymap_editor.is_none() {
             let grid_hit = match hit {
                 Some(Hit::Grid(grid_hit)) => Some(*grid_hit),
                 _ => None,
@@ -664,7 +679,7 @@ impl DataFrameView {
             editor.mouse_drag(pos);
             return;
         }
-        if self.dialog.is_some() {
+        if self.modal_dialog() {
             self.dialog_mouse_drag(pos);
             return;
         }
@@ -713,7 +728,9 @@ impl DataFrameView {
             editor.mouse_up();
             return;
         }
-        self.dialog_mouse_up();
+        if self.modal_dialog() {
+            self.dialog_mouse_up();
+        }
         self.grid.mouse_up();
         self.search_input.mouse_up();
         self.limit_input.mouse_up();
@@ -736,7 +753,7 @@ impl DataFrameView {
         let line = crate::ui::platform::text::line_height(&self.fonts.ui);
         let moved = if let Some(editor) = &mut self.keymap_editor {
             editor.wheel(delta, line)
-        } else if self.dialog.is_some() {
+        } else if self.modal_dialog() {
             self.dialog_wheel(hit, delta, modifiers.shift)
         } else {
             match hit {
