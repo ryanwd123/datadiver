@@ -100,8 +100,8 @@ impl DataFrameView {
         }
         self.paint_title(canvas, items.rest());
         let mut top = header.bottom();
-        // Value filter chips.
-        if !self.session.value_filters().is_empty() {
+        // Value filter chips, then the conditions on a query's result.
+        if !self.session.value_filters().is_empty() || !self.session.result_filters().is_empty() {
             let small = &fonts.small;
             let chip_height = button_height(small);
             let mut x = bounds.x + 12.0;
@@ -109,14 +109,26 @@ impl DataFrameView {
             let label_width = text::measure("Filters", small).0;
             canvas.text(rect(x, y, label_width + 4.0, chip_height), "Filters", small, colors::MUTED, Align::Left);
             x += label_width + 12.0;
-            for (index, filter) in self.session.value_filters().iter().enumerate() {
-                let label = format!("{}  ✕", filter.label());
+            let value_chips = self
+                .session
+                .value_filters()
+                .iter()
+                .enumerate()
+                .map(|(index, filter)| (filter.label(), Button::RemoveValueFilter(index)));
+            let result_chips = self
+                .session
+                .result_filters()
+                .iter()
+                .enumerate()
+                .map(|(index, filter)| (filter.label(), Button::RemoveResultFilter(index)));
+            for (label, remove) in value_chips.chain(result_chips) {
+                let label = format!("{label}  ✕");
                 let width = button_width(&label, small).min(bounds.w - 24.0);
                 if x + width > bounds.right() - 12.0 && x > bounds.x + 12.0 + label_width + 12.0 {
                     x = bounds.x + 12.0 + label_width + 12.0;
                     y += chip_height + 6.0;
                 }
-                button(canvas, rect(x, y, width, chip_height), &label, small, ButtonStyle::Outline, true, Hit::Button(Button::RemoveValueFilter(index)));
+                button(canvas, rect(x, y, width, chip_height), &label, small, ButtonStyle::Outline, true, Hit::Button(remove));
                 x += width + 8.0;
             }
             top = y + chip_height + 4.0;
@@ -290,7 +302,7 @@ impl DataFrameView {
             None
         } else if self.is_table() {
             self.session.has_filters().then(|| self.session.source.row_count())
-        } else if self.session.search_text.trim().is_empty() {
+        } else if self.session.search_text.trim().is_empty() && self.session.result_filters().is_empty() {
             None
         } else {
             self.query_cache.as_ref().map(|cache| cache.frame.row_count())

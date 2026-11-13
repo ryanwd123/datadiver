@@ -319,12 +319,15 @@ fn value_keys_on_pivot_group_cells_filter_the_source() {
     assert_eq!(column_values(&viewer).len(), 3);
     press_on_cell(&viewer, 0, 0, "-");
     assert_eq!(column_values(&viewer).len(), 2);
+    // On an aggregation cell the keys filter the result instead.
     press_on_cell(&viewer, 0, 1, "=");
     viewer.read(|view| {
-        assert!(view.error.as_deref().unwrap().contains("group-by"));
+        assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.session.value_filters().len(), 1);
+        assert_eq!(view.session.result_filters().len(), 1);
         assert!(view.session.dirty);
     });
+    assert_eq!(column_values(&viewer).len(), 1);
 }
 
 #[test]
@@ -1054,4 +1057,152 @@ fn find_highlights_and_steps_between_matches_without_filtering() {
         assert!(view.find.matches.is_none());
     });
     assert!(!repository.load_settings().unwrap().search_finds);
+}
+
+#[test]
+fn aggregation_columns_filter_groups_after_grouping_on_both_engines() {
+    use crate::domain::documents::Engine;
+    for engine in Engine::ALL {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("sales.csv");
+        std::fs::write(&path, "region,amount\nNorth,10\nNorth,20\nSouth,5\nEast,7\nEast,8\nEast,9\nWest,100\n").unwrap();
+        let repository = repository(&home.path().join("profile"));
+        let mut settings = repository.load_settings().unwrap();
+        settings.default_engine = engine;
+        repository.save_settings(&settings).unwrap();
+        let viewer = viewer(repository.clone());
+        open(&viewer, FileEntry::Source(path));
+        viewer.update(|view, cx| {
+            let config = QueryConfig {
+                group_by: vec![Dimension::Column("region".into())],
+                aggregations: vec![
+                    Aggregation {
+                        sql: None,
+                        source_column: "amount".into(),
+                        operation: AggregationOp::Sum,
+                        name: None,
+                        conditions: vec![],
+                        percentile: None,
+                        interpolation: None,
+                        ddof: None,
+                    },
+                    Aggregation {
+                        sql: None,
+                        source_column: "amount".into(),
+                        operation: AggregationOp::NonNullCount,
+                        name: None,
+                        conditions: vec![],
+                        percentile: None,
+                        interpolation: None,
+                        ddof: None,
+                    },
+                ],
+                result_sort: vec![crate::domain::documents::SortKey { column: "region".into(), descending: false }],
+                ..Default::default()
+            };
+            view.session.set_query_config(config, "Sales".into()).unwrap();
+            view.session.sort = vec![crate::domain::documents::SortKey { column: "region".into(), descending: false }];
+            view.schedule_search(String::new(), cx);
+        });
+        viewer.settle();
+        let names = column_names(&viewer);
+        assert_eq!(column_values(&viewer), [Some("East".into()), Some("North".into()), Some("South".into()), Some("West".into())], "{engine:?}");
+        let filters = || viewer.read(|view| view.session.result_filters().iter().map(|filter| filter.label()).collect::<Vec<_>>());
+
+        // W on an aggregation column asks for a condition; a bad one stays
+        // in the dialog, a good one keeps the groups that match.
+        press_on_cell(&viewer, 0, 2, "w");
+        assert!(viewer.has_dialog(), "{engine:?}");
+        viewer.input(">1 <");
+        viewer.press("enter");
+        viewer.run_until_parked();
+        assert!(viewer.has_dialog(), "{engine:?}");
+        assert!(filters().is_empty());
+        viewer.press("ctrl-a");
+        viewer.input(">1");
+        viewer.press("enter");
+        viewer.settle();
+        assert!(!viewer.has_dialog(), "{engine:?}");
+        assert_eq!(filters(), [format!("{} >1", names[2])]);
+        assert_eq!(column_values(&viewer), [Some("East".into()), Some("North".into())], "{engine:?}");
+        assert!(viewer.find(|hit| *hit == Hit::Button(Button::RemoveResultFilter(0))).is_some());
+
+        // = on a sum keeps the groups with that total, joining the first condition.
+        press_on_cell(&viewer, 1, 1, "=");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} >1", names[2]), format!("{} =30", names[1])]);
+        assert_eq!(column_values(&viewer), [Some("North".into())], "{engine:?}");
+
+        // W again edits the column's condition; an empty one removes it.
+        press_on_cell(&viewer, 0, 1, "w");
+        viewer.press("ctrl-a");
+        viewer.press("backspace");
+        viewer.press("enter");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} >1", names[2])]);
+
+        // A group-by column still takes a value filter, and the chip removes
+        // the condition.
+        press_on_cell(&viewer, 0, 0, "-");
+        viewer.settle();
+        assert_eq!(column_values(&viewer), [Some("North".into())], "{engine:?}");
+        viewer.click(|hit| *hit == Hit::Button(Button::RemoveResultFilter(0)));
+        viewer.settle();
+        assert!(filters().is_empty());
+        assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into()), Some("West".into())], "{engine:?}");
+
+        // Clear filters drops result conditions with the rest.
+        press_on_cell(&viewer, 2, 1, "-");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} !=100", names[1])]);
+        command(&viewer, CommandId::ClearFilters);
+        assert!(filters().is_empty());
+        assert_eq!(column_values(&viewer).len(), 4, "{engine:?}");
+    }
+}
+
+#[test]
+fn an_aggregation_filter_sees_every_group_of_a_result_the_row_limit_cut() {
+    use crate::domain::documents::DatabaseView;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let mut settings = repository.load_settings().unwrap();
+    settings.query_limit = 2;
+    repository.save_settings(&settings).unwrap();
+    let viewer = viewer(repository);
+    viewer.read(|view| {
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch(
+                "CREATE VIEW main.sales AS SELECT range % 5 AS k FROM range(50) UNION ALL SELECT 9 FROM range(30)",
+            )
+            .unwrap()
+    });
+    open(&viewer, FileEntry::View(DocumentDefinition::draft_database_view(DatabaseView::view("main", "sales"))));
+    viewer.update(|view, cx| {
+        let config = QueryConfig {
+            group_by: vec![Dimension::Column("k".into())],
+            aggregations: vec![Aggregation {
+                sql: None,
+                source_column: "k".into(),
+                operation: AggregationOp::RowCount,
+                name: None,
+                conditions: vec![],
+                percentile: None,
+                interpolation: None,
+                ddof: None,
+            }],
+            ..Default::default()
+        };
+        view.session.set_query_config(config, "Sales".into()).unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.settle();
+    // Two of the six groups are shown.
+    assert_eq!(column_values(&viewer).len(), 2);
+    let count = column_names(&viewer)[1].clone();
+    viewer.update(|view, cx| view.set_result_filter(&count, ">10", cx).unwrap());
+    viewer.settle();
+    assert_eq!(column_values(&viewer), [Some("9".into())]);
 }

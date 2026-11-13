@@ -1590,6 +1590,7 @@ mod tests {
             }],
             result_sort: vec![],
             totals: false,
+            result_filters: Vec::new(),
         }
     }
 
@@ -1612,6 +1613,7 @@ mod tests {
                 ..athlete_config().aggregations[0].clone()
             }],
             totals: true,
+            result_filters: Vec::new(),
             ..Default::default()
         }
     }
@@ -1708,6 +1710,7 @@ mod tests {
         let no_aggregates = QueryConfig {
             group_by: vec!["Year".into()],
             totals: true,
+            result_filters: Vec::new(),
             ..Default::default()
         };
         assert!(
@@ -1975,6 +1978,7 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
+                result_filters: Vec::new(),
             },
             &[],
         )
@@ -2004,6 +2008,7 @@ mod tests {
             }],
             result_sort: vec![],
             totals: false,
+            result_filters: Vec::new(),
         };
         let result = execute(&source(), &config, &[]).unwrap();
         assert_eq!(result.row_count(), 2);
@@ -2041,6 +2046,7 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
+                result_filters: Vec::new(),
             },
             &[],
         )

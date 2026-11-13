@@ -663,6 +663,7 @@ impl DataFrameView {
             return;
         };
         let narrowed = !self.session.search_text.trim().is_empty()
+            || !self.session.result_filters().is_empty()
             || self
                 .query_cache
                 .as_ref()
@@ -717,6 +718,22 @@ impl DataFrameView {
             sort: self.session.sort.clone(),
         })
     }
+}
+
+/// A query's result filters as filters over its result, leaving out those
+/// whose column the result no longer has, such as a pivot value that went.
+pub(crate) fn result_column_filters(config: &QueryConfig, schema: &[ColumnSchema]) -> Vec<crate::infrastructure::store::ColumnFilter> {
+    config
+        .result_filters
+        .iter()
+        .filter(|filter| schema.iter().any(|column| column.name == filter.column))
+        .map(|filter| crate::infrastructure::store::ColumnFilter {
+            column: filter.column.clone(),
+            values: Vec::new(),
+            condition: Some(filter.condition.clone()),
+            sql: false,
+        })
+        .collect()
 }
 
 type PipelineSuccess = (ResultSnapshot, Option<FrameSnapshot>, Option<Vec<SortKey>>, Option<ViewQuery>);
@@ -819,14 +836,14 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
                 hidden: Vec::new(),
                 value_filters: Vec::new(),
                 tokens: request.tokens,
-                filters: Vec::new(),
+                filters: result_column_filters(config, &schema),
                 sort: sort.clone(),
             };
             // A result that stopped at the limit is missing rows, so
             // search and sort rerun inside the query to see all of them.
             // The unnarrowed result stays cached for the next request.
             let narrowed = if pivot_store.cut_at().is_some()
-                && (!view.tokens.is_empty() || !view.sort.is_empty())
+                && (!view.tokens.is_empty() || !view.filters.is_empty() || !view.sort.is_empty())
             {
                 let source_store = request
                     .source

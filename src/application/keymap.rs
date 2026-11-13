@@ -231,6 +231,7 @@ pub enum ActionId {
     CommandMenuRunAction,
     FilterToValue,
     ExcludeValue,
+    ResultFilter,
     PasteFilter,
     DrillDown,
     DrillDownNewWindow,
@@ -1187,6 +1188,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::Grid,
         command: Some(CommandId::ExcludeValue),
         default_bindings: &["-"],
+    },
+    ActionSpec {
+        id: ActionId::ResultFilter,
+        category: ActionCategory::DataExploration,
+        name: "Filter aggregation column",
+        context: KeyContext::QueryGrid,
+        command: Some(CommandId::ResultFilter),
+        default_bindings: &["w"],
     },
     ActionSpec {
         id: ActionId::PasteFilter,

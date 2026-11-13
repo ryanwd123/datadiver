@@ -3116,6 +3116,7 @@ mod tests {
                 }],
                 result_sort: vec![],
                 totals: false,
+                result_filters: Vec::new(),
             };
             let slicers = [SlicerDefinition {
                 sql: false,

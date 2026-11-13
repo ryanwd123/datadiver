@@ -68,6 +68,7 @@ pub enum CommandId {
     ShowAllColumns,
     FilterToValue,
     ExcludeValue,
+    ResultFilter,
     PasteFilter,
     DrillDown,
     DrillDownNewWindow,
@@ -547,6 +548,12 @@ pub const COMMANDS: &[Command] = &[
         key: "exclude_value",
         label: "Exclude selected values",
         default_binding: Some("-"),
+    },
+    Command {
+        id: CommandId::ResultFilter,
+        key: "result_filter",
+        label: "Filter aggregation column",
+        default_binding: Some("w"),
     },
     Command {
         id: CommandId::PasteFilter,

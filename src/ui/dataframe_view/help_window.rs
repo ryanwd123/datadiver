@@ -75,6 +75,7 @@ impl DataFrameView {
                 Dialog::Theme(_) => "settings#themes-and-fonts",
                 Dialog::Information(_) => "grid#information-and-column-profiles",
                 Dialog::Save { .. } => "views#saving-views",
+                Dialog::ResultFilter { .. } => "slicers#filtering-aggregation-columns",
                 Dialog::Palette(_) | Dialog::Confirm(_) => "start",
             };
         }

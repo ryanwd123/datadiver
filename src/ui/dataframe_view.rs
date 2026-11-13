@@ -307,6 +307,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::AddSlicer,
     CommandId::FilterToValue,
     CommandId::ExcludeValue,
+    CommandId::ResultFilter,
     CommandId::PasteFilter,
     CommandId::DrillDown,
     CommandId::DrillDownNewWindow,
@@ -476,7 +477,7 @@ impl UnlimitedQuery {
             .query_view_rows(&ViewQuery {
                 hidden: Vec::new(),
                 tokens: self.tokens,
-                filters: Vec::new(),
+                filters: pipeline::result_column_filters(&self.config, &schema),
                 value_filters: Vec::new(),
                 sort: available_sort_keys(&self.sort, &schema),
             })?;

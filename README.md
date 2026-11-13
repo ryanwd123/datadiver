@@ -122,6 +122,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | G / A / P / O | Group By / Aggregations / Pivot By / Order By |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
+| W | Filter the aggregation column under the cursor |
 | Ctrl+Shift+V | Keep or exclude rows by values on the clipboard |
 | Enter | Drill down from a query cell to its source rows |
 | Shift+Enter | Drill down in a new window |
@@ -228,6 +229,8 @@ The same **Limit**, one setting for every window, also caps how many rows of a f
 ## Filters and drill-down
 
 Press **=** in the grid to keep only rows whose value in the active column equals the active cell, or **-** to exclude them. With several cells selected, each selected column is filtered to (or from) the values selected in it, shown as `in (…)` or `not in (…)`. Pressing **-** again on the same column adds the value to its `not in` filter rather than making a new one; excluding an empty cell is a filter of its own, `is not null`, and excluding values keeps empty cells. Filters match the value as the grid shows it before number formatting, including empty (NULL) cells. In a query, **=** and **-** work on group-by cells and filter the source rows before grouping. Active filters appear as chips under the header; click a chip to remove it, or use **Clear filters**. Filters are saved with a view.
+
+**Filtering aggregation columns.** In a grouped or pivoted view, the aggregation columns take conditions too. These apply to the **result**, after grouping, like SQL's `HAVING`: group by customer, count rows, and keep the groups with a count over 1 to find duplicates. **W** on an aggregation column asks for a condition in the condition card language, such as `>100`, `10..20` or `!=0`. Pressing **W** on a column that has one edits it, and an empty condition removes it. **=** on an aggregation cell keeps the groups with that value, and **-** drops them. Each column has one condition, and conditions on several columns must all hold. They show as chips next to the other filters, are saved with the view, and see every group even when the row limit cuts the result. Totals still cover all groups.
 
 In a query result, press **Enter** on a cell to open the source table filtered to the rows behind it: the row's group-by values, plus the pivot values when the cell is a pivoted measure. The query's slicer selections and filters carry over. Press **U** (Back) to return to the query, or use **Shift+Enter** to open the drill-down in a new window and keep the query where it is.
 

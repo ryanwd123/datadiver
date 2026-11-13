@@ -101,12 +101,23 @@ pub enum Dialog {
     Actions(ActionsEditor),
     AiSettings(AiSettingsEditor),
     PasteFilter(super::paste_filter::PasteFilterDialog),
+    /// A condition on one column of a query's result.
+    ResultFilter {
+        column: String,
+        input: Editor,
+        error: Option<String>,
+    },
 }
+
+/// What the result filter dialog says under its input.
+const RESULT_FILTER_HINT: &str =
+    "Keeps groups whose value matches, after grouping: >100 · >=10 <100 · 10..20 · =5 · !=0 · Empty removes the filter";
 
 impl Dialog {
     fn title(&self) -> String {
         match self {
             Dialog::Save { .. } => "Save view".into(),
+            Dialog::ResultFilter { column, .. } => format!("Filter {column}"),
             Dialog::Confirm(confirm) => confirm.title.clone(),
             Dialog::Information(_) => "Information".into(),
             Dialog::Pivot(_) => String::new(),
@@ -128,6 +139,10 @@ impl Dialog {
         match self {
             Dialog::Save { .. } => vec![
                 ("Save", Button::DialogOk, ButtonStyle::Primary),
+                ("Cancel", Button::DialogCancel, ButtonStyle::Outline),
+            ],
+            Dialog::ResultFilter { .. } => vec![
+                ("Apply", Button::DialogOk, ButtonStyle::Primary),
                 ("Cancel", Button::DialogCancel, ButtonStyle::Outline),
             ],
             Dialog::Confirm(confirm) => vec![
@@ -200,6 +215,41 @@ impl DataFrameView {
         name.select_all();
         let id = name.id;
         self.open_dialog(Dialog::Save { name }, Some(id), cx);
+    }
+
+    /// Asks for a condition on the aggregation column under the cursor.
+    pub(crate) fn open_result_filter(&mut self, cx: &mut Cx<Self>) {
+        let Some((_, column)) = self.active_result_column() else {
+            self.copy_status = Some("Put the cursor on an aggregation column of a grouped view to filter it".into());
+            cx.notify();
+            return;
+        };
+        let mut input = Editor::single_line().with_placeholder("Condition, such as >100");
+        if let Some(filter) = self.session.result_filters().iter().find(|filter| filter.column == column) {
+            input.set_text(filter.condition.clone());
+            input.select_all();
+        }
+        let id = input.id;
+        self.open_dialog(Dialog::ResultFilter { column, input, error: None }, Some(id), cx);
+    }
+
+    /// Applies the result filter dialog; a condition that does not read
+    /// stays in the dialog with its error.
+    fn apply_result_filter_dialog(&mut self, cx: &mut Cx<Self>) -> bool {
+        let Some(Dialog::ResultFilter { column, input, .. }) = &self.dialog else {
+            return false;
+        };
+        let (column, condition) = (column.clone(), input.text().to_owned());
+        match self.set_result_filter(&column, &condition, cx) {
+            Ok(()) => true,
+            Err(message) => {
+                if let Some(Dialog::ResultFilter { error, .. }) = &mut self.dialog {
+                    *error = Some(message);
+                }
+                cx.notify();
+                false
+            }
+        }
     }
 
     fn save_from_dialog(&mut self, cx: &mut Cx<Self>) -> bool {
@@ -1286,6 +1336,19 @@ impl DataFrameView {
                 }
                 outcome.handled
             }
+            Some(Dialog::ResultFilter { input, error, .. }) => {
+                let outcome = input.key(event);
+                if outcome.submit {
+                    if self.apply_result_filter_dialog(cx) {
+                        self.close_dialog(cx);
+                    }
+                    return true;
+                }
+                if outcome.changed {
+                    *error = None;
+                }
+                outcome.handled
+            }
             Some(Dialog::PasteFilter(_)) => return self.paste_filter_key(event, cx),
             Some(Dialog::Confirm(confirm)) => {
                 if event.is("enter") {
@@ -1419,6 +1482,10 @@ impl DataFrameView {
         let used = match &mut self.dialog {
             None => return false,
             Some(Dialog::Save { name }) => focus == Some(name.id) && name.type_text(typed).handled,
+            Some(Dialog::ResultFilter { input, error, .. }) => {
+                *error = None;
+                focus == Some(input.id) && input.type_text(typed).handled
+            }
             Some(Dialog::Pivot(panel)) => panel.type_text(typed, focus),
             Some(Dialog::Aggregation(panel)) => panel.type_text(typed, focus),
             Some(Dialog::OrderBy(panel)) => panel.type_text(typed, focus),
@@ -1458,6 +1525,11 @@ impl DataFrameView {
                 match &self.dialog {
                     Some(Dialog::Save { .. }) => {
                         if self.save_from_dialog(cx) {
+                            self.close_dialog(cx);
+                        }
+                    }
+                    Some(Dialog::ResultFilter { .. }) => {
+                        if self.apply_result_filter_dialog(cx) {
                             self.close_dialog(cx);
                         }
                     }
@@ -1514,7 +1586,7 @@ impl DataFrameView {
                 return;
             }
             _ => match &mut self.dialog {
-                Some(Dialog::Save { name }) => {
+                Some(Dialog::Save { name } | Dialog::ResultFilter { input: name, .. }) => {
                     if let Hit::Editor(id, part) = hit
                         && *id == name.id
                     {
@@ -1616,7 +1688,7 @@ impl DataFrameView {
 
     pub(crate) fn dialog_mouse_drag(&mut self, pos: Point) {
         match &mut self.dialog {
-            Some(Dialog::Save { name }) => name.mouse_drag(pos),
+            Some(Dialog::Save { name } | Dialog::ResultFilter { input: name, .. }) => name.mouse_drag(pos),
             Some(Dialog::Information(panel)) => {
                 if panel.editor.is_dragging() {
                     panel.editor.mouse_drag(pos)
@@ -1636,7 +1708,7 @@ impl DataFrameView {
 
     pub(crate) fn dialog_mouse_up(&mut self) {
         match &mut self.dialog {
-            Some(Dialog::Save { name }) => name.mouse_up(),
+            Some(Dialog::Save { name } | Dialog::ResultFilter { input: name, .. }) => name.mouse_up(),
             Some(Dialog::Information(panel)) => panel.editor.mouse_up(),
             Some(Dialog::Pivot(panel)) => panel.mouse_up(),
             Some(Dialog::Aggregation(panel)) => panel.mouse_up(),
@@ -1689,6 +1761,7 @@ impl DataFrameView {
             Dialog::Actions(_) => (720.0, 48.0),
             Dialog::AiSettings(_) => (760.0, 48.0),
             Dialog::SlicerPicker(_) | Dialog::Save { .. } | Dialog::Confirm(_) => (520.0, 96.0),
+            Dialog::ResultFilter { .. } => (640.0, 96.0),
             Dialog::PasteFilter(_) => (640.0, 96.0),
         };
         let width = width.min(window_width - 16.0).max(200.0);
@@ -1701,6 +1774,12 @@ impl DataFrameView {
         let content_height = match dialog {
             Dialog::Save { .. } => {
                 Editor::line_box_height(font) + if self.error.is_some() { line + 8.0 } else { 0.0 }
+            }
+            Dialog::ResultFilter { error, .. } => {
+                let note = error.as_deref().unwrap_or(RESULT_FILTER_HINT);
+                Editor::line_box_height(font)
+                    + 8.0
+                    + text::layout(note, &fonts.small, crate::ui::platform::TextOptions::wrapped(content_width)).height
             }
             Dialog::Confirm(confirm) => {
                 text::layout(&confirm.message, font, crate::ui::platform::TextOptions::wrapped(content_width)).height
@@ -1759,6 +1838,17 @@ impl DataFrameView {
                         Align::Left,
                     );
                 }
+            }
+            Dialog::ResultFilter { input, error, .. } => {
+                let id = input.id;
+                let box_height = Editor::line_box_height(font);
+                input.paint(canvas, content.with_h(box_height), font, focus == Some(id), |part| Hit::Editor(id, part));
+                let note = rect(content.x, content.y + box_height + 8.0, content.w, content.h - box_height - 8.0);
+                let (text, color) = match error {
+                    Some(error) => (error.as_str(), colors::DANGER),
+                    None => (RESULT_FILTER_HINT, colors::MUTED),
+                };
+                canvas.paragraph(note, text, &fonts.small, color);
             }
             Dialog::Confirm(confirm) => {
                 canvas.paragraph(content, &confirm.message, font, colors::FOREGROUND);

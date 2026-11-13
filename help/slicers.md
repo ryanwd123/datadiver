@@ -79,6 +79,15 @@ Pressing **-** again on the same column adds the value to its `not in` filter. E
 
 Active filters appear as chips under the header; click a chip to remove it, or use **Clear filters**. Filters are saved with a view.
 
+## Filtering aggregation columns
+
+In a grouped or pivoted view, the aggregation columns take conditions too. These apply to the **result**, after grouping, like SQL's `HAVING`: group by customer, count rows, and keep the groups with a count over 1 to find duplicates.
+
+- **W** on an aggregation column asks for a condition in the [condition card](#condition-cards) language, such as `>100`, `10..20` or `!=0`. Pressing **W** on a column that has one edits it, and an empty condition removes it.
+- **=** on an aggregation cell keeps the groups with that value, and **-** drops them.
+
+Each column has one condition, and conditions on several columns must all hold. They show as chips next to the other filters, are saved with the view, and see every group even when the row limit cuts the result. Totals still cover all groups.
+
 ## Filter by pasted values
 
 To filter by a list from somewhere else, such as a column copied from Excel, press **Ctrl+Shift+V** on a cell of the column to filter. An overlay names the column and counts the values on the clipboard, one per line or cell. Press **Ctrl+V** or **Enter** to keep the rows with those values, or first **-** or **Tab** to exclude them instead. The values must match the cells as the grid shows them.
@@ -89,5 +98,6 @@ In a focused value card, **Ctrl+V** selects the card's values that match the cli
 
 - Slicers, condition cards, the SQL filter and `=` / `-` filters narrow the **source rows**. In a query they apply before grouping.
 - [Search](search) narrows the **displayed rows**. In a query it applies to the result.
+- [Conditions on aggregation columns](#filtering-aggregation-columns) narrow a query's **result**, after grouping and before the row limit.
 
 Drill-downs carry slicers and filters with them, so the source rows you see match the cell you came from.

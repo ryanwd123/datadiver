@@ -1,6 +1,6 @@
 use crate::application::navigation_history::NavigationEntry;
 use crate::domain::documents::{
-    DocumentDefinition, QueryConfig, RelationKind, SortKey, SqlConfig, TableConfig, ValueFilter,
+    DocumentDefinition, QueryConfig, RelationKind, ResultFilter, SortKey, SqlConfig, TableConfig, ValueFilter,
     ViewKind,
 };
 use crate::domain::frame::{FrameSnapshot, ResultSnapshot};
@@ -563,10 +563,58 @@ impl WindowSession {
 
     pub fn has_filters(&self) -> bool {
         !self.search_text.trim().is_empty()
+            || !self.result_filters().is_empty()
             || self.working.as_ref().is_some_and(|definition| {
                 !definition.filters.is_empty()
                     || definition.slicers.iter().any(|card| card.is_active())
             })
+    }
+
+    /// The conditions on a query's result columns.
+    pub fn result_filters(&self) -> &[ResultFilter] {
+        match self.working.as_ref().map(|definition| &definition.view) {
+            Some(ViewKind::Query(config)) => &config.result_filters,
+            _ => &[],
+        }
+    }
+
+    /// Sets the condition on a result column, replacing the one it had; a
+    /// blank condition removes it. Returns whether anything changed.
+    pub fn set_result_filter(&mut self, column: &str, condition: &str) -> Result<bool, String> {
+        let condition = condition.trim();
+        let existing = self.result_filters().iter().position(|filter| filter.column == column);
+        if existing.map(|index| self.result_filters()[index].condition.as_str()).unwrap_or_default() == condition {
+            return Ok(false);
+        }
+        self.edit_definition(|definition| {
+            let ViewKind::Query(config) = &mut definition.view else {
+                return;
+            };
+            let filter = ResultFilter {
+                column: column.to_owned(),
+                condition: condition.to_owned(),
+            };
+            match existing {
+                Some(index) if condition.is_empty() => {
+                    config.result_filters.remove(index);
+                }
+                Some(index) => config.result_filters[index] = filter,
+                None => config.result_filters.push(filter),
+            }
+        })?;
+        Ok(true)
+    }
+
+    pub fn remove_result_filter(&mut self, index: usize) -> bool {
+        if index >= self.result_filters().len() {
+            return false;
+        }
+        self.edit_definition(|definition| {
+            if let ViewKind::Query(config) = &mut definition.view {
+                config.result_filters.remove(index);
+            }
+        })
+        .is_ok()
     }
 
     pub fn value_filters(&self) -> &[ValueFilter] {
@@ -625,6 +673,10 @@ impl WindowSession {
         if let Some(definition) = &mut self.working {
             let mut changed = !definition.filters.is_empty();
             definition.filters.clear();
+            if let ViewKind::Query(config) = &mut definition.view {
+                changed |= !config.result_filters.is_empty();
+                config.result_filters.clear();
+            }
             for card in &mut definition.slicers {
                 changed |= card.is_active();
                 card.clear();

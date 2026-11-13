@@ -163,6 +163,7 @@ impl DataFrameView {
             }
             CommandId::FilterToValue => self.filter_active_value(false, cx),
             CommandId::ExcludeValue => self.filter_active_value(true, cx),
+            CommandId::ResultFilter => self.open_result_filter(cx),
             CommandId::PasteFilter => {
                 let slicer = self.slicer_sidebar.focused_list(self.focus);
                 self.open_paste_filter(slicer, cx);
@@ -490,7 +491,72 @@ impl DataFrameView {
 
     /// Filters to, or with `exclude` filters out, the values of the selected
     /// cells: one filter for each selected column.
+    /// The result column under the cursor when it is one a query computes:
+    /// an aggregation, or a pivot's value column.
+    pub(crate) fn active_result_column(&self) -> Option<(usize, String)> {
+        let Some(ViewKind::Query(config)) = self.session.working.as_ref().map(|view| &view.view) else {
+            return None;
+        };
+        if config.group_by.is_empty() && config.aggregations.is_empty() {
+            return None;
+        }
+        let column = self.grid.selection()?.active.column;
+        let name = self.session.result.columns.get(column)?.0.clone();
+        (column >= config.group_by.len()).then_some((column, name))
+    }
+
+    /// Sets the condition on a result column and runs the view again.
+    /// Returns the error when the condition does not read.
+    pub(crate) fn set_result_filter(&mut self, column: &str, condition: &str, cx: &mut Cx<Self>) -> Result<(), String> {
+        self.session
+            .result
+            .store
+            .lock()
+            .map_err(|_| "store lock poisoned".to_owned())?
+            .validate_condition(column, condition)?;
+        if self.session.set_result_filter(column, condition)? {
+            self.error = None;
+            self.schedule_search(self.session.search_text.clone(), cx);
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn remove_result_filter(&mut self, index: usize, cx: &mut Cx<Self>) {
+        if self.session.remove_result_filter(index) {
+            self.schedule_search(self.session.search_text.clone(), cx);
+        }
+        cx.notify();
+    }
+
+    /// `=` and `-` on an aggregation cell: keep or drop the groups with its value.
+    fn filter_active_result_value(&mut self, column: usize, name: &str, exclude: bool, cx: &mut Cx<Self>) {
+        let result = &self.session.result;
+        let value = self
+            .grid
+            .selection()
+            .and_then(|selection| result.fetch_rows(selection.active.row, 1).ok())
+            .and_then(|rows| rows.into_iter().next())
+            .and_then(|row| row.values.get(result.column_indices[column]).cloned().flatten());
+        let outcome = match value {
+            None => Err("An empty cell has no value to filter by; press W to type a condition".to_owned()),
+            Some(value) if value.contains('"') => Err("Press W to type a condition for this value".to_owned()),
+            Some(value) => {
+                let value = if value.chars().any(char::is_whitespace) { format!("\"{value}\"") } else { value };
+                self.set_result_filter(name, &format!("{}{value}", if exclude { "!=" } else { "=" }), cx)
+            }
+        };
+        if let Err(error) = outcome {
+            self.error = Some(error);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn filter_active_value(&mut self, exclude: bool, cx: &mut Cx<Self>) {
+        if let Some((column, name)) = self.active_result_column() {
+            self.filter_active_result_value(column, &name, exclude, cx);
+            return;
+        }
         let filters = match self.selected_value_filters(exclude) {
             Ok(filters) => filters,
             Err(error) => {

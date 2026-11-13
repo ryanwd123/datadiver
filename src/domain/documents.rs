@@ -273,6 +273,24 @@ pub struct QueryConfig {
     /// correct for averages, medians, and distinct counts.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub totals: bool,
+    /// Conditions on the result's columns, applied after grouping like
+    /// SQL's HAVING. One per column.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub result_filters: Vec<ResultFilter>,
+}
+
+/// A condition on one column of a query's result, in the language of
+/// condition cards: `>100`, `10..20`, `!=0`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultFilter {
+    pub column: String,
+    pub condition: String,
+}
+
+impl ResultFilter {
+    pub fn label(&self) -> String {
+        format!("{} {}", self.column, self.condition.trim())
+    }
 }
 
 /// A SQL source, whose last statement's rows other views can be built on,
