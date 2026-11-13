@@ -979,3 +979,79 @@ fn pasted_values_select_slicer_values_and_report_the_missing_ones() {
         Some("region has none of the 1 pasted values")
     );
 }
+
+#[test]
+fn find_highlights_and_steps_between_matches_without_filtering() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("people.csv");
+    std::fs::write(&path, "name,city\nAda,London\nBob,Paris\nCy,London\nDee,Rome\nEve,london town\n").unwrap();
+    let repository = repository(&home.path().join("profile"));
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(path));
+    let active = || viewer.read(|view| view.grid.selection().map(|selection| (selection.active.row, selection.active.column)));
+    let status = || viewer.read(|view| view.find_status());
+
+    // Searching narrows the rows; switching to find brings them back and
+    // keeps the text.
+    search(&viewer, "london");
+    assert_eq!(viewer.read(|view| view.session.result.row_count()), 3);
+    assert_eq!(status(), None);
+    command(&viewer, CommandId::ToggleFind);
+    assert!(repository.load_settings().unwrap().search_finds);
+    viewer.read(|view| {
+        assert_eq!(view.session.result.row_count(), 5);
+        assert_eq!(view.search_input.text(), "london");
+        assert!(view.session.search_text.is_empty());
+        assert_eq!(view.find.matches.as_deref(), Some(&[0, 2, 4][..]));
+    });
+
+    // F3 steps forward and wraps, landing on the cell that matches.
+    viewer.select(0, 0);
+    assert_eq!(status().as_deref(), Some("Match 1 of 3"));
+    command(&viewer, CommandId::FindNext);
+    assert_eq!(active(), Some((2, 1)));
+    command(&viewer, CommandId::FindNext);
+    command(&viewer, CommandId::FindNext);
+    assert_eq!(active(), Some((0, 1)));
+    command(&viewer, CommandId::FindPrevious);
+    assert_eq!(active(), Some((4, 1)));
+    viewer.select(3, 0);
+    assert_eq!(status().as_deref(), Some("3 matching rows"));
+
+    // Enter in the search box steps too, and typing finds something else.
+    viewer.focus_search();
+    viewer.render();
+    viewer.press("shift-enter");
+    viewer.run_until_parked();
+    assert_eq!(active(), Some((2, 1)));
+    assert!(viewer.search_focused());
+    search(&viewer, "name:e");
+    viewer.read(|view| {
+        assert_eq!(view.session.result.row_count(), 5);
+        assert_eq!(view.find.matches.as_deref(), Some(&[3, 4][..]));
+    });
+    viewer.press("enter");
+    viewer.run_until_parked();
+    assert_eq!(active(), Some((3, 0)));
+
+    // Matches follow the display order after a sort, and nothing matching
+    // says so.
+    viewer.update(|view, cx| {
+        view.session.sort = vec![crate::domain::documents::SortKey { column: "name".into(), descending: true }];
+        view.schedule_search(view.session.search_text.clone(), cx);
+    });
+    viewer.run_until_parked();
+    viewer.read(|view| assert_eq!(view.find.matches.as_deref(), Some(&[0, 1][..])));
+    search(&viewer, "zzz");
+    assert_eq!(status().as_deref(), Some("No matching rows"));
+
+    // Switching back filters by the same text.
+    search(&viewer, "paris");
+    command(&viewer, CommandId::ToggleFind);
+    viewer.read(|view| {
+        assert_eq!(view.session.result.row_count(), 1);
+        assert_eq!(view.session.search_text, "paris");
+        assert!(view.find.matches.is_none());
+    });
+    assert!(!repository.load_settings().unwrap().search_finds);
+}

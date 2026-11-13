@@ -15,6 +15,7 @@ pub(crate) enum ViewOption {
     Categorical,
     CrossFilter,
     AvailableFirst,
+    Find,
 }
 
 impl DataFrameView {
@@ -71,6 +72,12 @@ impl DataFrameView {
                 ));
             }
         }
+        rows.push((
+            ViewOption::Find,
+            "Search: find without filtering",
+            "Highlight what the search matches and step between the rows with Enter or F3, keeping every row".into(),
+            Some(self.find.on),
+        ));
         let slicers = self.file_settings.slicers;
         rows.push((
             ViewOption::CrossFilter,
@@ -136,6 +143,7 @@ impl DataFrameView {
             ViewOption::Categorical => self.toggle_categorical(cx),
             ViewOption::CrossFilter => self.toggle_cross_filter(cx),
             ViewOption::AvailableFirst => self.toggle_available_first(cx),
+            ViewOption::Find => self.toggle_find(cx),
         }
         let items = self.view_option_items();
         // Auto-save on a draft asks for a name instead.

@@ -71,6 +71,9 @@ pub struct Settings {
     pub watched_folders: Vec<String>,
     /// Single files kept in the cache, outside every watched folder.
     pub watched_files: Vec<String>,
+    /// The search box finds and steps between matches rather than
+    /// narrowing the rows.
+    pub search_finds: bool,
     /// Files left out of the file picker until it shows hidden files.
     pub hidden_files: Vec<String>,
     /// The file picker lists the `files` schema's views of watched files,
@@ -180,6 +183,7 @@ impl Default for Settings {
             keybindings: Default::default(),
             watched_folders: Vec::new(),
             watched_files: Vec::new(),
+            search_finds: false,
             hidden_files: Vec::new(),
             picker_file_views: false,
             favorites: Default::default(),
@@ -1186,7 +1190,7 @@ mod tests {
             .add(
                 crate::application::keymap::ActionId::Files,
                 crate::application::keymap::KeyContext::Application,
-                "ctrl-shift-f".into(),
+                "ctrl-shift-j".into(),
                 false,
             )
             .unwrap();

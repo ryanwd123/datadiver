@@ -293,6 +293,10 @@ impl DataFrameView {
                 }
                 return true;
             }
+            "enter" if self.find.on && !m.control && !m.alt => {
+                self.find_step(!m.shift, cx);
+                return true;
+            }
             "escape" if !m.modified() => {
                 // Escape first closes the column list, then clears the search.
                 if !self.search_completion.close() && !self.search_input.text().is_empty() {

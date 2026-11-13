@@ -833,6 +833,13 @@ impl GridView {
         self.keep_active_column_visible(self.viewport_width());
     }
 
+    /// Moves the active cell to `cell` and scrolls it into view.
+    pub fn jump_to_cell(&mut self, cell: Cell) {
+        self.select(cell, false);
+        self.scroll_to_row(cell.row);
+        self.keep_active_column_visible(self.viewport_width());
+    }
+
     pub fn frozen_count(&self) -> usize {
         self.frozen_count
     }

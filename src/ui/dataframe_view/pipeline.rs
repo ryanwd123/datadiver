@@ -362,7 +362,7 @@ impl DataFrameView {
                         view.session.result = snapshot.clone();
                         view.information_revision += 1;
                         view.information_busy = false;
-                        let terms = query::highlight_terms(&view.session.search_text);
+                        let terms = query::highlight_terms(view.highlight_text());
                         view.grid.set_sort(view.session.sort.clone());
                         view.grid.set_highlights(terms);
                         view.grid.replace_result(snapshot);
@@ -374,6 +374,9 @@ impl DataFrameView {
                         view.refresh_totals(cx);
                         view.refresh_formatting(cx);
                         view.refresh_cell_detail();
+                        if view.find.on {
+                            view.count_find_matches(cx);
+                        }
                         let context = if view.is_table() {
                             KeyContext::TableGrid
                         } else {

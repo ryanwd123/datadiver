@@ -50,6 +50,7 @@ mod database_tree;
 mod dialogs;
 mod editor_settings;
 mod file_settings;
+mod find;
 mod format_window;
 mod help_window;
 #[cfg(test)]
@@ -294,6 +295,9 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::Copy,
     CommandId::CopyAs,
     CommandId::Search,
+    CommandId::ToggleFind,
+    CommandId::FindNext,
+    CommandId::FindPrevious,
     CommandId::Help,
     CommandId::Info,
     CommandId::Group,
@@ -627,6 +631,7 @@ pub struct DataFrameView {
     slicer_discovery: Option<std::sync::Arc<SlicerDiscovery>>,
     pub(crate) file_groups: [Vec<FileEntry>; 6],
     pub(crate) file_loading: bool,
+    pub(crate) find: find::FindState,
     /// Lowercase paths of the files hidden from the file picker.
     pub(crate) file_hidden: std::collections::HashSet<String>,
     /// The file picker lists hidden files too, dimmed.
@@ -730,12 +735,18 @@ impl DataFrameView {
         if !session.sort.is_empty() {
             grid.set_sort(session.sort.clone());
         }
-        let mut search_input = Editor::single_line().with_placeholder("Search rows");
+        let keymap_profile = repository.paths.config.clone();
+        let settings = repository.load_settings().unwrap_or_default();
+        // A search the window starts with narrows the rows, as asked.
+        let find = find::FindState {
+            on: settings.search_finds && initial_search.is_empty(),
+            ..Default::default()
+        };
+        let mut search_input =
+            Editor::single_line().with_placeholder(if find.on { "Find in rows" } else { "Search rows" });
         if !initial_search.is_empty() {
             search_input.set_text(initial_search);
         }
-        let keymap_profile = repository.paths.config.clone();
-        let settings = repository.load_settings().unwrap_or_default();
         profiles::with(|profiles| {
             profiles
                 .column_formats
@@ -911,6 +922,7 @@ impl DataFrameView {
             slicer_discovery: None,
             file_groups: std::array::from_fn(|_| Vec::new()),
             file_loading: false,
+            find,
             file_hidden: Default::default(),
             file_show_hidden: false,
             file_revision: 0,
@@ -1162,6 +1174,11 @@ impl DataFrameView {
     }
 
     pub fn set_search_text(&mut self, text: String, cx: &mut Cx<Self>) {
+        if self.find.on {
+            self.search_input.set_text(text.clone());
+            self.set_find_text(text, false, cx);
+            return;
+        }
         // Keep the model and widget aligned before submitting the single request.
         self.session.search_text = text.clone();
         self.search_input.set_text(text.clone());

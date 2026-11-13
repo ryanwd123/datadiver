@@ -189,6 +189,8 @@ Compare two columns by putting the second column's name in double quotes after t
 
 Search words are highlighted in visible cells; column-scoped words are highlighted only in their column. While search or filters narrow the rows, the status bar shows **N of M rows**. Press **Ctrl+G** to find a column by name and move the cursor to it.
 
+**Search: find without filtering** (**Ctrl+Shift+F**, or the switch in **View options**) keeps every row and finds instead: matches are highlighted, **Enter** in the search box or **F3** moves to the next matching row, and **Shift+Enter** or **Shift+F3** to the previous one, wrapping at the ends. The status bar counts the matching rows and shows **Match N of M** on one. Press **Ctrl+Shift+F** again to filter by the same text.
+
 ## Slicers
 
 **Add slicer** (**Z**) offers three kinds of card:

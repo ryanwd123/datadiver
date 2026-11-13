@@ -56,4 +56,15 @@ Search words are highlighted in the visible cells; terms for one column are high
 
 Search narrows the rows you see. In a query it applies to the result, after grouping, while slicers and filters narrow the source rows before grouping; see [Slicers & filters](slicers#how-filters-combine).
 
+## Finding without filtering
+
+**Search: find without filtering** (**Ctrl+Shift+F**, or the switch in **View options**) keeps every row and uses the search to find instead. The same language applies, matches are highlighted, and the status bar counts the matching rows.
+
+| Key | Moves to |
+| --- | --- |
+| **Enter** in the search box, or **F3** anywhere | the next matching row |
+| **Shift+Enter** in the search box, or **Shift+F3** | the previous matching row |
+
+Stepping wraps around at the ends and lands on the first cell in the row that shows a match. The status bar shows **Match N of M** while the active cell is on a matching row. Press **Ctrl+Shift+F** again to go back to filtering by the same text. DataDiver remembers the choice.
+
 **Down** moves from the search box to the grid, and **Esc** returns to the grid too.

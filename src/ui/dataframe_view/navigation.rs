@@ -155,7 +155,8 @@ impl DataFrameView {
                             view.grid.set_keymap(view.keymap.clone(), KeyContext::QueryGrid);
                             view.grid.set_frozen_count(0);
                             view.slicer_sidebar.set_cards(Vec::new());
-                            view.search_input.set_text(view.session.search_text.clone());
+                            let text = view.session.search_text.clone();
+                    view.show_search_text(&text);
                             view.ensure_sql_panel(cx);
                             if startup_script {
                                 if let Some(panel) = &view.sql_panel {
@@ -315,7 +316,7 @@ impl DataFrameView {
                         view.source_modified = modified;
                         view.computation.invalidate(view.session.token());
                         view.session.search_text = search.clone();
-                        view.search_input.set_text(search.clone());
+                        view.show_search_text(&search);
                         view.grid.set_sort(view.session.sort.clone());
                         view.schedule_search(search, cx);
                         // The picker may have restored focus to the SQL editor we just removed.
@@ -390,7 +391,8 @@ impl DataFrameView {
             // Restore widgets once the enclosing update has finished.
             cx.defer(move |view, cx| {
                 if view.session.accepts(token) {
-                    view.search_input.set_text(view.session.search_text.clone());
+                    let text = view.session.search_text.clone();
+                    view.show_search_text(&text);
                     if view.session.is_sql() {
                         view.ensure_sql_panel(cx);
                     }

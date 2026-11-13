@@ -35,6 +35,12 @@ impl DataFrameView {
         self.sync_completion_columns();
         self.search_completion.refresh(&self.search_input);
         let text = self.search_input.text().to_owned();
+        if self.find.on {
+            if text != self.find.text {
+                self.set_find_text(text, true, cx);
+            }
+            return;
+        }
         if text != self.session.search_text {
             self.schedule_computation(text, ScheduleReason::TextEdit, cx);
         }

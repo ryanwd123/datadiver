@@ -304,6 +304,10 @@ impl DataFrameView {
             let width = text::measure(&label, font).0 + 2.0;
             canvas.text(items.left(width), &label, font, colors::FOREGROUND, Align::Left);
         }
+        if let Some(label) = self.find_status() {
+            let width = text::measure(&label, font).0 + 2.0;
+            canvas.text(items.left(width), &label, font, colors::FOREGROUND, Align::Left);
+        }
         if limit_reached {
             let message = match self.session.source.cut_at {
                 Some(limit) if self.sql_source().is_some() => status::sql_source_cut_at(limit),
