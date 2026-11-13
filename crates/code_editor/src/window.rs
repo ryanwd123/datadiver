@@ -790,6 +790,21 @@ impl Editor {
         Ok(Editor { shell })
     }
 
+    /// Moves a hosted editor to `host`, the window that now paints it, such
+    /// as one made after the editor was.
+    pub fn set_host(&self, host: HWND) {
+        let Some(mut hosted) = self.shell.hosted.get() else {
+            return;
+        };
+        hosted.host = host;
+        self.shell.hosted.set(Some(hosted));
+        let mut st = self.shell.state.borrow_mut();
+        st.hwnd = host;
+        if !host.is_invalid() {
+            st.view.dpi = unsafe { GetDpiForWindow(host) }.max(96) as f32;
+        }
+    }
+
     fn new_shell(options: Options, theme: Theme) -> Result<Rc<Shell>> {
         register_class()?;
         let state = State::new(HWND::default(), options, theme)?;

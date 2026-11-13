@@ -4,10 +4,10 @@ use crate::domain::expression_completion::{self, ExpressionCatalog};
 use crate::domain::pivot::dimension_editor_expression;
 use crate::infrastructure::duckdb_store::ColumnSchema;
 use crate::ui::hit::{Button, Hit};
-use crate::ui::input_with_autocompletion;
+use crate::ui::input_with_autocompletion::{self, SharedExpressionCatalog};
 use crate::ui::platform::keys::KeyEvent;
-use crate::ui::platform::{Align, Canvas, Point, Rect, rect, text};
-use crate::ui::widgets::editor::Editor;
+use crate::ui::platform::{Align, Canvas, Modifiers, Point, Rect, rect, text};
+use crate::ui::widgets::hosted_editor::HostedEditor;
 use crate::ui::widgets::list::{self, Item, List, Palette};
 use crate::ui::widgets::{ButtonStyle, Column, Fonts, Row, WidgetId, button, button_height, button_width, colors};
 
@@ -41,7 +41,7 @@ pub struct PivotPanel {
     configured: Vec<Dimension>,
     pub(crate) command: Palette,
     pub(crate) list: List,
-    pub(crate) sql: Editor,
+    pub(crate) sql: HostedEditor,
     selected: Option<usize>,
     custom: bool,
     initial_sql: String,
@@ -73,8 +73,10 @@ impl PivotPanel {
         blocked: Vec<Dimension>,
         engine: Engine,
     ) -> Self {
-        let catalog = ExpressionCatalog::new(schema.iter().map(|c| (c.storage_name.clone(), Some(c.sql_type.clone()))));
-        let sql = input_with_autocompletion::sql_expression(catalog, expression_completion::dialect(engine));
+        let catalog: SharedExpressionCatalog = std::rc::Rc::new(std::cell::RefCell::new(ExpressionCatalog::new(
+            schema.iter().map(|c| (c.storage_name.clone(), Some(c.sql_type.clone()))),
+        )));
+        let sql = input_with_autocompletion::expression_editor(catalog, expression_completion::dialect(engine));
         let mut panel = Self {
             id: WidgetId::new(),
             schema,
@@ -124,7 +126,7 @@ impl PivotPanel {
     }
 
     fn input_changed(&mut self) {
-        let sql = self.sql.text().to_owned();
+        let sql = self.sql.text();
         if sql != self.observed_sql {
             self.observed_sql = sql;
             self.revision += 1;
@@ -380,7 +382,7 @@ impl PivotPanel {
             self.apply();
             return self.take(true);
         }
-        if key == "tab" && !m.control && !m.alt && !(sql_focused && self.sql.completion.is_some()) {
+        if key == "tab" && !m.control && !m.alt && !(sql_focused && self.sql.completion_labels().is_some()) {
             self.cycle_focus(m.shift, focus);
             return self.take(true);
         }
@@ -410,11 +412,9 @@ impl PivotPanel {
             return self.take(outcome.handled);
         }
         if sql_focused {
-            let outcome = self.sql.key(event);
-            if outcome.changed {
-                self.input_changed();
-            }
-            return self.take(outcome.handled);
+            let handled = self.sql.key(event);
+            self.input_changed();
+            return self.take(handled);
         }
         self.take(false)
     }
@@ -432,7 +432,8 @@ impl PivotPanel {
         }
     }
 
-    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, shift: bool, focus: &mut Option<WidgetId>) -> PanelResult {
+    pub fn mouse_down(&mut self, hit: &Hit, pos: Point, clicks: u32, modifiers: Modifiers, focus: &mut Option<WidgetId>) -> PanelResult {
+        let shift = modifiers.shift;
         match hit {
             Hit::Button(Button::PanelCustom) => self.start_custom(focus),
             Hit::Button(Button::PanelRevert) => self.revert(focus),
@@ -465,11 +466,9 @@ impl PivotPanel {
                     self.list_selected(focus);
                 }
             }
-            Hit::Editor(id, part) if *id == self.sql.id => {
-                let outcome = self.sql.mouse_down(*part, pos, clicks, shift);
-                if outcome.changed {
-                    self.input_changed();
-                }
+            Hit::CodeEditor(id) if *id == self.sql.id => {
+                self.sql.mouse_down(pos, clicks, modifiers);
+                self.input_changed();
                 *focus = Some(self.sql.id);
             }
             _ => return PanelResult::default(),
@@ -481,8 +480,20 @@ impl PivotPanel {
         self.command.mouse_drag(pos);
         self.list.mouse_drag(pos);
         if self.sql.is_dragging() {
-            self.sql.mouse_drag(pos);
+            self.sql.mouse_move(pos, true);
         }
+    }
+
+    /// The pointer moved without a button down: the editor shows what it is over.
+    pub fn mouse_move(&mut self, pos: Point, hit: Option<&Hit>) {
+        let over = hit == Some(&Hit::CodeEditor(self.sql.id));
+        self.sql.mouse_move(pos, over && self.editing());
+    }
+
+    /// The window that paints the manager exists now, and the user's editor options.
+    pub fn attach(&mut self, host: Option<windows::Win32::Foundation::HWND>, settings: &crate::infrastructure::json_store::EditorSettings) {
+        self.sql.set_host(host);
+        self.sql.set_settings(settings);
     }
 
     pub fn mouse_up(&mut self) {
@@ -491,11 +502,11 @@ impl PivotPanel {
         self.sql.mouse_up();
     }
 
-    pub fn wheel(&mut self, hit: &Hit, delta: Point) -> bool {
+    pub fn wheel(&mut self, hit: &Hit, delta: Point, modifiers: Modifiers) -> bool {
         match hit {
             Hit::List(id, _) if *id == self.command.list.id => self.command.list.wheel(delta),
             Hit::List(id, _) if *id == self.list.id => self.list.wheel(delta),
-            Hit::Editor(id, _) if *id == self.sql.id => self.sql.wheel(delta),
+            Hit::CodeEditor(id) if *id == self.sql.id => self.sql.wheel(delta, modifiers),
             _ => false,
         }
     }
@@ -503,7 +514,7 @@ impl PivotPanel {
     /// The caret of the focused input, for the window's input method.
     pub fn caret(&self, focus: Option<WidgetId>) -> Option<Rect> {
         let id = focus?;
-        [&self.sql, &self.command.query].into_iter().find(|input| input.id == id)?.caret_rect()
+        if id == self.sql.id { self.sql.caret_rect() } else { self.command.query.caret_rect().filter(|_| id == self.command.query.id) }
     }
 
     /// Paints the manager to fill `r`.
@@ -575,8 +586,8 @@ impl PivotPanel {
         let reserve = button_height(font) + 8.0 + if self.error.is_some() { 78.0 } else { 0.0 };
         let editor = column.next((column.rest().h - reserve).max(70.0));
         let sql_id = self.sql.id;
-        self.sql
-            .paint(canvas, editor, &fonts.mono, focus == Some(sql_id), |part| Hit::Editor(sql_id, part));
+        canvas.stroke_rounded(editor, 4.0, if focus == Some(sql_id) { colors::FOCUS } else { colors::INPUT_BORDER }, 1.0);
+        self.sql.paint(canvas, editor.inset(1.0), &fonts.mono, focus == Some(sql_id), Hit::CodeEditor(sql_id));
         if let Some(error) = self.error.clone() {
             let area = column.rest();
             let error_rect = rect(area.x, area.y, area.w, 70.0_f32.min(area.h - button_height(font) - 8.0).max(line));
@@ -596,8 +607,10 @@ impl PivotPanel {
 
     /// The SQL editor's completion menu, drawn above the dialog.
     pub fn paint_overlay(&mut self, canvas: &mut Canvas<Hit>, focus: Option<WidgetId>) {
-        let id = self.sql.id;
-        self.sql
-            .paint_completion(canvas, focus == Some(id), |part| Hit::Editor(id, part));
+        let _ = focus;
+        if self.editing() {
+            let id = self.sql.id;
+            self.sql.paint_popups(canvas, Hit::CodeEditor(id));
+        }
     }
 }

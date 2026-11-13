@@ -64,7 +64,16 @@ impl DataFrameView {
             placement: self.panel_window_placement(kind, &cx.for_window(owner)),
             visible: true,
         };
-        let id = cx.for_window(owner).open_owned_window(options, |_, cx| cx.notify());
+        let id = cx.for_window(owner).open_owned_window(options, |view, cx| {
+            // The manager's editor paints into its window, which exists now.
+            let (host, settings) = (cx.hwnd(), view.editor_settings.clone());
+            match &mut view.dialog {
+                Some(Dialog::Pivot(panel)) => panel.attach(host, &settings),
+                Some(Dialog::Aggregation(panel)) => panel.attach(host, &settings),
+                _ => {}
+            }
+            cx.notify();
+        });
         self.panel_window = Some(PanelWindow { id, owner, kind, active: true, last_focus: None });
     }
 
@@ -187,9 +196,15 @@ impl DataFrameView {
                 }
                 true
             }
-            Event::MouseMove { pos, left_down, .. } => {
+            Event::MouseMove { pos, left_down, hit, .. } => {
                 if *left_down {
                     self.dialog_mouse_drag(*pos);
+                } else {
+                    match &mut self.dialog {
+                        Some(Dialog::Pivot(panel)) => panel.mouse_move(*pos, hit.as_ref()),
+                        Some(Dialog::Aggregation(panel)) => panel.mouse_move(*pos, hit.as_ref()),
+                        _ => {}
+                    }
                 }
                 false
             }
@@ -198,7 +213,7 @@ impl DataFrameView {
                 true
             }
             Event::Wheel { delta, modifiers, hit, .. } => {
-                hit.as_ref().is_some_and(|hit| self.dialog_wheel(hit, *delta, modifiers.shift))
+                hit.as_ref().is_some_and(|hit| self.dialog_wheel(hit, *delta, *modifiers))
             }
             Event::Activated(active) => {
                 let active = *active;
@@ -219,7 +234,15 @@ impl DataFrameView {
                 }
                 false
             }
-            Event::MouseLeave | Event::Drop { .. } | Event::Moved => false,
+            Event::MouseLeave => {
+                match &mut self.dialog {
+                    Some(Dialog::Pivot(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
+                    Some(Dialog::Aggregation(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
+                    _ => {}
+                }
+                false
+            }
+            Event::Drop { .. } | Event::Moved => false,
         };
         self.focus_changed(before, &mut main);
         self.after_input(&mut main);

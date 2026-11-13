@@ -55,7 +55,7 @@ fn offset(offset: usize) -> TextSize {
     TextSize::new(offset as u32)
 }
 
-fn ink(class: HighlightClass) -> Option<Ink> {
+pub(crate) fn ink(class: HighlightClass) -> Option<Ink> {
     Some(match class {
         HighlightClass::Keyword => Ink::Keyword,
         HighlightClass::Function | HighlightClass::Aggregate => Ink::Function,

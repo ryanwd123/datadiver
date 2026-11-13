@@ -754,7 +754,7 @@ impl DataFrameView {
         let moved = if let Some(editor) = &mut self.keymap_editor {
             editor.wheel(delta, line)
         } else if self.modal_dialog() {
-            self.dialog_wheel(hit, delta, modifiers.shift)
+            self.dialog_wheel(hit, delta, modifiers)
         } else {
             match hit {
                 Hit::Grid(grid_hit) => {

@@ -227,3 +227,114 @@ fn completion_kind(kind: diver_sql::ItemKind) -> code_editor::CompletionKind {
         ItemKind::File | ItemKind::Folder => CompletionKind::Text,
     }
 }
+
+/// The catalog an expression editor completes from, shared with the manager
+/// that fills it in.
+pub type SharedExpressionCatalog = Rc<std::cell::RefCell<ExpressionCatalog>>;
+
+/// Completions for the full editor over an expression: columns after `"`,
+/// and the columns, functions and keywords a typed word starts.
+pub fn expression_provider(catalog: SharedExpressionCatalog, dialect: Dialect) -> impl code_editor::CompletionProvider {
+    ExpressionProvider { catalog, dialect }
+}
+
+struct ExpressionProvider {
+    catalog: SharedExpressionCatalog,
+    dialect: Dialect,
+}
+
+impl code_editor::CompletionProvider for ExpressionProvider {
+    fn complete(&self, cx: &code_editor::CompletionContext) -> Vec<code_editor::CompletionItem> {
+        let word_start = cx.offset - cx.prefix.len();
+        expression_completion::completions(cx.text, cx.offset, &self.catalog.borrow(), self.dialect)
+            .into_iter()
+            .enumerate()
+            .map(|(rank, item)| {
+                // A quoted name replaces its own range; a plain word is the editor's to filter.
+                let quoted = item.range.start != word_start;
+                code_editor::CompletionItem {
+                    label: item.label,
+                    insert_text: Some(item.insert),
+                    detail: item.detail,
+                    kind: code_editor::CompletionKind::Text,
+                    range: quoted.then_some(item.range),
+                    // Already ranked: columns that fit best first.
+                    sort_text: Some(format!("{rank:05}")),
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+
+    /// A quote lists the columns.
+    fn trigger_characters(&self) -> Vec<char> {
+        vec!['"']
+    }
+
+    /// diver_sql offers the keywords that fit the caret.
+    fn extra_words(&self) -> bool {
+        false
+    }
+}
+
+/// Colors and syntax problems for an expression, from `diver_sql`.
+pub struct ExpressionLanguage {
+    catalog: SharedExpressionCatalog,
+    dialect: Dialect,
+}
+
+impl ExpressionLanguage {
+    pub fn new(catalog: SharedExpressionCatalog, dialect: Dialect) -> Self {
+        Self { catalog, dialect }
+    }
+
+    fn parse(&self, text: &str) -> diver_sql::Parse {
+        let options = diver_sql::ParseOptions {
+            dialect: self.dialect,
+            entry: diver_sql::Entry::Expression,
+        };
+        diver_sql::parse_with(text, options)
+    }
+}
+
+impl code_editor::LanguageService for ExpressionLanguage {
+    fn highlight(&self, text: &str) -> Option<Vec<(std::ops::Range<usize>, code_editor::Ink)>> {
+        let classes = diver_sql::highlight_with(&self.parse(text), &*self.catalog.borrow());
+        Some(
+            classes
+                .into_iter()
+                .filter_map(|(range, class)| {
+                    Some((usize::from(range.start())..usize::from(range.end()), crate::ui::sql_language::ink(class)?))
+                })
+                .collect(),
+        )
+    }
+
+    fn diagnostics(&self, text: &str) -> Vec<code_editor::Diagnostic> {
+        if text.trim().is_empty() {
+            return Vec::new();
+        }
+        diver_sql::diagnostics(&self.parse(text))
+            .into_iter()
+            .map(|problem| code_editor::Diagnostic {
+                range: usize::from(problem.range.start())..usize::from(problem.range.end()),
+                severity: match problem.severity {
+                    diver_sql::Severity::Error => code_editor::Severity::Error,
+                    diver_sql::Severity::Warning => code_editor::Severity::Warning,
+                    _ => code_editor::Severity::Info,
+                },
+                message: problem.message,
+            })
+            .collect()
+    }
+}
+
+/// The full SQL editor over an expression, for the Group By, Pivot By and
+/// Aggregations managers. It has no window until its manager's opens.
+pub fn expression_editor(catalog: SharedExpressionCatalog, dialect: Dialect) -> crate::ui::widgets::hosted_editor::HostedEditor {
+    crate::ui::widgets::hosted_editor::HostedEditor::sql(
+        None,
+        expression_provider(catalog.clone(), dialect),
+        ExpressionLanguage::new(catalog, dialect),
+    )
+}

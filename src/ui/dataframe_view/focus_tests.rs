@@ -2283,7 +2283,7 @@ fn aggregation_function_reference_inserts_a_call_into_custom_sql() {
     viewer.input("deviation");
     viewer.render();
     let sql_id = aggregation(&viewer, |panel, _| panel.sql.id);
-    assert!(viewer.find(|hit| matches!(hit, Hit::Editor(id, _) if *id == sql_id)).is_none());
+    assert!(viewer.find(|hit| matches!(hit, Hit::CodeEditor(id) if *id == sql_id)).is_none());
     viewer.run_until_parked();
     assert_eq!(aggregation_sql(&viewer), "");
     // Clear the query and look the function up by name; `median` comes
@@ -2321,7 +2321,7 @@ fn aggregation_sql_fills_its_area_and_scrolls_multiline_content() {
             .app
             .hits(viewer.active())
             .into_iter()
-            .filter(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
+            .filter(|region| matches!(region.hit, Hit::CodeEditor(id) if id == sql_id))
             .map(|region| region.rect)
             .fold(None::<Rect>, |all, r| {
                 Some(all.map_or(r, |all| {
@@ -2335,11 +2335,14 @@ fn aggregation_sql_fills_its_area_and_scrolls_multiline_content() {
         assert!(apply.y >= editor.bottom() && apply.bottom() <= height, "{apply:?} under {editor:?}");
         assert!(height - apply.bottom() < 24., "{apply:?} in {height}");
         heights.push(editor.h);
-        let before = aggregation(&viewer, |panel, _| panel.sql.scroll_offset());
+        let caret = || aggregation(&viewer, |panel, _| panel.sql.caret_rect().unwrap().y);
+        let before = caret();
         
-        // The caret sits at the end, so the text scrolls back up.
-        viewer.app.scroll(viewer.active(), editor.center(), point(0., 5.));
-        assert!(aggregation(&viewer, |panel, _| panel.sql.scroll_offset()) < before);
+        // The text starts at its top, so the wheel scrolls it down and the
+        // caret, on the first line, moves up with it.
+        viewer.app.scroll(viewer.active(), editor.center(), point(0., -5.));
+        viewer.render();
+        assert!(caret() < before, "{} < {before}", caret());
         assert_eq!(find(&viewer, Hit::Button(Button::PanelApply)), apply);
         assert_eq!(aggregation_sql(&viewer), sql);
     }
@@ -3225,11 +3228,7 @@ fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
     });
     let menu = || {
         aggregation(&viewer, |panel, _| {
-            panel
-                .sql
-                .completion
-                .as_ref()
-                .map(|menu| menu.items.iter().map(|item| item.label.clone()).collect::<Vec<_>>())
+            panel.sql.completion_labels()
         })
     };
     let input = |text: &str| {
@@ -3252,7 +3251,7 @@ fn aggregation_sql_editor_lists_columns_after_a_quote_above_the_dialog() {
         .app
         .hits(viewer.active())
         .iter()
-        .rposition(|region| matches!(region.hit, Hit::Editor(id, _) if id == sql_id))
+        .rposition(|region| matches!(region.hit, Hit::CodeEditor(id) if id == sql_id))
         .unwrap();
     assert!(menu_region > surface);
     // Down then Enter picks the second column; the dialog stays open.

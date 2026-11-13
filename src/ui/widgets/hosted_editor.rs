@@ -116,6 +116,21 @@ impl HostedEditor {
         }
     }
 
+    /// Paints into `host` from now on: the editor's window, once it exists.
+    pub fn set_host(&mut self, host: Option<HWND>) {
+        if let Some(host) = host {
+            self.editor.set_host(host);
+        }
+    }
+
+    /// Inserts `text` over the selection, leaving the cursor after it.
+    pub fn insert(&mut self, text: &str) {
+        let range = self.selected_range();
+        self.replace(range.clone(), text);
+        let end = range.start + text.len();
+        self.set_selection(end..end);
+    }
+
     pub fn text(&self) -> String {
         self.editor.text()
     }

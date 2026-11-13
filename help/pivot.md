@@ -36,6 +36,8 @@ Expressions use the source columns, row by row; aggregates and window functions 
 - **Tab** and **Shift+Tab** move between the available columns, the configured entries and the SQL.
 - **Alt+Up** and **Alt+Down** reorder the selected entry, and **Delete** removes it.
 
+Custom expressions in the Group By, Pivot By and Aggregations managers are written in the same editor as the [SQL panel](sql): it colors the SQL, completes columns after `"` and functions as you type, underlines syntax problems, and follows your **Editor options**.
+
 Each manager opens in a window of its own, which you can move and resize beside the grid so the result stays in view while you build it. A manager's window comes back where you left it relative to the main window. The managers stay open for more edits; close them with **Esc** or the close button.
 
 ## Order By

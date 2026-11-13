@@ -1604,7 +1604,7 @@ impl DataFrameView {
                     panel.mouse_down(hit, pos, clicks, modifiers.shift, &mut focus);
                 }
                 Some(Dialog::Pivot(panel)) => {
-                    let result = panel.mouse_down(hit, pos, clicks, modifiers.shift, &mut focus);
+                    let result = panel.mouse_down(hit, pos, clicks, modifiers, &mut focus);
                     self.focus = focus;
                     if result.close {
                         self.close_dialog(cx);
@@ -1619,7 +1619,7 @@ impl DataFrameView {
                     return;
                 }
                 Some(Dialog::Aggregation(panel)) => {
-                    let result = panel.mouse_down(hit, pos, clicks, modifiers.shift, &mut focus);
+                    let result = panel.mouse_down(hit, pos, clicks, modifiers, &mut focus);
                     self.focus = focus;
                     if let Some(event) = result.event {
                         let id = panel.id;
@@ -1728,12 +1728,13 @@ impl DataFrameView {
         }
     }
 
-    pub(crate) fn dialog_wheel(&mut self, hit: &Hit, delta: Point, shift: bool) -> bool {
+    pub(crate) fn dialog_wheel(&mut self, hit: &Hit, delta: Point, modifiers: Modifiers) -> bool {
+        let shift = modifiers.shift;
         let line = text::line_height(&self.fonts.ui);
         match &mut self.dialog {
             Some(Dialog::Information(panel)) => panel.wheel(hit, delta, shift, line),
-            Some(Dialog::Pivot(panel)) => panel.wheel(hit, delta),
-            Some(Dialog::Aggregation(panel)) => panel.wheel(hit, delta),
+            Some(Dialog::Pivot(panel)) => panel.wheel(hit, delta, modifiers),
+            Some(Dialog::Aggregation(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::OrderBy(panel)) => panel.wheel(hit, delta),
             Some(Dialog::Palette(dialog)) => dialog.palette.list.wheel(delta),
             Some(Dialog::SlicerPicker(picker)) => picker.command.list.wheel(delta),
