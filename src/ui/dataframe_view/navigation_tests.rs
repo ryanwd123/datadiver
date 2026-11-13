@@ -1661,3 +1661,73 @@ fn auto_save_keeps_saved_table_and_query_views_up_to_date() {
         assert!(!viewer.read(|view| view.session.dirty));
     }
 }
+
+#[test]
+fn database_views_take_slicers() {
+    use super::dialogs::Dialog;
+    use crate::domain::documents::DatabaseView;
+    use crate::ui::slicer_sidebar::SlicerKind;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let attached = home.path().join("other.duckdb");
+    duckdb::Connection::open(&attached)
+        .unwrap()
+        .execute_batch("CREATE TABLE t AS SELECT range AS n, range % 2 AS k FROM range(50); CREATE VIEW v AS SELECT * FROM t")
+        .unwrap();
+    let csv = home.path().join("orders.csv");
+    std::fs::write(&csv, "n,k
+1,a
+2,b
+3,a
+4,b
+5,a
+").unwrap();
+    let mut settings = repository.load_settings().unwrap();
+    settings.watched_files = vec![csv.to_string_lossy().into_owned()];
+    settings.query_limit = 1_000_000;
+    repository.save_settings(&settings).unwrap();
+    let viewer = viewer(repository);
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        view.database
+            .connect()
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE VIEW main.sales AS SELECT range AS n, range % 4 AS k FROM range(100000); ATTACH '{}' AS other (READ_ONLY)",
+                attached.display()
+            ))
+            .unwrap()
+    });
+    // A view of the profile database, of a watched file, and of an attached
+    // database: each offers its columns, and a picked value narrows the rows.
+    for (target, rows) in [
+        (DatabaseView::view("main", "sales"), 25_000),
+        (DatabaseView::view("files", "orders_csv"), 3),
+        (DatabaseView { catalog: Some("other".into()), ..DatabaseView::view("main", "v") }, 25),
+    ] {
+        let label = target.label();
+        open(&viewer, FileEntry::View(DocumentDefinition::draft_database_view(target)));
+        viewer.focus_grid();
+        viewer.select(0, 0);
+        press_each(&viewer, &["z"]);
+        viewer.settle();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{label}: {:?}", view.error);
+            let Some(Dialog::SlicerPicker(picker)) = &view.dialog else {
+                panic!("{label}: the slicer picker is open")
+            };
+            assert!(!picker.loading && picker.error.is_none(), "{label}: {:?}", picker.error);
+            assert!(picker.choices().iter().any(|choice| choice.kind == SlicerKind::Values && choice.column == "k"), "{label}");
+        });
+        viewer.input("k");
+        viewer.press("enter");
+        viewer.settle();
+        press_each(&viewer, &["escape", "escape"]);
+        viewer.click(|hit| matches!(hit, Hit::Slicer(crate::ui::hit::SlicerHit::Value { index: 0, .. })));
+        viewer.settle();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{label}: {:?}", view.error);
+            assert_eq!(view.session.result.row_count(), rows, "{label}");
+        });
+    }
+}
