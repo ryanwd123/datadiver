@@ -2714,6 +2714,48 @@ fn dimension_editor(home: &tempfile::TempDir, kind: crate::application::pivot_ed
     viewer
 }
 
+#[test]
+fn the_query_managers_share_one_window_size_and_place() {
+    use crate::application::pivot_editor::PivotFieldKind;
+    use crate::ui::{dataframe_view::DataFrameView, platform::Cx};
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.app.move_to(viewer.id, 10.0, 10.0);
+    let manager = |viewer: &Viewer| viewer.window(viewer.read(|view| view.panel_window.as_ref().unwrap().id));
+    let placement = |manager: &Viewer| {
+        let placement = manager.app.update(manager.id, |_, cx| cx.placement()).unwrap();
+        (placement.x, placement.y, placement.width, placement.height)
+    };
+
+    viewer.update(|view, cx| view.open_order_by_panel(cx));
+    let order_by = manager(&viewer);
+    order_by.app.move_to(order_by.id, 50.0, 40.0);
+    order_by.resize(700.0, 500.0);
+    viewer.close_dialog();
+    let saved = viewer.read(|view| view.repository.load_history().unwrap().panel_window.unwrap());
+    assert_eq!((saved.x, saved.y, saved.width, saved.height), (40.0, 30.0, 700.0, 500.0));
+
+    // Every other manager opens where Order By was left, at its size.
+    let opens: [&dyn Fn(&mut DataFrameView, &mut Cx<DataFrameView>); 3] = [
+        &|view, cx| view.open_pivot_panel(PivotFieldKind::GroupBy, cx),
+        &|view, cx| view.open_pivot_panel(PivotFieldKind::PivotBy, cx),
+        &|view, cx| view.open_aggregation_panel(cx),
+    ];
+    for open in opens {
+        viewer.update(|view, cx| open(view, cx));
+        assert_eq!(placement(&manager(&viewer)), (50.0, 40.0, 700.0, 500.0));
+        viewer.close_dialog();
+    }
+
+    // Moving one moves them all.
+    viewer.update(|view, cx| view.open_aggregation_panel(cx));
+    manager(&viewer).app.move_to(manager(&viewer).id, 80.0, 90.0);
+    viewer.close_dialog();
+    viewer.update(|view, cx| view.open_pivot_panel(PivotFieldKind::GroupBy, cx));
+    assert_eq!(placement(&manager(&viewer)), (80.0, 90.0, 700.0, 500.0));
+    viewer.close_dialog();
+}
+
 fn dimension_sql(viewer: &Viewer) -> String {
     dimension(viewer, |panel, _| panel.sql.text().to_owned())
 }

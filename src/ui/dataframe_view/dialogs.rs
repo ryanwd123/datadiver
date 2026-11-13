@@ -171,10 +171,10 @@ impl Dialog {
 impl DataFrameView {
     pub(crate) fn open_dialog(&mut self, dialog: Dialog, focus: Option<WidgetId>, cx: &mut Cx<Self>) {
         self.close_dialog(cx);
-        let window = dialog.window();
+        let title = dialog.window_title();
         self.dialog = Some(dialog);
-        match window {
-            Some((kind, title, width, height)) => self.open_panel_window(kind, title, width, height, cx),
+        match title {
+            Some(title) => self.open_panel_window(title, cx),
             None => self.panel_owner = None,
         }
         self.set_focus(focus, cx);

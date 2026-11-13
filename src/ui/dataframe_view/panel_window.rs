@@ -1,8 +1,8 @@
 //! The window of the Group By, Pivot By, Aggregations and Order By managers:
 //! owned by the grid's window, so the grid stays in view while its query is
 //! built. The manager is the open dialog; this window paints it and passes
-//! it input. It opens where its kind was last, relative to the grid's
-//! window, at its last size.
+//! it input. The four managers share one place and size: each opens where
+//! the last one closed, relative to the grid's window.
 
 use super::dialogs::Dialog;
 use super::*;
@@ -14,24 +14,26 @@ pub(crate) struct PanelWindow {
     pub(crate) id: WindowId,
     /// The grid's window, which owns this one.
     owner: WindowId,
-    /// Names the manager in saved placements.
-    kind: &'static str,
     active: bool,
     /// The manager's control that had focus when its window was left.
     last_focus: Option<WidgetId>,
 }
 
+/// The managers' window size before one has been moved or resized: room for
+/// the largest of them, the Aggregations manager.
+const DEFAULT_WIDTH: f32 = 1040.0;
+const DEFAULT_HEIGHT: f32 = 680.0;
+
 impl Dialog {
-    /// The manager's name in saved placements, title and default size, for
-    /// the dialogs that open in a window of their own.
-    pub(crate) fn window(&self) -> Option<(&'static str, &'static str, f32, f32)> {
+    /// The title of a dialog that opens in a window of its own.
+    pub(crate) fn window_title(&self) -> Option<&'static str> {
         match self {
             Dialog::Pivot(panel) => Some(match panel.kind() {
-                PivotFieldKind::GroupBy => ("group_by", "Group By", 980.0, 620.0),
-                PivotFieldKind::PivotBy => ("pivot_by", "Pivot By", 980.0, 620.0),
+                PivotFieldKind::GroupBy => "Group By",
+                PivotFieldKind::PivotBy => "Pivot By",
             }),
-            Dialog::Aggregation(_) => Some(("aggregations", "Aggregations", 1040.0, 680.0)),
-            Dialog::OrderBy(_) => Some(("order_by", "Order By", 760.0, 460.0)),
+            Dialog::Aggregation(_) => Some("Aggregations"),
+            Dialog::OrderBy(_) => Some("Order By"),
             _ => None,
         }
     }
@@ -54,14 +56,14 @@ impl DataFrameView {
     }
 
     /// Opens the window for the manager that is the open dialog.
-    pub(crate) fn open_panel_window(&mut self, kind: &'static str, title: &str, width: f32, height: f32, cx: &mut Cx<Self>) {
+    pub(crate) fn open_panel_window(&mut self, title: &str, cx: &mut Cx<Self>) {
         // A manager opened from a manager's window belongs to the grid's.
         let owner = self.panel_owner.take().unwrap_or(cx.window_id());
         let options = WindowOptions {
             title: title.into(),
-            width,
-            height,
-            placement: self.panel_window_placement(kind, &cx.for_window(owner)),
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+            placement: self.panel_window_placement(&cx.for_window(owner)),
             visible: true,
         };
         let id = cx.for_window(owner).open_owned_window(options, |view, cx| {
@@ -74,11 +76,11 @@ impl DataFrameView {
             }
             cx.notify();
         });
-        self.panel_window = Some(PanelWindow { id, owner, kind, active: true, last_focus: None });
+        self.panel_window = Some(PanelWindow { id, owner, active: true, last_focus: None });
     }
 
-    fn panel_window_placement(&self, kind: &str, owner: &Cx<Self>) -> Option<Placement> {
-        let saved = self.repository.load_history().ok()?.panel_windows.get(kind)?.clone();
+    fn panel_window_placement(&self, owner: &Cx<Self>) -> Option<Placement> {
+        let saved = self.repository.load_history().ok()?.panel_window?;
         let owner = owner.window_rect()?;
         let at = crate::infrastructure::json_store::WindowGeometry {
             x: owner.x + saved.x,
@@ -109,7 +111,7 @@ impl DataFrameView {
                 height: placement.height,
                 maximized: placement.maximized,
             };
-            if let Err(error) = self.repository.save_panel_window_geometry(window.kind, &geometry) {
+            if let Err(error) = self.repository.save_panel_window_geometry(&geometry) {
                 eprintln!("cannot save the manager window's placement: {error}");
             }
         }
