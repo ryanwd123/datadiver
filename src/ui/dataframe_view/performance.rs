@@ -64,6 +64,7 @@ fn prepare(view: &DataFrameView) -> Result<Option<(DocumentDefinition, DocumentD
         table.sort = vec![SortKey {
             column: first.name.clone(),
             descending: true,
+            sql: false,
         }];
     }
     repository.save_view(&mut sorted).map_err(|e| e.to_string())?;

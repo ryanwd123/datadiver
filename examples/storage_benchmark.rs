@@ -127,6 +127,7 @@ fn main() {
             vec![SortKey {
                 column: "amount".into(),
                 descending: true,
+                sql: false,
             }],
         ),
     ] {

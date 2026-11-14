@@ -12,7 +12,7 @@ use crate::ui::font_picker::FontTarget;
 use crate::ui::hit::Button;
 use crate::ui::info::InformationPanel;
 use crate::ui::keymap_editor::KeymapEditorEvent;
-use crate::ui::order_by_panel::{OrderByEdit, OrderByPanel};
+use crate::ui::order_by_panel::{OrderByEvent, OrderByPanel};
 use crate::ui::pivot_panel::PivotPanel;
 use crate::ui::platform::{Align, Canvas, KeyEvent, Modifiers, Point, point, rect, system, text};
 use crate::ui::slicer_sidebar::SlicerPicker;
@@ -445,63 +445,81 @@ impl DataFrameView {
     }
 
     pub(crate) fn open_order_by_panel(&mut self, cx: &mut Cx<Self>) {
-        let columns = self.result_column_names();
-        let panel = OrderByPanel::new(columns, self.session.sort.clone());
+        let result = &self.session.result;
+        let columns = result
+            .columns
+            .iter()
+            .zip(result.dtypes.iter())
+            .map(|(column, dtype)| (column.0.clone(), dtype.clone()))
+            .collect();
+        let panel = OrderByPanel::new(columns, self.session.sort.clone(), self.session.source.engine);
         let mut focus = None;
         panel.focus_available(&mut focus);
         self.open_dialog(Dialog::OrderBy(panel), focus, cx);
     }
 
-    fn apply_order_by(&mut self, edit: OrderByEdit, cx: &mut Cx<Self>) {
-        let changed = match &edit {
-            OrderByEdit::Add(column) => {
-                if self.session.sort.iter().any(|key| key.column == *column) {
-                    false
-                } else {
-                    self.session.set_sort_direction(column.clone(), false);
-                    true
-                }
-            }
-            OrderByEdit::Remove(column) => self.session.clear_sort_column(column),
-            OrderByEdit::Move { column, direction } => self.session.move_sort_key(column, *direction),
-            OrderByEdit::ToggleDirection(column) => {
-                if let Some(descending) = self
-                    .session
-                    .sort
-                    .iter()
-                    .find(|key| key.column == *column)
-                    .map(|key| !key.descending)
-                {
-                    self.session.set_sort_direction(column.clone(), descending);
-                    true
-                } else {
-                    false
-                }
-            }
-            OrderByEdit::SetDirection { column, descending } => {
-                if self
-                    .session
-                    .sort
-                    .iter()
-                    .find(|key| key.column == *column)
-                    .is_some_and(|key| key.descending != *descending)
-                {
-                    self.session.set_sort_direction(column.clone(), *descending);
-                    true
-                } else {
-                    false
-                }
-            }
-        };
-        if !changed {
+    /// Runs the sort the Order By manager asked for. It stays if the result
+    /// comes back, and the previous sort returns if it fails.
+    pub(crate) fn check_order_by(&mut self, event: OrderByEvent, cx: &mut Cx<Self>) {
+        let previous = self.session.sort.clone();
+        if !self.session.replace_sort(event.sort) {
+            self.finish_sort_check(None, cx);
             return;
         }
-        let sort = self.session.sort.clone();
-        self.grid.set_sort(sort.clone());
-        if let Some(Dialog::OrderBy(panel)) = &mut self.dialog {
-            panel.set_configured(sort);
-        }
+        // A pivot waiting for its rows runs nothing yet, so there is nothing to check.
+        let waiting = self.session.working.as_ref().is_some_and(|view| {
+            matches!(&view.view, ViewKind::Query(config) if !config.pivot_by.is_empty() && config.group_by.is_empty())
+        });
+        self.sort_check = Some(previous);
         self.schedule_search(self.session.search_text.clone(), cx);
+        if waiting {
+            self.finish_sort_check(None, cx);
+        } else if !self.computation.is_running() {
+            // The search did not start, such as for a search that does not parse.
+            let error = self.error.clone();
+            self.finish_sort_check(error, cx);
+        }
+    }
+
+    /// A result came back: a sort being checked worked, and an open Order By
+    /// manager shows a sort changed elsewhere, such as from a column header.
+    pub(crate) fn sync_order_by(&mut self, cx: &mut Cx<Self>) {
+        if self.sort_check.is_some() {
+            self.finish_sort_check(None, cx);
+        } else if let Some(Dialog::OrderBy(panel)) = &mut self.dialog
+            && !panel.is_checking()
+            && panel.configured() != self.session.sort.as_slice()
+        {
+            panel.finish_success(self.session.sort.clone());
+            self.refresh_panel_window(cx);
+        }
+    }
+
+    /// The sort being checked ran: `error` says why it failed.
+    pub(crate) fn finish_sort_check(&mut self, error: Option<String>, cx: &mut Cx<Self>) {
+        let previous = self.sort_check.take();
+        match error {
+            None => {
+                let sort = self.session.sort.clone();
+                self.grid.set_sort(sort.clone());
+                if let Some(Dialog::OrderBy(panel)) = &mut self.dialog {
+                    panel.finish_success(sort);
+                }
+            }
+            Some(error) => {
+                if let Some(Dialog::OrderBy(panel)) = &mut self.dialog {
+                    panel.finish_error(error);
+                }
+                if let Some(previous) = previous
+                    && self.session.replace_sort(previous)
+                {
+                    self.grid.set_sort(self.session.sort.clone());
+                    self.schedule_search(self.session.search_text.clone(), cx);
+                }
+            }
+        }
+        self.refresh_panel_window(cx);
+        cx.notify();
     }
 
     pub(crate) fn open_aggregation_panel(&mut self, cx: &mut Cx<Self>) {
@@ -545,6 +563,12 @@ impl DataFrameView {
                     };
                     let id = panel.id;
                     self.check_aggregation(id, event, cx);
+                }
+                Some(Dialog::OrderBy(panel)) => {
+                    let Some(event) = panel.take_event() else {
+                        return;
+                    };
+                    self.check_order_by(event, cx);
                 }
                 _ => return,
             }
@@ -1402,12 +1426,17 @@ impl DataFrameView {
                 handled
             }
             Some(Dialog::OrderBy(panel)) => {
-                let (handled, edit) = panel.key(event, &mut focus);
+                let result = panel.key(event, &mut focus);
                 self.focus = focus;
-                if let Some(edit) = edit {
-                    self.apply_order_by(edit, cx);
+                if result.close {
+                    self.close_dialog(cx);
+                    return true;
                 }
-                return handled;
+                if let Some(event) = result.event {
+                    self.check_order_by(event, cx);
+                    return true;
+                }
+                return result.handled;
             }
             Some(Dialog::Palette(dialog)) => {
                 if event.key == "delete" && event.modifiers.control && matches!(dialog.kind, PaletteKind::Files(_)) {
@@ -1630,10 +1659,17 @@ impl DataFrameView {
                     return;
                 }
                 Some(Dialog::OrderBy(panel)) => {
-                    if let Some(edit) = panel.mouse_down(hit, pos, clicks, &mut focus) {
-                        self.focus = focus;
-                        self.apply_order_by(edit, cx);
+                    let result = panel.mouse_down(hit, pos, clicks, modifiers, &mut focus);
+                    self.focus = focus;
+                    if result.close {
+                        self.close_dialog(cx);
+                        return;
                     }
+                    if let Some(event) = result.event {
+                        self.check_order_by(event, cx);
+                    }
+                    cx.notify();
+                    return;
                 }
                 Some(Dialog::Palette(dialog)) => {
                     let part = match hit {
@@ -1735,7 +1771,7 @@ impl DataFrameView {
             Some(Dialog::Information(panel)) => panel.wheel(hit, delta, shift, line),
             Some(Dialog::Pivot(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::Aggregation(panel)) => panel.wheel(hit, delta, modifiers),
-            Some(Dialog::OrderBy(panel)) => panel.wheel(hit, delta),
+            Some(Dialog::OrderBy(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::Palette(dialog)) => dialog.palette.list.wheel(delta),
             Some(Dialog::SlicerPicker(picker)) => picker.command.list.wheel(delta),
             _ => false,

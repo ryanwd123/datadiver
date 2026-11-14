@@ -511,7 +511,8 @@ impl WindowSession {
             self.source
                 .columns
                 .iter()
-                .any(|column| column.0 == key.column)
+                .any(|column| key.is_column(&column.0))
+                || key.sql
         });
         definition.view = ViewKind::Table(TableConfig {
             sort: self.sort.clone(),
@@ -536,16 +537,16 @@ impl WindowSession {
         let descending = self
             .sort
             .iter()
-            .find(|key| key.column == column)
+            .find(|key| key.is_column(&column))
             .is_some_and(|key| !key.descending);
         self.set_sort_direction(column, descending)
     }
 
     pub fn set_sort_direction(&mut self, column: String, descending: bool) -> JobToken {
-        if let Some(key) = self.sort.iter_mut().find(|key| key.column == column) {
+        if let Some(key) = self.sort.iter_mut().find(|key| key.is_column(&column)) {
             key.descending = descending;
         } else {
-            self.sort.push(SortKey { column, descending });
+            self.sort.push(SortKey::column(column, descending));
         }
         let direct = self.is_direct_table();
         if let Some(definition) = &mut self.working {
@@ -707,7 +708,7 @@ impl WindowSession {
 
     pub fn clear_sort_column(&mut self, column: &str) -> bool {
         let original_len = self.sort.len();
-        self.sort.retain(|key| key.column != column);
+        self.sort.retain(|key| !key.is_column(column));
         if self.sort.len() == original_len {
             return false;
         }
@@ -725,8 +726,29 @@ impl WindowSession {
         true
     }
 
+    /// Replaces every sort key, as the Order By manager edits them.
+    pub fn replace_sort(&mut self, sort: Vec<SortKey>) -> bool {
+        if self.sort == sort {
+            return false;
+        }
+        self.sort = sort;
+        let direct = self.is_direct_table();
+        if let Some(definition) = &mut self.working {
+            match &mut definition.view {
+                ViewKind::Table(table) => table.sort = self.sort.clone(),
+                ViewKind::Query(pivot) => pivot.result_sort = self.sort.clone(),
+                ViewKind::Sql(sql) => sql.result_sort = self.sort.clone(),
+            }
+            if !direct {
+                self.dirty = true;
+            }
+        }
+        self.next_request();
+        true
+    }
+
     pub fn move_sort_key(&mut self, column: &str, direction: i32) -> bool {
-        let Some(index) = self.sort.iter().position(|key| key.column == column) else {
+        let Some(index) = self.sort.iter().position(|key| key.is_column(column)) else {
             return false;
         };
         let target = if direction < 0 {
@@ -1116,10 +1138,12 @@ mod tests {
             SortKey {
                 column: "Row".into(),
                 descending: true,
+                sql: false,
             },
             SortKey {
                 column: "gone".into(),
                 descending: false,
+                sql: false,
             },
         ];
         let previous = session.working.clone().unwrap();
@@ -1432,6 +1456,7 @@ mod tests {
                     pivot.result_sort.push(SortKey {
                         column: "Total".into(),
                         descending: true,
+                        sql: false,
                     });
                 }
             })

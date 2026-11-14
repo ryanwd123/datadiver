@@ -1040,7 +1040,7 @@ fn find_highlights_and_steps_between_matches_without_filtering() {
     // Matches follow the display order after a sort, and nothing matching
     // says so.
     viewer.update(|view, cx| {
-        view.session.sort = vec![crate::domain::documents::SortKey { column: "name".into(), descending: true }];
+        view.session.sort = vec![crate::domain::documents::SortKey { column: "name".into(), descending: true, sql: false }];
         view.schedule_search(view.session.search_text.clone(), cx);
     });
     viewer.run_until_parked();
@@ -1097,11 +1097,11 @@ fn aggregation_columns_filter_groups_after_grouping_on_both_engines() {
                         ddof: None,
                     },
                 ],
-                result_sort: vec![crate::domain::documents::SortKey { column: "region".into(), descending: false }],
+                result_sort: vec![crate::domain::documents::SortKey { column: "region".into(), descending: false, sql: false }],
                 ..Default::default()
             };
             view.session.set_query_config(config, "Sales".into()).unwrap();
-            view.session.sort = vec![crate::domain::documents::SortKey { column: "region".into(), descending: false }];
+            view.session.sort = vec![crate::domain::documents::SortKey { column: "region".into(), descending: false, sql: false }];
             view.schedule_search(String::new(), cx);
         });
         viewer.settle();

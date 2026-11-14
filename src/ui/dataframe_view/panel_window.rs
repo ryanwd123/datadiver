@@ -72,6 +72,7 @@ impl DataFrameView {
             match &mut view.dialog {
                 Some(Dialog::Pivot(panel)) => panel.attach(host, &settings),
                 Some(Dialog::Aggregation(panel)) => panel.attach(host, &settings),
+                Some(Dialog::OrderBy(panel)) => panel.attach(host, &settings),
                 _ => {}
             }
             cx.notify();
@@ -157,7 +158,10 @@ impl DataFrameView {
                 panel.paint(canvas, content, &fonts, focus);
                 panel.paint_overlay(canvas, focus);
             }
-            Some(Dialog::OrderBy(panel)) => panel.paint(canvas, content, &fonts, focus),
+            Some(Dialog::OrderBy(panel)) => {
+                panel.paint(canvas, content, &fonts, focus);
+                panel.paint_overlay(canvas);
+            }
             _ => {}
         }
     }
@@ -205,6 +209,7 @@ impl DataFrameView {
                     match &mut self.dialog {
                         Some(Dialog::Pivot(panel)) => panel.mouse_move(*pos, hit.as_ref()),
                         Some(Dialog::Aggregation(panel)) => panel.mouse_move(*pos, hit.as_ref()),
+                        Some(Dialog::OrderBy(panel)) => panel.mouse_move(*pos, hit.as_ref()),
                         _ => {}
                     }
                 }
@@ -240,6 +245,7 @@ impl DataFrameView {
                 match &mut self.dialog {
                     Some(Dialog::Pivot(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
                     Some(Dialog::Aggregation(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
+                    Some(Dialog::OrderBy(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
                     _ => {}
                 }
                 false

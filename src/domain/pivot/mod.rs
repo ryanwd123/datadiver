@@ -310,7 +310,7 @@ mod parity_tests {
         let view = |search: &str, filters: Vec<ColumnFilter>, sort: &str| ViewQuery {
             tokens: crate::domain::query::parse(search).unwrap(),
             filters,
-            sort: vec![SortKey { column: sort.into(), descending: false }],
+            sort: vec![SortKey { column: sort.into(), descending: false, sql: false }],
             ..ViewQuery::default()
         };
         let card = |column: &str, values: Vec<ScalarKey>, condition: Option<&str>| ColumnFilter {
@@ -554,6 +554,7 @@ mod parity_tests {
                 result_sort: vec![SortKey {
                     column: "region".into(),
                     descending: true,
+                    sql: false,
                 }],
                 ..Default::default()
             },
@@ -582,6 +583,7 @@ mod parity_tests {
             sort: vec![SortKey {
                 column: "amount".into(),
                 descending: false,
+                sql: false,
             }],
             ..Default::default()
         };

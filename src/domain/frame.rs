@@ -463,6 +463,7 @@ mod tests {
                         sort: vec![SortKey {
                             column: "n".into(),
                             descending: true,
+                            sql: false,
                         }],
                     })
                     .unwrap(),

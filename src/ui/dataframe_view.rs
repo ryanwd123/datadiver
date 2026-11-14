@@ -341,7 +341,7 @@ pub(crate) fn active_commands() -> Vec<&'static AppCommand> {
 
 pub(crate) fn available_sort_keys(sort: &[SortKey], schema: &[ColumnSchema]) -> Vec<SortKey> {
     sort.iter()
-        .filter(|key| schema.iter().any(|column| column.name == key.column))
+        .filter(|key| key.sql || schema.iter().any(|column| column.name == key.column))
         .cloned()
         .collect()
 }
@@ -607,6 +607,9 @@ pub struct DataFrameView {
     pub(crate) notices: crate::ui::notices::Notices,
     notice_timer: Option<(Instant, Task)>,
     copy_revision: u64,
+    /// The sort before the Order By manager's change being run, to go back
+    /// to if the change fails.
+    sort_check: Option<Vec<SortKey>>,
     pub(crate) copy_status: Option<String>,
     statistics_revision: u64,
     pub(crate) statistics: Option<SelectionStatistics>,
@@ -915,6 +918,7 @@ impl DataFrameView {
             notices: Default::default(),
             notice_timer: None,
             copy_revision: 0,
+            sort_check: None,
             copy_status: None,
             statistics_revision: 0,
             statistics: None,

@@ -1506,7 +1506,7 @@ impl GridView {
                     .sort
                     .iter()
                     .enumerate()
-                    .find(|(_, key)| key.column == column.0)
+                    .find(|(_, key)| key.is_column(&column.0))
                     .map(|(priority, key)| {
                         format!(
                             " {}{}",
@@ -2226,6 +2226,7 @@ mod tests {
                     sort: vec![SortKey {
                         column: "Key".into(),
                         descending: false,
+                        sql: false,
                     }],
                 })
                 .unwrap();

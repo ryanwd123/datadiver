@@ -524,6 +524,7 @@ mod tests {
                 sort: vec![crate::domain::documents::SortKey {
                     column: "n".into(),
                     descending: true,
+                    sql: false,
                 }],
             })
             .unwrap();

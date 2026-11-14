@@ -130,6 +130,7 @@ fn main() {
                             | "panel:aggregation-functions"
                             | "panel:pivot"
                             | "panel:order-by"
+                            | "editor:order-by"
                             | "aggregation-menu"
                             | "form:aggregation"
                             | "form:condition"

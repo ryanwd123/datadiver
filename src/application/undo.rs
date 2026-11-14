@@ -104,6 +104,7 @@ mod tests {
                 .then(|| SortKey {
                     column: sort.into(),
                     descending: false,
+                    sql: false,
                 })
                 .into_iter()
                 .collect(),

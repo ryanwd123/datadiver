@@ -611,26 +611,36 @@ impl PolarsStore {
 
     fn view_mentions_rowid(&self, view: &ViewQuery) -> bool {
         filters_mention_rowid(&view.filters, &view.value_filters)
+            || view
+                .sort
+                .iter()
+                .any(|key| key.sql && crate::domain::aggregation_sql::mentions_rowid(&key.column))
     }
 
-    fn sort_columns<'a>(&'a self, sort: &[SortKey]) -> Result<Vec<&'a ColumnSchema>, String> {
+    /// What each sort key orders by: a column, or a SQL expression over the row.
+    fn sort_columns(&self, sort: &[SortKey]) -> Result<Vec<Expr>, String> {
         sort.iter()
             .map(|key| {
+                if key.sql {
+                    if key.column.trim().is_empty() {
+                        return Err("A sort expression is empty".into());
+                    }
+                    let expression = super::expressions::parse_sql_expression(&key.column)?;
+                    return Ok(super::expressions::text_for_categoricals(expression, &self.columns));
+                }
                 self.column(&key.column)
+                    .map(|column| col(column.name.as_str()))
                     .ok_or_else(|| format!("sort column not found: {}", key.column))
             })
             .collect()
     }
 
-    fn sorted(&self, frame: LazyFrame, columns: &[&ColumnSchema], sort: &[SortKey]) -> LazyFrame {
+    fn sorted(&self, frame: LazyFrame, columns: &[Expr], sort: &[SortKey]) -> LazyFrame {
         if columns.is_empty() {
             return frame;
         }
         frame.sort_by_exprs(
-            columns
-                .iter()
-                .map(|column| col(column.name.as_str()))
-                .collect::<Vec<_>>(),
+            columns.to_vec(),
             SortMultipleOptions::default()
                 .with_order_descending_multi(sort.iter().map(|key| key.descending))
                 .with_nulls_last(true)
@@ -1737,6 +1747,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "Row".into(),
                     descending: true,
+                    sql: false,
                 }],
                 ..ViewQuery::default()
             })
@@ -1854,6 +1865,21 @@ mod tests {
     }
 
     #[test]
+    fn sort_keys_can_be_sql_expressions_over_the_row() {
+        let store = store("SELECT * FROM (VALUES ('open', 3), ('closed', 1), ('open', 1), ('new', 2)) AS t(status, n)");
+        let sorted = |sort: Vec<SortKey>| {
+            store.query_row_ids(&ViewQuery {
+                sort,
+                ..ViewQuery::default()
+            })
+        };
+        let open_first = SortKey::expression("CASE WHEN status = 'open' THEN 0 ELSE 1 END", false);
+        assert_eq!(sorted(vec![open_first, SortKey::column("n", true)]).unwrap(), [0, 2, 3, 1]);
+        assert_eq!(sorted(vec![SortKey::expression("-n", false)]).unwrap(), [0, 3, 1, 2]);
+        assert!(sorted(vec![SortKey::expression("missing + 1", false)]).is_err());
+    }
+
+    #[test]
     fn search_is_case_insensitive_literal_and_sort_keeps_source_order_for_ties() {
         let store = store(
             "SELECT * FROM (VALUES (3, 'Smith', 'C++'), (1, 'smith', NULL), (2, 'Jones', 'C#'), (1, 'Brown', 'C++')) AS t(employee_id, name, lang)",
@@ -1868,6 +1894,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "employee_id".into(),
                     descending: false,
+                    sql: false,
                 }],
                 ..ViewQuery::default()
             })
@@ -1882,6 +1909,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "employee_id".into(),
                     descending: true,
+                    sql: false,
                 }],
                 ..ViewQuery::default()
             })

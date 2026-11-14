@@ -42,7 +42,16 @@ Each manager opens in a window of its own, which you can move and resize beside 
 
 ## Order By
 
-Press **O** to open the Order By manager and choose the columns a query result is sorted by, each ascending or descending. **[** and **]** in the grid sort by one column quickly.
+Press **O** to open the Order By manager and choose what the rows are sorted by, in priority order, each ascending or descending. **[** and **]** in the grid sort by one column quickly.
+
+Select a key to edit its SQL, or use **+ Custom expression** to sort by an expression over each row, such as an order of your own:
+
+```sql
+CASE status WHEN 'open' THEN 0 WHEN 'waiting' THEN 1 ELSE 2 END
+length("name")
+```
+
+In the list, **[** or **Left** sorts the selected key ascending, **]** or **Right** descending, and **Enter** or a double click flips it. **Ctrl+Enter** runs an edit; one that fails shows its error and keeps the previous sort. A quoted column name, such as `"sales"`, sorts by that column, and the column's header shows it.
 
 ## Totals
 

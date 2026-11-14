@@ -440,6 +440,7 @@ fn same_source_navigation_shares_rows_but_requeries_changed_sort_and_filter() {
         table.sort = vec![SortKey {
             column: "n".into(),
             descending: true,
+            sql: false,
         }];
     }
     navigate(&viewer, sorted, false);
@@ -506,6 +507,7 @@ fn rapid_navigation_rejects_old_loads_and_carries_or_clears_search() {
         table.sort = vec![SortKey {
             column: "n".into(),
             descending: true,
+            sql: false,
         }];
     }
     let viewer = viewer_with_repository(repository(home.path()));
@@ -2783,6 +2785,62 @@ fn apply_custom_dimension(viewer: &Viewer, sql: &str) {
         panel.sql.set_text(sql);
         panel.apply();
     });
+}
+
+fn order_by<R>(viewer: &Viewer, f: impl FnOnce(&mut crate::ui::order_by_panel::OrderByPanel, &mut Focus) -> R) -> R {
+    viewer.update(|view, _| {
+        let mut focus = view.focus;
+        let Some(Dialog::OrderBy(panel)) = &mut view.dialog else {
+            panic!("the Order By manager is open")
+        };
+        let result = f(panel, &mut focus);
+        view.focus = focus;
+        result
+    })
+}
+
+fn first_column(viewer: &Viewer) -> Vec<Option<String>> {
+    viewer.read(|view| {
+        let result = &view.session.result;
+        result
+            .fetch_rows(0, result.row_count())
+            .unwrap()
+            .into_iter()
+            .map(|row| row.values[result.column_indices[0]].clone())
+            .collect()
+    })
+}
+
+#[test]
+fn order_by_expressions_sort_the_rows_and_a_failing_one_keeps_the_previous_sort() {
+    use crate::domain::documents::SortKey;
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    viewer.update(|view, cx| view.open_order_by_panel(cx));
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.render();
+    viewer.input("CASE region WHEN 'South' THEN 0 ELSE 1 END");
+    press(&viewer, "ctrl-enter");
+    assert_eq!(order_by(&viewer, |panel, _| panel.error.clone()), None);
+    let sorted = [SortKey::expression("CASE region WHEN 'South' THEN 0 ELSE 1 END", false)];
+    assert_eq!(viewer.read(|view| view.session.sort.clone()), sorted);
+    assert_eq!(first_column(&viewer), [Some("South".into()), Some("North".into())]);
+    // The manager lists the key it ran.
+    assert_eq!(order_by(&viewer, |panel, _| panel.configured().to_vec()), sorted);
+
+    order_by(&viewer, |panel, _| panel.sql.set_text("missing + 1"));
+    press(&viewer, "ctrl-enter");
+    let error = order_by(&viewer, |panel, _| panel.error.clone()).unwrap();
+    assert!(error.contains("missing"), "{error}");
+    assert_eq!(viewer.read(|view| view.session.sort.clone()), sorted);
+    assert_eq!(first_column(&viewer), [Some("South".into()), Some("North".into())]);
+    assert_eq!(viewer.read(|view| view.error.clone()), None);
+    // The failed text stays to be fixed, and the manager takes changes again.
+    assert_eq!(order_by(&viewer, |panel, _| panel.sql.text().to_owned()), "missing + 1");
+    order_by(&viewer, |panel, _| panel.sql.set_text("\"sales\""));
+    press(&viewer, "ctrl-enter");
+    assert_eq!(viewer.read(|view| view.session.sort.clone()), [SortKey::column("sales", false)]);
+    assert_eq!(first_column(&viewer), [Some("North".into()), Some("South".into())]);
 }
 
 #[test]

@@ -483,6 +483,17 @@ impl DataFrameView {
             }
             "panel:pivot" => self.open_pivot_panel(PivotFieldKind::PivotBy, cx),
             "panel:order-by" => self.open_order_by_panel(cx),
+            "editor:order-by" => {
+                self.open_order_by_panel(cx);
+                let mut focus = self.focus;
+                if let Some(Dialog::OrderBy(panel)) = &mut self.dialog {
+                    panel.start_custom(&mut focus);
+                    panel.sql.set_text("CASE WHEN \"Row\" % 3 = 0 THEN 0 ELSE 1 END");
+                    panel.apply();
+                }
+                self.focus = focus;
+                self.handle_panel_events(cx);
+            }
             _ => {}
         }
         cx.notify();

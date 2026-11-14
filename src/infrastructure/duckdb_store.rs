@@ -1507,15 +1507,24 @@ impl DuckDbStore {
             .sort
             .iter()
             .map(|sort| {
+                let direction = if sort.descending { "DESC" } else { "ASC" };
+                if sort.sql {
+                    let expression = sort.column.trim();
+                    if expression.is_empty() {
+                        return Err("A sort expression is empty".into());
+                    }
+                    // The line break ends any `--` comment the expression closes with.
+                    return Ok(format!("({expression}
+) {direction} NULLS LAST"));
+                }
                 let column = self
                     .columns
                     .iter()
                     .find(|column| column.name == sort.column)
                     .ok_or_else(|| format!("sort column not found: {}", sort.column))?;
                 Ok(format!(
-                    "{} {} NULLS LAST",
-                    quote_identifier(&column.storage_name),
-                    if sort.descending { "DESC" } else { "ASC" }
+                    "{} {direction} NULLS LAST",
+                    quote_identifier(&column.storage_name)
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -2913,6 +2922,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "Row".into(),
                     descending: true,
+                    sql: false,
                 }],
                 ..ViewQuery::default()
             })
@@ -3203,6 +3213,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "employee_id".into(),
                     descending: false,
+                    sql: false,
                 }],
             })
             .unwrap();
@@ -3270,6 +3281,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "scattered".into(),
                     descending: true,
+                    sql: false,
                 }],
             })
             .unwrap();
@@ -3349,10 +3361,38 @@ mod tests {
                 sort: vec![SortKey {
                     column: "odd name".into(),
                     descending: false,
+                    sql: false,
                 }],
             })
             .unwrap();
         assert_eq!(ids, [1, 2, 0]);
+    }
+
+    #[test]
+    fn sort_keys_can_be_sql_expressions_over_the_row() {
+        let store = store(
+            "CREATE TEMP TABLE qp_data AS SELECT * FROM (VALUES ('open', 3), ('closed', 1), ('open', 1), ('new', 2)) t(status, n)",
+        );
+        let sorted = |sort: Vec<SortKey>| {
+            store
+                .query_row_ids(&ViewQuery {
+                    sort,
+                    ..ViewQuery::default()
+                })
+        };
+        let open_first = SortKey::expression("CASE status WHEN 'open' THEN 0 ELSE 1 END -- open first", false);
+        assert_eq!(
+            sorted(vec![open_first.clone(), SortKey::column("n", true)]).unwrap(),
+            [0, 2, 3, 1]
+        );
+        // The same key reaches the query a limited result reruns in.
+        let (sql, _) = store
+            .wrap_query(&ViewQuery { sort: vec![open_first], ..ViewQuery::default() }, "SELECT * FROM qp_data", 10)
+            .unwrap();
+        assert!(sql.contains("open first
+) ASC NULLS LAST"), "{sql}");
+        assert!(sorted(vec![SortKey::expression("missing + 1", false)]).is_err());
+        assert!(sorted(vec![SortKey::expression("  ", false)]).is_err());
     }
 
     #[test]
@@ -3664,6 +3704,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "priority".into(),
                     descending: true,
+                    sql: false,
                 }],
             })
             .unwrap();
@@ -3732,7 +3773,8 @@ mod tests {
                     filters: vec![],
                     sort: vec![SortKey {
                         column: "n".into(),
-                        descending: true
+                        descending: true,
+                        sql: false
                     }],
                 })
                 .unwrap(),

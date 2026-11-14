@@ -53,8 +53,46 @@ pub struct ColumnPresentation {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SortKey {
+    /// The column sorted by, or with `sql`, the SQL expression.
     pub column: String,
     pub descending: bool,
+    /// `column` is a SQL expression over the row, such as
+    /// `CASE status WHEN 'open' THEN 0 ELSE 1 END`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sql: bool,
+}
+
+impl SortKey {
+    pub fn column(column: impl Into<String>, descending: bool) -> Self {
+        Self {
+            column: column.into(),
+            descending,
+            sql: false,
+        }
+    }
+
+    pub fn expression(sql: impl Into<String>, descending: bool) -> Self {
+        Self {
+            column: sql.into(),
+            descending,
+            sql: true,
+        }
+    }
+
+    /// Whether this key sorts by the column `name`.
+    pub fn is_column(&self, name: &str) -> bool {
+        !self.sql && self.column == name
+    }
+
+    /// Whether both keys sort by the same column or expression.
+    pub fn same_target(&self, other: &SortKey) -> bool {
+        self.sql == other.sql && self.column == other.column
+    }
+
+    /// The column or expression on one line, for lists.
+    pub fn target_label(&self) -> String {
+        self.column.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

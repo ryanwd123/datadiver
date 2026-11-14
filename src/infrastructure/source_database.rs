@@ -1862,6 +1862,7 @@ CREATE TEMP TABLE scratch AS SELECT 1 AS n;",
                 sort: vec![SortKey {
                     column: "id".into(),
                     descending: true,
+                    sql: false,
                 }],
                 hidden: Vec::new(),
             })

@@ -547,6 +547,7 @@ fn history_sql_restores_text_and_search_without_results_or_execution() {
         view.session.sort = vec![SortKey {
             column: "n".into(),
             descending: true,
+            sql: false,
         }];
         if let Some(definition) = &mut view.session.working {
             let ViewKind::Sql(sql) = &mut definition.view else {
@@ -1657,7 +1658,7 @@ fn auto_save_keeps_saved_table_and_query_views_up_to_date() {
             ViewKind::Query(config) => config.result_sort,
             ViewKind::Sql(_) => unreachable!(),
         };
-        assert_eq!(sort, [SortKey { column: "region".into(), descending: true }]);
+        assert_eq!(sort, [SortKey { column: "region".into(), descending: true, sql: false }]);
         assert!(!viewer.read(|view| view.session.dirty));
     }
 }

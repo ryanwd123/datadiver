@@ -1442,6 +1442,7 @@ mod tests {
                 sort: vec![SortKey {
                     column: "Year".into(),
                     descending: true,
+                    sql: false,
                 }],
                 ..ViewQuery::default()
             };

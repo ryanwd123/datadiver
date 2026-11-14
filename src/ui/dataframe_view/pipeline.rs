@@ -388,6 +388,7 @@ impl DataFrameView {
                         if let Some(candidate) = &query_candidate {
                             candidate.finish_success(view, cx);
                         }
+                        view.sync_order_by(cx);
                         if view.navigation_backup.take().is_some() {
                             view.reset_sql_editor();
                             view.commit_navigation_history();
@@ -408,6 +409,11 @@ impl DataFrameView {
                     if query_candidate.is_none() {
                         view.rollback_navigation(cx);
                         view.error = Some(error.to_string());
+                    }
+                    if view.sort_check.is_some() {
+                        // The manager shows why; the previous sort runs again.
+                        view.error = None;
+                        view.finish_sort_check(Some(error), cx);
                     }
                 }
             }
