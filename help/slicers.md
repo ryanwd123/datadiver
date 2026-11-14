@@ -86,7 +86,7 @@ In a grouped or pivoted view, the aggregation columns take conditions too. These
 - **W** on an aggregation column asks for a condition in the [condition card](#condition-cards) language, such as `>100`, `10..20` or `!=0`. Pressing **W** on a column that has one edits it, and an empty condition removes it.
 - **=** on an aggregation cell keeps the groups with that value, and **-** drops them.
 
-Each column has one condition, and conditions on several columns must all hold. They show as chips next to the other filters, are saved with the view, and see every group even when the row limit cuts the result. Totals still cover all groups.
+Each column has one condition, and conditions on several columns must all hold. For conditions in SQL, across columns, use the [Having manager](pivot#having) (**H**). They show as chips next to the other filters, are saved with the view, and see every group even when the row limit cuts the result. Totals still cover all groups.
 
 ## Filter by pasted values
 

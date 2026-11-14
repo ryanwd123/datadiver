@@ -101,7 +101,7 @@ impl DataFrameView {
         self.paint_title(canvas, items.rest());
         let mut top = header.bottom();
         // Value filter chips, then the conditions on a query's result.
-        if !self.session.value_filters().is_empty() || !self.session.result_filters().is_empty() {
+        if !self.session.value_filters().is_empty() || !self.session.result_filters().is_empty() || !self.session.having().is_empty() {
             let small = &fonts.small;
             let chip_height = button_height(small);
             let mut x = bounds.x + 12.0;
@@ -121,7 +121,13 @@ impl DataFrameView {
                 .iter()
                 .enumerate()
                 .map(|(index, filter)| (filter.label(), Button::RemoveResultFilter(index)));
-            for (label, remove) in value_chips.chain(result_chips) {
+            let having_chips = self
+                .session
+                .having()
+                .iter()
+                .enumerate()
+                .map(|(index, sql)| (format!("Having {}", crate::ui::having_panel::condition_label(sql)), Button::RemoveHaving(index)));
+            for (label, remove) in value_chips.chain(result_chips).chain(having_chips) {
                 let label = format!("{label}  ✕");
                 let width = button_width(&label, small).min(bounds.w - 24.0);
                 if x + width > bounds.right() - 12.0 && x > bounds.x + 12.0 + label_width + 12.0 {
@@ -302,7 +308,10 @@ impl DataFrameView {
             None
         } else if self.is_table() {
             self.session.has_filters().then(|| self.session.source.row_count())
-        } else if self.session.search_text.trim().is_empty() && self.session.result_filters().is_empty() {
+        } else if self.session.search_text.trim().is_empty()
+            && self.session.result_filters().is_empty()
+            && self.session.having().is_empty()
+        {
             None
         } else {
             self.query_cache.as_ref().map(|cache| cache.frame.row_count())

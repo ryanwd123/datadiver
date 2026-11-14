@@ -2844,6 +2844,69 @@ fn order_by_expressions_sort_the_rows_and_a_failing_one_keeps_the_previous_sort(
 }
 
 #[test]
+fn having_keeps_the_groups_that_meet_its_conditions() {
+    use crate::domain::documents::{Aggregation, Dimension, QueryConfig};
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    // A table has no groups to keep.
+    press_in_grid(&viewer, "h");
+    assert!(!viewer.has_dialog());
+    assert!(viewer.read(|view| view.copy_status.clone()).unwrap().contains("group"));
+
+    viewer.update(|view, cx| {
+        let config = QueryConfig {
+            group_by: vec![Dimension::Column("region".into())],
+            aggregations: vec![Aggregation::sql_expression("sum(sales)".into(), Some("Total".into()))],
+            ..Default::default()
+        };
+        view.session.set_query_config(config, "Sales".into()).unwrap();
+        view.schedule_search(String::new(), cx);
+    });
+    viewer.run_until_parked();
+    press_in_grid(&viewer, "h");
+    assert!(viewer.has_dialog());
+    viewer.click(|hit| *hit == Hit::Button(Button::PanelCustom));
+    viewer.render();
+    viewer.input("\"Total\" > 15 -- the big ones");
+    press(&viewer, "ctrl-enter");
+    let error = viewer.update(|view, _| match &view.dialog {
+        Some(Dialog::Having(panel)) => panel.error.clone(),
+        _ => panic!("the Having manager is open"),
+    });
+    assert_eq!(error, None);
+    assert_eq!(viewer.read(|view| view.session.having().to_vec()), ["\"Total\" > 15 -- the big ones"]);
+    assert_eq!(first_column(&viewer), [Some("South".into())]);
+    viewer.render();
+    assert!(has_button(&viewer, Button::RemoveHaving(0)));
+
+    // A condition that fails keeps the last good result and conditions.
+    viewer.update(|view, _| {
+        if let Some(Dialog::Having(panel)) = &mut view.dialog {
+            panel.sql.set_text("missing > 1");
+        }
+    });
+    press(&viewer, "ctrl-enter");
+    let error = viewer.update(|view, _| match &view.dialog {
+        Some(Dialog::Having(panel)) => panel.error.clone(),
+        _ => panic!("the Having manager is open"),
+    });
+    assert!(error.unwrap().contains("missing"));
+    assert_eq!(viewer.read(|view| view.session.having().to_vec()), ["\"Total\" > 15 -- the big ones"]);
+    assert_eq!(first_column(&viewer), [Some("South".into())]);
+
+    // Its chip removes it, and the manager follows.
+    click_button(&viewer, Button::RemoveHaving(0));
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| view.session.having().is_empty()));
+    assert_eq!(first_column(&viewer), [Some("North".into()), Some("South".into())]);
+    let listed = viewer.update(|view, _| match &view.dialog {
+        Some(Dialog::Having(panel)) => panel.configured().to_vec(),
+        _ => panic!("the Having manager is open"),
+    });
+    assert!(listed.is_empty());
+}
+
+#[test]
 fn dimension_expressions_apply_in_both_managers_and_errors_preserve_results() {
     use crate::application::pivot_editor::PivotFieldKind;
     use crate::domain::documents::Dimension;

@@ -68,6 +68,7 @@ impl DataFrameView {
             return match dialog {
                 Dialog::Pivot(_) | Dialog::Aggregation(_) => "pivot",
                 Dialog::OrderBy(_) => "pivot#order-by",
+                Dialog::Having(_) => "pivot#having",
                 Dialog::SlicerPicker(_) => "slicers",
                 Dialog::PasteFilter(_) => "slicers#filter-by-pasted-values",
                 Dialog::Actions(_) => "views#view-actions",

@@ -315,6 +315,10 @@ pub struct QueryConfig {
     /// SQL's HAVING. One per column.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub result_filters: Vec<ResultFilter>,
+    /// SQL conditions on the result's columns, applied after grouping like
+    /// SQL's HAVING: `"Count" > 1`. A group stays when every one holds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub having: Vec<String>,
 }
 
 /// A condition on one column of a query's result, in the language of

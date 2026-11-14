@@ -1592,6 +1592,7 @@ mod tests {
             result_sort: vec![],
             totals: false,
             result_filters: Vec::new(),
+            having: Vec::new(),
         }
     }
 
@@ -1615,6 +1616,7 @@ mod tests {
             }],
             totals: true,
             result_filters: Vec::new(),
+            having: Vec::new(),
             ..Default::default()
         }
     }
@@ -1712,6 +1714,7 @@ mod tests {
             group_by: vec!["Year".into()],
             totals: true,
             result_filters: Vec::new(),
+            having: Vec::new(),
             ..Default::default()
         };
         assert!(
@@ -1980,6 +1983,7 @@ mod tests {
                 result_sort: vec![],
                 totals: false,
                 result_filters: Vec::new(),
+                having: Vec::new(),
             },
             &[],
         )
@@ -2010,6 +2014,7 @@ mod tests {
             result_sort: vec![],
             totals: false,
             result_filters: Vec::new(),
+            having: Vec::new(),
         };
         let result = execute(&source(), &config, &[]).unwrap();
         assert_eq!(result.row_count(), 2);
@@ -2048,6 +2053,7 @@ mod tests {
                 result_sort: vec![],
                 totals: false,
                 result_filters: Vec::new(),
+                having: Vec::new(),
             },
             &[],
         )

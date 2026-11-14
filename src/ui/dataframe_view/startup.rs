@@ -483,6 +483,26 @@ impl DataFrameView {
             }
             "panel:pivot" => self.open_pivot_panel(PivotFieldKind::PivotBy, cx),
             "panel:order-by" => self.open_order_by_panel(cx),
+            "editor:having" => {
+                let mut config = self.session.query_config();
+                if config.group_by.is_empty() {
+                    config.group_by = vec![Dimension::expression("\"Row\" % 7 AS Bucket")];
+                    config.aggregations = vec![crate::domain::documents::Aggregation::sql_expression("count(*)".into(), Some("Count".into()))];
+                    if let Err(error) = self.session.set_query_config(config, self.suggested_name()) {
+                        self.error = Some(error);
+                        return;
+                    }
+                }
+                self.open_having_panel(cx);
+                let mut focus = self.focus;
+                if let Some(Dialog::Having(panel)) = &mut self.dialog {
+                    panel.start_custom(&mut focus);
+                    panel.sql.set_text("\"Count\" > 8");
+                    panel.apply();
+                }
+                self.focus = focus;
+                self.handle_panel_events(cx);
+            }
             "editor:order-by" => {
                 self.open_order_by_panel(cx);
                 let mut focus = self.focus;

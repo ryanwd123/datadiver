@@ -38,7 +38,7 @@ Expressions use the source columns, row by row; aggregates and window functions 
 
 Custom expressions in the Group By, Pivot By and Aggregations managers are written in the same editor as the [SQL panel](sql): it colors the SQL, completes columns after `"` and functions as you type, underlines syntax problems, and follows your **Editor options**.
 
-Each manager opens in a window of its own, which you can move and resize beside the grid so the result stays in view while you build it. The managers share one window size and place: each opens where you left the last one, relative to the main window. The managers stay open for more edits; close them with **Esc** or the close button.
+Each manager, Order By and Having too, opens in a window of its own, which you can move and resize beside the grid so the result stays in view while you build it. The managers share one window size and place: each opens where you left the last one, relative to the main window. The managers stay open for more edits; close them with **Esc** or the close button.
 
 ## Order By
 
@@ -52,6 +52,17 @@ length("name")
 ```
 
 In the list, **[** or **Left** sorts the selected key ascending, **]** or **Right** descending, and **Enter** or a double click flips it. **Ctrl+Enter** runs an edit; one that fails shows its error and keeps the previous sort. A quoted column name, such as `"sales"`, sorts by that column, and the column's header shows it.
+
+## Having
+
+Press **H** in a grouped or pivoted view to open the Having manager, which keeps only the groups that meet SQL conditions, like SQL's `HAVING`. Conditions use the result's columns, after grouping:
+
+```sql
+"Count" > 1
+"Sum of sales" >= 1000 AND region <> 'Test'
+```
+
+Pick a result column on the left and press **Enter** to write its quoted name into the condition. A group stays when every condition holds. **Ctrl+Enter** runs a condition; one that fails shows its error and keeps the last good result. The conditions show as **Having** chips beside the filters, where **✕** removes one, and they see every group even when the row limit cuts the result. Totals still cover all groups. For a quick condition on one column, **W** takes the [condition card](slicers#filtering-aggregation-columns) language instead.
 
 ## Totals
 

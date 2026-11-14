@@ -579,6 +579,26 @@ impl WindowSession {
         }
     }
 
+    /// The SQL conditions on a query's result.
+    pub fn having(&self) -> &[String] {
+        match self.working.as_ref().map(|definition| &definition.view) {
+            Some(ViewKind::Query(config)) => &config.having,
+            _ => &[],
+        }
+    }
+
+    pub fn remove_having(&mut self, index: usize) -> bool {
+        if index >= self.having().len() {
+            return false;
+        }
+        self.edit_definition(|definition| {
+            if let ViewKind::Query(config) = &mut definition.view {
+                config.having.remove(index);
+            }
+        })
+        .is_ok()
+    }
+
     /// Sets the condition on a result column, replacing the one it had; a
     /// blank condition removes it. Returns whether anything changed.
     pub fn set_result_filter(&mut self, column: &str, condition: &str) -> Result<bool, String> {

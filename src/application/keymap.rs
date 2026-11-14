@@ -179,6 +179,7 @@ pub enum ActionId {
     Aggregation,
     Pivot,
     OrderBy,
+    Having,
     RemoveActiveGroupColumn,
     AddSlicer,
     SortAscending,
@@ -1157,6 +1158,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::Grid,
         command: Some(CommandId::OrderBy),
         default_bindings: &["o"],
+    },
+    ActionSpec {
+        id: ActionId::Having,
+        category: ActionCategory::DataExploration,
+        name: "Having panel",
+        context: KeyContext::Grid,
+        command: Some(CommandId::Having),
+        default_bindings: &["h"],
     },
     ActionSpec {
         id: ActionId::Undo,

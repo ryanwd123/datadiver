@@ -18,6 +18,7 @@ pub mod keymap_editor;
 pub mod markdown_view;
 pub mod notices;
 pub mod order_by_panel;
+pub mod having_panel;
 pub mod pivot_panel;
 pub mod platform;
 pub mod slicer_sidebar;

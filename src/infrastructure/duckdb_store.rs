@@ -1691,7 +1691,9 @@ impl DuckDbStore {
                 // Blank text leaves the card inactive.
                 if !text.trim().is_empty() {
                     predicates.push(if filter.sql {
-                        format!("({text})")
+                        // The line break ends any `--` comment the condition closes with.
+                        format!("({text}
+)")
                     } else {
                         let column = self.filter_column(&filter.column)?;
                         self.condition_predicate(column, text, &mut parameters)?
@@ -3127,6 +3129,7 @@ mod tests {
                 result_sort: vec![],
                 totals: false,
                 result_filters: Vec::new(),
+                having: Vec::new(),
             };
             let slicers = [SlicerDefinition {
                 sql: false,

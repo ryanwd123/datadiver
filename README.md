@@ -75,7 +75,7 @@ datadiver --rows 10000 --ephemeral
 
 1. Press **Ctrl+O** to open a supported file, or **Ctrl+P** to browse files and saved views.
 2. Press **/** to search the displayed rows. Press **Z** to add a slicer that filters by a source column.
-3. Press **G** to choose grouping columns, **A** to configure aggregations, and **P** to choose pivot dimensions. Use **O** to configure ordering.
+3. Press **G** to choose grouping columns, **A** to configure aggregations, and **P** to choose pivot dimensions. Use **O** to configure ordering and **H** to keep only the groups that meet conditions.
 4. Press **Enter** on a result cell to see the rows behind it, and **U** to go back.
 5. Select cells and press **Ctrl+C** to copy, or **Ctrl+Shift+C** to choose an output format.
 6. Press **Ctrl+S** to save the view for later.
@@ -119,7 +119,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | / | Search |
 | Space | Open the Helper menu, which lists these keys |
 | Ctrl+K | Open the Command menu |
-| G / A / P / O | Group By / Aggregations / Pivot By / Order By |
+| G / A / P / O / H | Group By / Aggregations / Pivot By / Order By / Having |
 | Z | Add slicer |
 | = / - | Keep / exclude rows equal to the active cell |
 | W | Filter the aggregation column under the cursor |
@@ -240,9 +240,9 @@ Press **G**, **P**, and **A** to open the Group By, Pivot By, and Aggregations m
 
 Group By and Pivot By each provide **+ Custom expression** and an SQL editor for the selected entry. For example, group by `date_trunc('month', "date") AS month` or pivot by `upper("region") AS RegionCode`. Expressions use source columns; aggregates and window functions belong outside these row-level dimension expressions. Use `AS` for a result name or keep DuckDB's default name. Typing `"` in these editors lists column names, ranked like the search box; typing a word lists the columns, keywords and (for DuckDB files, in the aggregation editor) aggregate functions it starts, and only what the file's engine supports. SQL cards list column names after `"`.
 
-The Order By manager (**O**) sorts by columns or by SQL expressions over each row, such as `CASE status WHEN 'open' THEN 0 ELSE 1 END`, in priority order; an expression that fails keeps the previous sort.
+The Order By manager (**O**) sorts by columns or by SQL expressions over each row, such as `CASE status WHEN 'open' THEN 0 ELSE 1 END`, in priority order; an expression that fails keeps the previous sort. The Having manager (**H**) keeps only the groups that meet SQL conditions on the result's columns, such as `"Count" > 1`, like SQL's `HAVING`; its conditions show as chips beside the filters.
 
-The Group By, Pivot By, Aggregations and Order By managers each open in a window of their own, which you can move and resize beside the grid so the result stays in view while you build it; they share one window size and place, so each opens where you left the last one, relative to the main window. Custom expressions there are written in the same editor as the SQL panel, with SQL coloring, completion of columns and functions, underlined syntax problems, and your **Editor options**.
+The Group By, Pivot By, Aggregations, Order By and Having managers each open in a window of their own, which you can move and resize beside the grid so the result stays in view while you build it; they share one window size and place, so each opens where you left the last one, relative to the main window. Custom expressions there are written in the same editor as the SQL panel, with SQL coloring, completion of columns and functions, underlined syntax problems, and your **Editor options**.
 
 The Aggregations manager has a **Columns / Functions** switch. **Functions** lists the aggregates of the file's engine (every DuckDB aggregate, or those Polars SQL has), searchable by name or description, with signatures and examples; press **Enter** to insert one into the expression. Turning a structured aggregation into a custom one writes its SQL in the same engine's dialect.
 
@@ -305,7 +305,7 @@ The editor understands DuckDB's SQL as you type:
 
 **Settings** (**Ctrl+,**) › **Editor options** changes how the editor looks and behaves: the completion list's font, size and number of rows; whether completions and signature help open while typing; problem underlines and hover docs; word wrap, line numbers, whitespace, indent guides and highlights; closing brackets and quotes; the blinking cursor; tab size, spaces or tabs, and indentation detection; and Ctrl+wheel zoom. The options are saved with your settings and apply to every window.
 
-Save SQL with **Ctrl+S**. A saved SQL is a **SQL source**: it is listed under **Sources › SQL sources** in the database tree and in **Ctrl+P**, and opening it there shows the rows its last statement returns, as a table you can search, slice, group, pivot and save views of like any other source. Each such view runs the script again, on a connection of its own, when it opens or reloads (**F5**), so the script should create only temporary tables, or use `CREATE OR REPLACE`. Group By, Pivot By, Aggregations and Order By in the editor of a saved SQL source open its rows the same way. In the editor, a SQL source reopens without execution unless you turn on **Auto-run** in **View options**.
+Save SQL with **Ctrl+S**. A saved SQL is a **SQL source**: it is listed under **Sources › SQL sources** in the database tree and in **Ctrl+P**, and opening it there shows the rows its last statement returns, as a table you can search, slice, group, pivot and save views of like any other source. Each such view runs the script again, on a connection of its own, when it opens or reloads (**F5**), so the script should create only temporary tables, or use `CREATE OR REPLACE`. Group By, Pivot By, Aggregations, Order By and Having in the editor of a saved SQL source open its rows the same way. In the editor, a SQL source reopens without execution unless you turn on **Auto-run** in **View options**.
 
 A SQL source keeps the rows of its last statement in memory, up to the row limit. **Read mode** in **View options** switches a DuckDB source to **streaming**: nothing is copied, and DuckDB runs the last statement again for every query, like a database view. Use it for results too big to hold. A streaming source opens as a query, so the grid shows rows up to the row limit while grouping, pivoting, aggregations and slicers read all of them. Its last statement must be a query, and the statements before it run once when the source opens. Saved table views of a streaming source still read its rows into memory.
 

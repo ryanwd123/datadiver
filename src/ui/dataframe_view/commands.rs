@@ -50,7 +50,10 @@ impl DataFrameView {
 
     pub(crate) fn dispatch_command(&mut self, id: CommandId, cx: &mut Cx<Self>) {
         if self.session.is_sql()
-            && matches!(id, CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy)
+            && matches!(
+                id,
+                CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy | CommandId::Having
+            )
         {
             if self.sql_source_session() {
                 self.build_on_sql_source(id, cx);
@@ -139,6 +142,7 @@ impl DataFrameView {
             CommandId::Aggregation => self.open_aggregation_panel(cx),
             CommandId::Pivot => self.open_pivot_panel(PivotFieldKind::PivotBy, cx),
             CommandId::OrderBy => self.open_order_by_panel(cx),
+            CommandId::Having => self.open_having_panel(cx),
             CommandId::AddSlicer => self.open_slicer_picker(cx),
             CommandId::Space => self.open_space_menu(cx),
             CommandId::CommandMenu => self.open_command_menu(cx),
@@ -521,6 +525,19 @@ impl DataFrameView {
         }
         cx.notify();
         Ok(())
+    }
+
+    pub(crate) fn remove_having(&mut self, index: usize, cx: &mut Cx<Self>) {
+        if self.session.remove_having(index) {
+            if let Some(Dialog::Having(panel)) = &mut self.dialog {
+                let mut focus = self.focus;
+                panel.finish_success(self.session.having().to_vec(), None, &mut focus);
+                self.focus = focus;
+                self.refresh_panel_window(cx);
+            }
+            self.schedule_search(self.session.search_text.clone(), cx);
+        }
+        cx.notify();
     }
 
     pub(crate) fn remove_result_filter(&mut self, index: usize, cx: &mut Cx<Self>) {

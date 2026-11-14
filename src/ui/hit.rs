@@ -66,6 +66,7 @@ pub enum Button {
     ClearFilters,
     RemoveValueFilter(usize),
     RemoveResultFilter(usize),
+    RemoveHaving(usize),
     CommandMenuItem(crate::application::commands::CommandId),
     /// A command listed in the SQL helper menu.
     SqlHelperCommand(crate::application::commands::CommandId),

@@ -306,6 +306,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::Aggregation,
     CommandId::Pivot,
     CommandId::OrderBy,
+    CommandId::Having,
     CommandId::AddSlicer,
     CommandId::FilterToValue,
     CommandId::ExcludeValue,
@@ -403,6 +404,10 @@ pub(crate) enum CandidateEditor {
         panel: WidgetId,
         kind: PivotFieldKind,
         preferred: Option<Dimension>,
+    },
+    Having {
+        panel: WidgetId,
+        preferred: Option<String>,
     },
 }
 

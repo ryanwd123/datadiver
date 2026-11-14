@@ -131,6 +131,7 @@ fn main() {
                             | "panel:pivot"
                             | "panel:order-by"
                             | "editor:order-by"
+                            | "editor:having"
                             | "aggregation-menu"
                             | "form:aggregation"
                             | "form:condition"

@@ -41,6 +41,7 @@ pub enum CommandId {
     Copy,
     CopyAs,
     CopyColumnNames,
+    Having,
     Search,
     ToggleFind,
     FindNext,
@@ -465,6 +466,12 @@ pub const COMMANDS: &[Command] = &[
         key: "order_by",
         label: "Order By",
         default_binding: Some("o"),
+    },
+    Command {
+        id: CommandId::Having,
+        key: "having",
+        label: "Having",
+        default_binding: Some("h"),
     },
     Command {
         id: CommandId::AddSlicer,

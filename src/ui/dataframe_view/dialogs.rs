@@ -94,6 +94,7 @@ pub enum Dialog {
     Information(InformationPanel),
     Pivot(PivotPanel),
     OrderBy(OrderByPanel),
+    Having(crate::ui::having_panel::HavingPanel),
     Aggregation(AggregationPanel),
     Palette(PaletteDialog),
     SlicerPicker(SlicerPicker),
@@ -122,6 +123,7 @@ impl Dialog {
             Dialog::Information(_) => "Information".into(),
             Dialog::Pivot(_) => String::new(),
             Dialog::OrderBy(_) => "Order By".into(),
+            Dialog::Having(_) => "Having".into(),
             Dialog::Aggregation(_) => "Aggregations".into(),
             Dialog::Palette(palette) => palette.title.clone(),
             Dialog::SlicerPicker(_) => "Add slicer".into(),
@@ -190,6 +192,7 @@ impl DataFrameView {
         match dialog {
             Dialog::Pivot(mut panel) => panel.close(),
             Dialog::Aggregation(mut panel) => panel.close(),
+            Dialog::Having(mut panel) => panel.close(),
             Dialog::SlicerPicker(_) => self.close_slicer_picker(),
             _ => {}
         }
@@ -445,13 +448,7 @@ impl DataFrameView {
     }
 
     pub(crate) fn open_order_by_panel(&mut self, cx: &mut Cx<Self>) {
-        let result = &self.session.result;
-        let columns = result
-            .columns
-            .iter()
-            .zip(result.dtypes.iter())
-            .map(|(column, dtype)| (column.0.clone(), dtype.clone()))
-            .collect();
+        let columns = self.result_columns_with_types();
         let panel = OrderByPanel::new(columns, self.session.sort.clone(), self.session.source.engine);
         let mut focus = None;
         panel.focus_available(&mut focus);
@@ -478,6 +475,26 @@ impl DataFrameView {
             // The search did not start, such as for a search that does not parse.
             let error = self.error.clone();
             self.finish_sort_check(error, cx);
+        }
+    }
+
+    /// The result's columns and their SQL types.
+    pub(crate) fn result_columns_with_types(&self) -> Vec<(String, String)> {
+        let result = &self.session.result;
+        result
+            .columns
+            .iter()
+            .zip(result.dtypes.iter())
+            .map(|(column, dtype)| (column.0.clone(), dtype.clone()))
+            .collect()
+    }
+
+    /// A result came back: the Having manager lists its columns.
+    pub(crate) fn sync_having_columns(&mut self, cx: &mut Cx<Self>) {
+        let columns = self.result_columns_with_types();
+        if let Some(Dialog::Having(panel)) = &mut self.dialog {
+            panel.set_columns(columns);
+            self.refresh_panel_window(cx);
         }
     }
 
@@ -520,6 +537,21 @@ impl DataFrameView {
         }
         self.refresh_panel_window(cx);
         cx.notify();
+    }
+
+    /// Opens the Having manager on a query's result columns.
+    pub(crate) fn open_having_panel(&mut self, cx: &mut Cx<Self>) {
+        if !self.session.working.as_ref().is_some_and(|view| matches!(view.view, ViewKind::Query(_))) {
+            self.copy_status = Some("Having keeps the groups of a grouped view; group the rows first (G)".into());
+            cx.notify();
+            return;
+        }
+        let columns = self.result_columns_with_types();
+        let having = self.session.having().to_vec();
+        let panel = crate::ui::having_panel::HavingPanel::new(columns, having, self.session.source.engine);
+        let mut focus = None;
+        panel.focus_available(&mut focus);
+        self.open_dialog(Dialog::Having(panel), focus, cx);
     }
 
     pub(crate) fn open_aggregation_panel(&mut self, cx: &mut Cx<Self>) {
@@ -569,6 +601,13 @@ impl DataFrameView {
                         return;
                     };
                     self.check_order_by(event, cx);
+                }
+                Some(Dialog::Having(panel)) => {
+                    let Some(event) = panel.take_event() else {
+                        return;
+                    };
+                    let id = panel.id;
+                    self.check_having(id, event, cx);
                 }
                 _ => return,
             }
@@ -674,7 +713,11 @@ impl DataFrameView {
                 (!self.session.is_sql()
                     || match c.id {
                         // A SQL source opens its rows to build these on.
-                        CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::OrderBy => self.sql_source_session(),
+                        CommandId::Group
+                        | CommandId::Pivot
+                        | CommandId::Aggregation
+                        | CommandId::OrderBy
+                        | CommandId::Having => self.sql_source_session(),
                         CommandId::AddSlicer => self.sql_result_complete,
                         _ => true,
                     })
@@ -1425,6 +1468,21 @@ impl DataFrameView {
                 }
                 handled
             }
+            Some(Dialog::Having(panel)) => {
+                let result = panel.key(event, &mut focus);
+                self.focus = focus;
+                if result.close {
+                    self.close_dialog(cx);
+                    return true;
+                }
+                if let Some(event) = result.event {
+                    let id = panel.id;
+                    self.check_having(id, event, cx);
+                    self.handle_panel_events(cx);
+                    return true;
+                }
+                return result.handled;
+            }
             Some(Dialog::OrderBy(panel)) => {
                 let result = panel.key(event, &mut focus);
                 self.focus = focus;
@@ -1524,6 +1582,7 @@ impl DataFrameView {
             Some(Dialog::Pivot(panel)) => panel.type_text(typed, focus),
             Some(Dialog::Aggregation(panel)) => panel.type_text(typed, focus),
             Some(Dialog::OrderBy(panel)) => panel.type_text(typed, focus),
+            Some(Dialog::Having(panel)) => panel.type_text(typed, focus),
             Some(Dialog::Palette(dialog)) => {
                 if focus != Some(dialog.palette.query.id) {
                     return false;
@@ -1658,6 +1717,21 @@ impl DataFrameView {
                     cx.notify();
                     return;
                 }
+                Some(Dialog::Having(panel)) => {
+                    let result = panel.mouse_down(hit, pos, clicks, modifiers, &mut focus);
+                    self.focus = focus;
+                    if result.close {
+                        self.close_dialog(cx);
+                        return;
+                    }
+                    if let Some(event) = result.event {
+                        let id = panel.id;
+                        self.check_having(id, event, cx);
+                        self.handle_panel_events(cx);
+                    }
+                    cx.notify();
+                    return;
+                }
                 Some(Dialog::OrderBy(panel)) => {
                     let result = panel.mouse_down(hit, pos, clicks, modifiers, &mut focus);
                     self.focus = focus;
@@ -1739,6 +1813,7 @@ impl DataFrameView {
             Some(Dialog::Pivot(panel)) => panel.mouse_drag(pos),
             Some(Dialog::Aggregation(panel)) => panel.mouse_drag(pos),
             Some(Dialog::OrderBy(panel)) => panel.mouse_drag(pos),
+            Some(Dialog::Having(panel)) => panel.mouse_drag(pos),
             Some(Dialog::Palette(dialog)) => dialog.palette.mouse_drag(pos),
             Some(Dialog::SlicerPicker(picker)) => picker.command.mouse_drag(pos),
             Some(Dialog::Theme(form)) => form.mouse_drag(pos),
@@ -1755,6 +1830,7 @@ impl DataFrameView {
             Some(Dialog::Pivot(panel)) => panel.mouse_up(),
             Some(Dialog::Aggregation(panel)) => panel.mouse_up(),
             Some(Dialog::OrderBy(panel)) => panel.mouse_up(),
+            Some(Dialog::Having(panel)) => panel.mouse_up(),
             Some(Dialog::Palette(dialog)) => dialog.palette.mouse_up(),
             Some(Dialog::SlicerPicker(picker)) => picker.command.mouse_up(),
             Some(Dialog::Theme(form)) => form.mouse_up(),
@@ -1772,6 +1848,7 @@ impl DataFrameView {
             Some(Dialog::Pivot(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::Aggregation(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::OrderBy(panel)) => panel.wheel(hit, delta, modifiers),
+            Some(Dialog::Having(panel)) => panel.wheel(hit, delta, modifiers),
             Some(Dialog::Palette(dialog)) => dialog.palette.list.wheel(delta),
             Some(Dialog::SlicerPicker(picker)) => picker.command.list.wheel(delta),
             _ => false,
@@ -1801,7 +1878,7 @@ impl DataFrameView {
                 window_height * (1.0 - crate::ui::info::DIALOG_FRACTION) / 2.0,
             ),
             // These show in a window of their own.
-            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => return,
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) | Dialog::Having(_) => return,
             Dialog::Palette(_) => (PALETTE_WIDTH, 24.0),
             Dialog::Theme(_) => (600.0, 48.0),
             Dialog::Actions(_) => (720.0, 48.0),
@@ -1831,7 +1908,7 @@ impl DataFrameView {
                 text::layout(&confirm.message, font, crate::ui::platform::TextOptions::wrapped(content_width)).height
             }
             Dialog::Information(_) => window_height * crate::ui::info::DIALOG_FRACTION - 110.0,
-            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => 0.0,
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) | Dialog::Having(_) => 0.0,
             Dialog::Palette(dialog) => {
                 let list_max = (window_height - 200.0).clamp(100.0, 440.0);
                 dialog.palette.height(font, list_max) + if dialog.footer.is_some() || matches!(dialog.kind, PaletteKind::Files(_)) { button_height(font) + 8.0 } else { 0.0 }
@@ -1898,7 +1975,7 @@ impl DataFrameView {
                 canvas.paragraph(content, &confirm.message, font, colors::FOREGROUND);
             }
             Dialog::Information(panel) => panel.paint(canvas, content, &fonts, focus),
-            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) => {}
+            Dialog::Pivot(_) | Dialog::Aggregation(_) | Dialog::OrderBy(_) | Dialog::Having(_) => {}
             Dialog::Palette(dialog) => {
                 let footer_room = if dialog.footer.is_some() || matches!(dialog.kind, PaletteKind::Files(_)) {
                     button_height(font) + 8.0

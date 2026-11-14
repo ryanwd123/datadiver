@@ -1,7 +1,7 @@
-//! The window of the Group By, Pivot By, Aggregations and Order By managers:
+//! The window of the Group By, Pivot By, Aggregations, Order By and Having managers:
 //! owned by the grid's window, so the grid stays in view while its query is
 //! built. The manager is the open dialog; this window paints it and passes
-//! it input. The four managers share one place and size: each opens where
+//! it input. The managers share one place and size: each opens where
 //! the last one closed, relative to the grid's window.
 
 use super::dialogs::Dialog;
@@ -34,6 +34,7 @@ impl Dialog {
             }),
             Dialog::Aggregation(_) => Some("Aggregations"),
             Dialog::OrderBy(_) => Some("Order By"),
+            Dialog::Having(_) => Some("Having"),
             _ => None,
         }
     }
@@ -73,6 +74,7 @@ impl DataFrameView {
                 Some(Dialog::Pivot(panel)) => panel.attach(host, &settings),
                 Some(Dialog::Aggregation(panel)) => panel.attach(host, &settings),
                 Some(Dialog::OrderBy(panel)) => panel.attach(host, &settings),
+                Some(Dialog::Having(panel)) => panel.attach(host, &settings),
                 _ => {}
             }
             cx.notify();
@@ -162,6 +164,10 @@ impl DataFrameView {
                 panel.paint(canvas, content, &fonts, focus);
                 panel.paint_overlay(canvas);
             }
+            Some(Dialog::Having(panel)) => {
+                panel.paint(canvas, content, &fonts, focus);
+                panel.paint_overlay(canvas);
+            }
             _ => {}
         }
     }
@@ -210,6 +216,7 @@ impl DataFrameView {
                         Some(Dialog::Pivot(panel)) => panel.mouse_move(*pos, hit.as_ref()),
                         Some(Dialog::Aggregation(panel)) => panel.mouse_move(*pos, hit.as_ref()),
                         Some(Dialog::OrderBy(panel)) => panel.mouse_move(*pos, hit.as_ref()),
+                        Some(Dialog::Having(panel)) => panel.mouse_move(*pos, hit.as_ref()),
                         _ => {}
                     }
                 }
@@ -246,6 +253,7 @@ impl DataFrameView {
                     Some(Dialog::Pivot(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
                     Some(Dialog::Aggregation(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
                     Some(Dialog::OrderBy(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
+                    Some(Dialog::Having(panel)) => panel.mouse_move(crate::ui::platform::point(-1.0, -1.0), None),
                     _ => {}
                 }
                 false
@@ -264,6 +272,7 @@ impl DataFrameView {
             Some(Dialog::Pivot(panel)) => panel.caret(focus),
             Some(Dialog::Aggregation(panel)) => panel.caret(focus),
             Some(Dialog::OrderBy(panel)) => panel.caret(focus),
+            Some(Dialog::Having(panel)) => panel.caret(focus),
             _ => None,
         }
     }

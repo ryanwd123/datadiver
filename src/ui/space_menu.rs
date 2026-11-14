@@ -39,12 +39,14 @@ impl SpaceMenu {
         }
         !self.sql
             || (command == CommandId::AddSlicer && self.sql_slicers)
-            || (self.sql_source && matches!(command, CommandId::Group | CommandId::Pivot | CommandId::Aggregation))
+            || (self.sql_source
+                && matches!(command, CommandId::Group | CommandId::Pivot | CommandId::Aggregation | CommandId::Having))
             || !matches!(
                 command,
                 CommandId::Group
                     | CommandId::Pivot
                     | CommandId::Aggregation
+                    | CommandId::Having
                     | CommandId::AddSlicer
                     | CommandId::ToggleTotals
                     | CommandId::DrillDown

@@ -592,6 +592,7 @@ impl DataFrameView {
             Button::ClearFilters => self.clear_filters(cx),
             Button::RemoveValueFilter(index) => self.remove_value_filter(index, cx),
             Button::RemoveResultFilter(index) => self.remove_result_filter(index, cx),
+            Button::RemoveHaving(index) => self.remove_having(index, cx),
             Button::CommandMenuItem(command) => self.select_command_menu_item(command, cx),
             Button::SqlHelperCommand(command) => self.select_sql_helper_command(command, cx),
             Button::GridKey(action) => self.select_grid_key(action, cx),

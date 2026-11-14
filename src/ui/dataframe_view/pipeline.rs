@@ -7,6 +7,7 @@ use crate::domain::export;
 use crate::domain::query;
 use crate::domain::statistics;
 use crate::ui::aggregation_editor::AggregationPanelEvent;
+use crate::ui::having_panel::HavingPanelEvent;
 use crate::ui::pivot_panel::PivotPanelEvent;
 
 impl QueryCandidate {
@@ -16,6 +17,9 @@ impl QueryCandidate {
                 open.id == *panel && open.can_finish(self.revision)
             }
             (CandidateEditor::Dimension { panel, .. }, Some(Dialog::Pivot(open))) => {
+                open.id == *panel && open.can_finish(self.revision)
+            }
+            (CandidateEditor::Having { panel, .. }, Some(Dialog::Having(open))) => {
                 open.id == *panel && open.can_finish(self.revision)
             }
             _ => false,
@@ -28,6 +32,9 @@ impl QueryCandidate {
                 open.finish_error(self.revision, error)
             }
             (CandidateEditor::Dimension { panel, .. }, Some(Dialog::Pivot(open))) if open.id == *panel => {
+                open.finish_error(self.revision, error)
+            }
+            (CandidateEditor::Having { panel, .. }, Some(Dialog::Having(open))) if open.id == *panel => {
                 open.finish_error(self.revision, error)
             }
             _ => {}
@@ -46,6 +53,9 @@ impl QueryCandidate {
                     PivotFieldKind::PivotBy => self.config.pivot_by.clone(),
                 };
                 open.finish_success(entries, preferred.clone(), &mut focus);
+            }
+            (CandidateEditor::Having { panel, preferred }, Some(Dialog::Having(open))) if open.id == *panel => {
+                open.finish_success(self.config.having.clone(), preferred.clone(), &mut focus);
             }
             _ => return,
         }
@@ -116,6 +126,26 @@ impl DataFrameView {
         self.submit_query_candidate(QueryCandidate { config, ..candidate }, cx);
     }
 
+    /// Handles conditions the Having manager asked for.
+    pub(crate) fn check_having(&mut self, panel: WidgetId, event: HavingPanelEvent, cx: &mut Cx<Self>) {
+        let mut config = self.session.query_config();
+        let changed = config.having != event.having;
+        config.having = event.having;
+        let candidate = QueryCandidate {
+            editor: CandidateEditor::Having {
+                panel,
+                preferred: event.preferred,
+            },
+            revision: event.revision,
+            config,
+        };
+        if changed {
+            self.submit_query_candidate(candidate, cx);
+        } else {
+            candidate.finish_success(self, cx);
+        }
+    }
+
     fn submit_query_candidate(&mut self, candidate: QueryCandidate, cx: &mut Cx<Self>) {
         let mut candidate_session = self.session.clone();
         if let Err(error) = candidate_session.set_query_config(candidate.config.clone(), self.suggested_name()) {
@@ -131,6 +161,13 @@ impl DataFrameView {
         };
         let pending_setup = (candidate.config.group_by.is_empty() && !candidate.config.pivot_by.is_empty())
             .then(|| self.session.result.clone());
+        let definition = candidate_session.computation_definition();
+        let query_cache = match (definition.as_ref(), self.query_cache.as_ref()) {
+            (Some(definition), Some(cache)) if cache.matches(&self.session.source, definition, self.query_limit) => {
+                Some((cache.frame.clone(), cache.trace.clone()))
+            }
+            _ => None,
+        };
         let token = self.session.set_search_text(self.session.search_text.clone());
         self.computation.invalidate(token);
         self.busy = true;
@@ -142,8 +179,8 @@ impl DataFrameView {
             source: self.session.source.clone(),
             tokens,
             sort: self.session.sort.clone(),
-            definition: candidate_session.computation_definition(),
-            query_cache: None,
+            definition,
+            query_cache,
             slicer_discovery: self.slicer_discovery.clone(),
             slicer_options: self.file_settings.slicers,
             queued_at: Instant::now(),
@@ -389,6 +426,7 @@ impl DataFrameView {
                             candidate.finish_success(view, cx);
                         }
                         view.sync_order_by(cx);
+                        view.sync_having_columns(cx);
                         if view.navigation_backup.take().is_some() {
                             view.reset_sql_editor();
                             view.commit_navigation_history();
@@ -671,6 +709,7 @@ impl DataFrameView {
         };
         let narrowed = !self.session.search_text.trim().is_empty()
             || !self.session.result_filters().is_empty()
+            || !self.session.having().is_empty()
             || self
                 .query_cache
                 .as_ref()
@@ -727,10 +766,11 @@ impl DataFrameView {
     }
 }
 
-/// A query's result filters as filters over its result, leaving out those
-/// whose column the result no longer has, such as a pivot value that went.
+/// A query's result filters and Having conditions as filters over its
+/// result. Result filters whose column the result no longer has, such as a
+/// pivot value that went, are left out; a Having condition always applies.
 pub(crate) fn result_column_filters(config: &QueryConfig, schema: &[ColumnSchema]) -> Vec<crate::infrastructure::store::ColumnFilter> {
-    config
+    let result_filters = config
         .result_filters
         .iter()
         .filter(|filter| schema.iter().any(|column| column.name == filter.column))
@@ -739,8 +779,14 @@ pub(crate) fn result_column_filters(config: &QueryConfig, schema: &[ColumnSchema
             values: Vec::new(),
             condition: Some(filter.condition.clone()),
             sql: false,
-        })
-        .collect()
+        });
+    let having = config.having.iter().map(|sql| crate::infrastructure::store::ColumnFilter {
+        column: String::new(),
+        values: Vec::new(),
+        condition: Some(sql.clone()),
+        sql: true,
+    });
+    result_filters.chain(having).collect()
 }
 
 type PipelineSuccess = (ResultSnapshot, Option<FrameSnapshot>, Option<Vec<SortKey>>, Option<ViewQuery>);
