@@ -295,6 +295,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::NewWindow,
     CommandId::Copy,
     CommandId::CopyAs,
+    CommandId::CopyColumnNames,
     CommandId::Search,
     CommandId::ToggleFind,
     CommandId::FindNext,

@@ -156,6 +156,7 @@ impl DataFrameView {
             CommandId::ConditionalFormatting => self.open_format_manager(cx),
             CommandId::RecalculateWidths => self.recalculate_widths(cx),
             CommandId::HideColumns => self.hide_selected_columns(cx),
+            CommandId::CopyColumnNames => self.copy_column_names(cx),
             CommandId::ChooseColumns => self.open_column_chooser(cx),
             CommandId::ShowAllColumns => {
                 let hidden = self.session.effective_table_config().hidden;
@@ -1061,21 +1062,38 @@ impl DataFrameView {
         .detach();
     }
 
-    pub(crate) fn hide_selected_columns(&mut self, cx: &mut Cx<Self>) {
+    /// The names of the selected columns, left to right.
+    fn selected_column_names(&self) -> Option<Vec<String>> {
         let result = &self.session.result;
-        let Some(selection) = self
+        let selection = self
             .grid
             .selection()
-            .and_then(|selection| selection.clamped(1, result.column_count()))
-        else {
+            .and_then(|selection| selection.clamped(1, result.column_count()))?;
+        Some(
+            selection
+                .rectangle()
+                .1
+                .map(|column| result.columns[column].0.clone())
+                .collect(),
+        )
+    }
+
+    pub(crate) fn hide_selected_columns(&mut self, cx: &mut Cx<Self>) {
+        let Some(names) = self.selected_column_names() else {
             return;
         };
-        let names = selection
-            .rectangle()
-            .1
-            .map(|column| result.columns[column].0.clone())
-            .collect::<Vec<_>>();
         self.set_columns_hidden(&names, true, cx);
+    }
+
+    /// Copies the selected columns' names, separated by commas, as a
+    /// select list is written.
+    pub(crate) fn copy_column_names(&mut self, cx: &mut Cx<Self>) {
+        let Some(names) = self.selected_column_names() else {
+            return;
+        };
+        crate::ui::platform::system::write_clipboard(&names.join(", "));
+        self.copy_status = Some(if names.len() == 1 { "Copied column name".into() } else { format!("Copied {} column names", names.len()) });
+        cx.notify();
     }
 
     /// Hides or shows table columns. Hidden columns leave the grid and plain

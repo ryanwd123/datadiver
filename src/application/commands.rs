@@ -40,6 +40,7 @@ pub enum CommandId {
     CloseWindow,
     Copy,
     CopyAs,
+    CopyColumnNames,
     Search,
     ToggleFind,
     FindNext,
@@ -386,6 +387,12 @@ pub const COMMANDS: &[Command] = &[
         key: "copy_as",
         label: "Copy As",
         default_binding: Some("ctrl-shift-c"),
+    },
+    Command {
+        id: CommandId::CopyColumnNames,
+        key: "copy_column_names",
+        label: "Copy column names",
+        default_binding: None,
     },
     Command {
         id: CommandId::Search,

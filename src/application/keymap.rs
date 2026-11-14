@@ -229,6 +229,7 @@ pub enum ActionId {
     CommandMenuChooseColumns,
     CommandMenuExport,
     CommandMenuRunAction,
+    CommandMenuCopyColumnNames,
     FilterToValue,
     ExcludeValue,
     ResultFilter,
@@ -1622,6 +1623,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         command: Some(CommandId::RunAction),
         default_bindings: &["x"],
     },
+    ActionSpec {
+        id: ActionId::CommandMenuCopyColumnNames,
+        category: ActionCategory::CommandMenu,
+        name: "Copy column names",
+        context: KeyContext::CommandMenu,
+        command: Some(CommandId::CopyColumnNames),
+        default_bindings: &["n"],
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1969,6 +1978,7 @@ mod tests {
         for context in [KeyContext::TableCommandMenu, KeyContext::QueryCommandMenu] {
             assert_eq!(map.binding_for("e", context), Some(ActionId::CommandMenuExport));
             assert_eq!(map.binding_for("x", context), Some(ActionId::CommandMenuRunAction));
+            assert_eq!(map.binding_for("n", context), Some(ActionId::CommandMenuCopyColumnNames));
             for stroke in ["c", "s", "/", "g", "m", "f", "r"] {
                 assert_eq!(map.binding_for(stroke, context), None, "{stroke}");
             }

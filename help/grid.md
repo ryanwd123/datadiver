@@ -56,6 +56,7 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 | --- | --- |
 | E | Export the result to a file |
 | H / Shift+H | Hide the selected columns / choose columns (tables) |
+| N | Copy the selected columns' names, separated by commas |
 | X | Run a view action |
 
 Commands with a key of their own in the grid, such as copy, save or sort, aren't repeated in the menu.

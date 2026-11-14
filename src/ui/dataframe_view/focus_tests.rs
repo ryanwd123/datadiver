@@ -1996,6 +1996,18 @@ fn command_menu_lists_its_commands_and_runs_only_its_keys() {
     assert_eq!(fake::with(|system| system.new_path_prompts), prompts + 2);
 }
 
+#[test]
+fn command_menu_copies_the_selected_column_names() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "ctrl-k n");
+    assert!(!viewer.read(|view| view.command_menu_open));
+    assert_eq!(clipboard_text().as_deref(), Some("region"));
+    press_in_grid(&viewer, "shift-right");
+    press(&viewer, "ctrl-k n");
+    assert_eq!(clipboard_text().as_deref(), Some("region, sales"));
+}
+
 fn frozen_count(viewer: &Viewer) -> usize {
     viewer.read(|view| view.session.effective_table_config().frozen_count)
 }
