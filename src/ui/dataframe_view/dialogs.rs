@@ -78,6 +78,7 @@ pub enum PaletteKind {
     SqlOutline(Vec<std::ops::Range<usize>>),
     /// Past SQL runs, newest first.
     SqlHistory(Vec<String>),
+    OutlineLayouts,
 }
 
 pub struct PaletteDialog {
@@ -406,7 +407,10 @@ impl DataFrameView {
             PivotFieldKind::PivotBy => (config.pivot_by, config.group_by),
         };
         let schema = self.session.source.schema.to_vec();
-        let panel = PivotPanel::new(schema, configured, kind, blocked, self.session.source.engine);
+        let mut panel = PivotPanel::new(schema, configured, kind, blocked, self.session.source.engine);
+        if kind == PivotFieldKind::GroupBy {
+            panel.set_collapsed_from(config.depth);
+        }
         let mut focus = None;
         panel.focus_available(&mut focus);
         self.open_dialog(Dialog::Pivot(panel), focus, cx);
@@ -1361,6 +1365,12 @@ impl DataFrameView {
                 if let Some(range) = ranges.get(index).cloned() {
                     self.close_dialog(cx);
                     self.go_to_sql_range(range, cx);
+                }
+            }
+            PaletteKind::OutlineLayouts => {
+                if let Some(layout) = crate::domain::documents::OutlineLayout::ALL.get(index).copied() {
+                    self.close_dialog(cx);
+                    self.set_outline_layout(layout, cx);
                 }
             }
             PaletteKind::SqlHistory(runs) => {

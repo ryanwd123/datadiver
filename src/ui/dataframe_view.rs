@@ -56,6 +56,8 @@ mod help_window;
 #[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
+mod outline_tests;
+#[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
 mod help_tests;
@@ -68,6 +70,7 @@ mod paste_filter;
 #[cfg(test)]
 mod navigation_tests;
 mod performance;
+mod outline;
 mod pipeline;
 pub(crate) mod profiles;
 mod render;
@@ -322,6 +325,15 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::FocusSlicers,
     CommandId::Export,
     CommandId::ToggleTotals,
+    CommandId::CollapseField,
+    CommandId::ExpandField,
+    CommandId::CollapseItem,
+    CommandId::ExpandItem,
+    CommandId::OutlineLayout,
+    CommandId::ToggleSubtotals,
+    CommandId::ExpandToLevel,
+    CommandId::ExpandAll,
+    CommandId::FlatResult,
     CommandId::ConditionalFormatting,
     CommandId::RecalculateWidths,
     CommandId::HideColumns,
@@ -475,6 +487,7 @@ impl UnlimitedQuery {
             &mut SqlTrace::default(),
         )?;
         drop(source);
+        let keys = store.outline_keys().map(<[String]>::to_vec);
         let frame = FrameSnapshot::new(store, self.source.source_revision);
         let schema = frame.schema.to_vec();
         let rows = frame
@@ -488,7 +501,8 @@ impl UnlimitedQuery {
                 value_filters: Vec::new(),
                 sort: available_sort_keys(&self.sort, &schema),
             })?;
-        Ok(ResultSnapshot::from_view(&frame, rows, schema, 0, 0))
+        let (columns, outline) = pipeline::outline_projection(&self.config, &schema, keys.as_deref());
+        Ok(ResultSnapshot::from_view(&frame, rows, columns, 0, 0).with_outline(outline))
     }
 }
 

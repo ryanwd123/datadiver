@@ -157,6 +157,15 @@ impl DataFrameView {
             CommandId::UnfreezeAll => self.unfreeze_all(cx),
             CommandId::Export => self.export_result(cx),
             CommandId::ToggleTotals => self.toggle_totals(cx),
+            CommandId::CollapseField => self.collapse_field(cx),
+            CommandId::ExpandField => self.expand_field(cx),
+            CommandId::CollapseItem => self.collapse_item(cx),
+            CommandId::ExpandItem => self.expand_item(cx),
+            CommandId::OutlineLayout => self.open_outline_layouts(cx),
+            CommandId::ToggleSubtotals => self.toggle_subtotals(cx),
+            CommandId::ExpandToLevel => self.expand_to_level(cx),
+            CommandId::ExpandAll => self.expand_all(cx),
+            CommandId::FlatResult => self.flat_result(cx),
             CommandId::ConditionalFormatting => self.open_format_manager(cx),
             CommandId::RecalculateWidths => self.recalculate_widths(cx),
             CommandId::HideColumns => self.hide_selected_columns(cx),
@@ -387,6 +396,12 @@ impl DataFrameView {
     }
 
     pub(crate) fn sort_active(&mut self, descending: bool, cx: &mut Cx<Self>) {
+        if self.session.result.outline.is_some() {
+            self.copy_status =
+                Some("An outline keeps each item above its children; Outline: Turn off shows a result you can sort".into());
+            cx.notify();
+            return;
+        }
         let Some(selection) = self.grid.selection() else {
             return;
         };
@@ -399,13 +414,13 @@ impl DataFrameView {
     }
 
     fn remove_active_group_column(&mut self, cx: &mut Cx<Self>) {
-        let Some(selection) = self.grid.selection() else {
+        let Some(active) = self.active_group_field() else {
             return;
         };
         let Some(ViewKind::Query(current)) = self.session.working.as_ref().map(|view| &view.view) else {
             return;
         };
-        let Some(field) = current.shown_group_by().get(selection.active.column).cloned() else {
+        let Some(field) = current.shown_group_by().get(active).cloned() else {
             return;
         };
         let mut updated = current.clone();
@@ -631,6 +646,11 @@ impl DataFrameView {
                 crate::domain::formatting::group_numeric_text(&MAX_ROWS.to_string())
             ));
         }
+        if let Some(outline) = &result.outline
+            && outline.layout == crate::domain::documents::OutlineLayout::Compact
+        {
+            return self.row_label_filters(exclude);
+        }
         let targets = columns.clone().map(|column| self.value_filter_target(column)).collect::<Result<Vec<_>, _>>()?;
         let fetched = match result.cached_rows(*rows.start(), row_count) {
             Some(rows) => rows,
@@ -642,10 +662,23 @@ impl DataFrameView {
             let mut seen = std::collections::HashSet::new();
             let mut values = Vec::new();
             for row in &fetched {
+                // An outline row's blank keys total over every value: no key to filter by.
+                if let Some(outline) = &result.outline
+                    && let (Some(field), Some(outline_row)) = (outline.field_of(index), outline.row(row))
+                    && field >= outline_row.level
+                {
+                    continue;
+                }
                 let value = row.values.get(index).ok_or("The selected rows are no longer available")?;
                 if seen.insert(value) {
                     values.push(value.clone());
                 }
+            }
+            if values.is_empty() {
+                return Err(format!(
+                    "These rows total over every {}; filter from a row that shows one",
+                    result.columns[column].0
+                ));
             }
             if values.len() > MAX_VALUES {
                 return Err(format!("The selection holds more than {MAX_VALUES} values in a column; select fewer to filter by them"));
@@ -660,6 +693,44 @@ impl DataFrameView {
             filters.extend(not_null);
         }
         Ok(filters)
+    }
+
+    /// Value filters for the row label under the cursor in the compact
+    /// layout: its item's keys, one filter per field down to its level.
+    fn row_label_filters(&self, exclude: bool) -> Result<Vec<ValueFilter>, String> {
+        let selection = self.grid.selection().ok_or("Select a cell first")?;
+        let (rows, columns) = selection.rectangle();
+        if rows.start() != rows.end() || *columns.start() != 0 || *columns.end() != 0 {
+            return Err("Select one row label to filter by its item".into());
+        }
+        let Some(ViewKind::Query(config)) = self.session.working.as_ref().map(|view| &view.view) else {
+            return Err("Select a cell first".into());
+        };
+        let result = &self.session.result;
+        let outline = result.outline.as_ref().ok_or("Select a cell first")?;
+        let fetched = match result.cached_rows(selection.active.row, 1) {
+            Some(rows) => rows,
+            None => result.fetch_rows(selection.active.row, 1)?,
+        };
+        let row = fetched
+            .first()
+            .and_then(|row| outline.row(row))
+            .ok_or("The selected row is no longer available")?;
+        // Leaving out an item below the first field would leave out its
+        // siblings' parents too, so only first-field items can be excluded.
+        if exclude && row.level > 1 {
+            return Err("Only items of the first field can be excluded; filter to this one, or exclude its key in the tabular layout".into());
+        }
+        Ok(config
+            .shown_group_by()
+            .iter()
+            .zip(row.path)
+            .map(|(target, value)| ValueFilter {
+                target: target.clone(),
+                values: vec![value],
+                exclude,
+            })
+            .collect())
     }
 
     /// What a value filter on the result's `column` compares.

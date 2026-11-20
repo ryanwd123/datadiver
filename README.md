@@ -37,7 +37,7 @@ DataDiver is built in Rust with two query engines, Polars and DuckDB, and draws 
 - **Two query engines:** each file is read by Polars, which loads files into memory fast, or DuckDB, with its full SQL in expressions and cards. Polars is the default; choose per file.
 - **Browse the database:** a sidebar tree of saved views, database tables and views, attached databases, and watched files and folders.
 - **Explore tables:** search with a small query language, sort, filter with slicer cards, freeze and hide columns, and inspect selection statistics.
-- **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals.
+- **Build pivots:** group by columns or SQL expressions, pivot by dimensions, and aggregate with count, sum, mean, median, minimum, maximum, or any aggregate the file's engine has. Add grand totals, and expand or collapse fields and items into subtotals in a tabular, outline, or compact layout.
 - **Conditional formatting:** color, bold, data bars, color scales, icons and sparklines from short rules like `if duplicate(c) then bg: mistyrose`, with presets and completion.
 - **Drill down:** press **Enter** on a pivot cell to see the source rows behind it.
 - **Write SQL:** a SQL editor with highlighting, table, column, and file path completion, SQL sources whose rows you can build views on, SQL scripts, and a startup script.
@@ -136,6 +136,8 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | < / > | Decrease / increase decimal places of the selected columns |
 | , | Toggle thousands grouping of the selected columns |
 | T | Show or hide totals (queries) |
+| Ctrl+Alt+← / Ctrl+Alt+→ | Collapse the field under the cursor / expand the next field (queries) |
+| Alt+← / Alt+→ | Collapse an item into a subtotal row / expand it (queries) |
 | M | Conditional formatting |
 | D | Show or hide cell detail |
 | N | Drop files to watch |

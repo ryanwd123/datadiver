@@ -55,6 +55,8 @@ pub struct PivotPanel {
     kind: PivotFieldKind,
     blocked: Vec<Dimension>,
     events: Vec<PivotPanelEvent>,
+    /// Group-by fields from this one on are collapsed, shown dimmed.
+    collapsed_from: Option<usize>,
 }
 
 fn dimension_label(entry: &Dimension) -> String {
@@ -97,6 +99,7 @@ impl PivotPanel {
             kind,
             blocked,
             events: Vec::new(),
+            collapsed_from: None,
         };
         panel.command.list.empty_text = "No available columns".into();
         panel.list.empty_text = "No dimensions configured".into();
@@ -110,11 +113,31 @@ impl PivotPanel {
 
     fn set_configured(&mut self, entries: Vec<Dimension>) {
         self.configured = entries;
-        self.list
-            .set_items(self.configured.iter().map(|entry| Item::new(dimension_label(entry))).collect());
+        let collapsed_from = self.collapsed_from.unwrap_or(usize::MAX);
+        self.list.set_items(
+            self.configured
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    let mut item = Item::new(dimension_label(entry));
+                    if index >= collapsed_from {
+                        item.muted = true;
+                        item.detail = Some("collapsed · Ctrl+Alt+Right in the grid expands it".into());
+                    }
+                    item
+                })
+                .collect(),
+        );
         let available = self.available_columns().into_iter().map(Item::new).collect();
         self.command.set_items(available);
         self.restore_list_selection();
+    }
+
+    /// Dims the group-by fields from `depth` on, which the query collapses.
+    pub fn set_collapsed_from(&mut self, depth: Option<usize>) {
+        self.collapsed_from = depth;
+        let configured = std::mem::take(&mut self.configured);
+        self.set_configured(configured);
     }
 
     pub fn kind(&self) -> PivotFieldKind {

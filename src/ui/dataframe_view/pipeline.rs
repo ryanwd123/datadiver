@@ -599,11 +599,29 @@ impl DataFrameView {
     pub(crate) fn format_scope(&self) -> Option<crate::application::conditional_format::FormatScope> {
         use crate::application::conditional_format::FormatScope;
         match self.session.working.as_ref().map(|view| &view.view) {
-            Some(ViewKind::Query(_)) => {
+            Some(ViewKind::Query(config)) => {
                 let cache = self.query_cache.as_ref()?;
+                // Scales and statistics read an outline's leaves, so its
+                // subtotals don't stretch them.
+                let filters = match config.active_outline() {
+                    Some(_) => vec![crate::infrastructure::store::ColumnFilter {
+                        column: String::new(),
+                        values: Vec::new(),
+                        condition: Some(format!(
+                            "\"{}\" = {}",
+                            crate::domain::pivot::outline::LEVEL,
+                            config.shown_group_by().len()
+                        )),
+                        sql: true,
+                    }],
+                    None => Vec::new(),
+                };
                 Some(FormatScope {
                     store: cache.frame.store.clone(),
-                    view: ViewQuery::default(),
+                    view: ViewQuery {
+                        filters,
+                        ..ViewQuery::default()
+                    },
                     schema: cache.frame.schema.clone(),
                 })
             }
@@ -766,6 +784,29 @@ impl DataFrameView {
     }
 }
 
+/// The columns a query's result shows, and where its outline's columns are:
+/// an outline hides its level and open flags, and the compact layout shows
+/// its first key column only, which holds every row's label.
+pub(crate) fn outline_projection(
+    config: &QueryConfig,
+    schema: &[ColumnSchema],
+    keys: Option<&[String]>,
+) -> (Vec<ColumnSchema>, Option<crate::domain::frame::ResultOutline>) {
+    use crate::domain::pivot::outline::{LEVEL, OPEN};
+    let Some(keys) = keys else {
+        return (schema.to_vec(), None);
+    };
+    let layout = config.outline.as_ref().map(|outline| outline.layout).unwrap_or_default();
+    let compact = layout == crate::domain::documents::OutlineLayout::Compact;
+    let columns = schema
+        .iter()
+        .filter(|column| column.name != LEVEL && column.name != OPEN)
+        .filter(|column| !(compact && keys[1..].contains(&column.name)))
+        .cloned()
+        .collect();
+    (columns, crate::domain::frame::ResultOutline::new(schema, keys, layout))
+}
+
 /// A query's result filters and Having conditions as filters over its
 /// result. Result filters whose column the result no longer has, such as a
 /// pivot value that went, are left out; a Having condition always applies.
@@ -884,7 +925,13 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
                 .lock()
                 .map_err(|_| "DuckDB query store lock poisoned".to_owned())?;
             let schema = pivot_store.schema().to_vec();
-            let sort = available_sort_keys(&request.sort, &schema);
+            let outline_keys = pivot_store.outline_keys().map(<[String]>::to_vec);
+            // An outline keeps each parent above its children, so it is not sorted.
+            let sort = if outline_keys.is_some() {
+                Vec::new()
+            } else {
+                available_sort_keys(&request.sort, &schema)
+            };
             let view = ViewQuery {
                 hidden: Vec::new(),
                 value_filters: Vec::new(),
@@ -895,7 +942,10 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
             // A result that stopped at the limit is missing rows, so
             // search and sort rerun inside the query to see all of them.
             // The unnarrowed result stays cached for the next request.
+            // An outline's search runs over its own rows: a search inside the
+            // query could not keep the ancestors of the rows it finds.
             let narrowed = if pivot_store.cut_at().is_some()
+                && outline_keys.is_none()
                 && (!view.tokens.is_empty() || !view.filters.is_empty() || !view.sort.is_empty())
             {
                 let source_store = request
@@ -929,7 +979,9 @@ fn run_pipeline(token: JobToken, request: PipelineRequest, slicer_cache: Option<
                 .lock()
                 .map_err(|_| "DuckDB query store lock poisoned".to_owned())?
                 .query_view_rows_traced(&shown_view, &mut trace)?;
-            let snapshot = ResultSnapshot::from_view(shown, rows, schema, 0, token.request_revision);
+            let (columns, outline) = outline_projection(config, &schema, outline_keys.as_deref());
+            let snapshot =
+                ResultSnapshot::from_view(shown, rows, columns, 0, token.request_revision).with_outline(outline);
             snapshot.prefetch_page(0)?;
             return Ok::<_, String>((snapshot, Some(pivot_source), Some(sort), None));
         }

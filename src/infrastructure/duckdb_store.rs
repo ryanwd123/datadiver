@@ -2053,6 +2053,7 @@ impl DuckDbStore {
         row_map: Option<&ViewRowMap>,
         row_ids: &RowIds,
         columns: &[usize],
+        names: Option<&[String]>,
         path: &Path,
         format: crate::domain::export::FileFormat,
     ) -> Result<usize, String> {
@@ -2068,15 +2069,17 @@ impl DuckDbStore {
         };
         let projection = columns
             .iter()
-            .map(|index| {
+            .enumerate()
+            .map(|(position, index)| {
                 let column = self
                     .columns
                     .get(*index)
                     .ok_or("export column is out of range")?;
+                let name = names.and_then(|names| names.get(position)).unwrap_or(&column.name);
                 Ok(format!(
                     "__qp_source.{} AS {}",
                     quote_identifier(&column.storage_name),
-                    quote_identifier(&column.name)
+                    quote_identifier(name)
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -2993,6 +2996,7 @@ mod tests {
                 None,
                 &rows.row_ids,
                 &[0],
+                None,
                 &path,
                 crate::domain::export::FileFormat::Csv,
             )

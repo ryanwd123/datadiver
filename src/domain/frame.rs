@@ -69,6 +69,59 @@ impl FrameSnapshot {
     }
 }
 
+/// Where an outline's keys and hidden columns are among its store's columns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResultOutline {
+    pub layout: crate::domain::documents::OutlineLayout,
+    /// The key columns, from the first field.
+    pub keys: Vec<usize>,
+    pub level: usize,
+    pub open: usize,
+}
+
+/// One outline row: its level (1 for the first field), whether it is an
+/// expanded item's own row, and its keys down to its level.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineRow {
+    pub level: usize,
+    pub open: bool,
+    pub path: crate::domain::documents::OutlinePath,
+}
+
+impl ResultOutline {
+    /// The outline of a store with `schema` whose key columns are `keys`.
+    pub fn new(schema: &[ColumnSchema], keys: &[String], layout: crate::domain::documents::OutlineLayout) -> Option<Self> {
+        use crate::domain::pivot::outline::{LEVEL, OPEN};
+        let position = |name: &str| schema.iter().position(|column| column.name == name);
+        Some(Self {
+            layout,
+            keys: keys.iter().map(|key| position(key)).collect::<Option<Vec<_>>>()?,
+            level: position(LEVEL)?,
+            open: position(OPEN)?,
+        })
+    }
+
+    pub fn fields(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// The outline row `row` is, from its values.
+    pub fn row(&self, row: &CachedRow) -> Option<OutlineRow> {
+        let level = row.values.get(self.level)?.as_deref()?.parse::<usize>().ok()?;
+        let open = row.values.get(self.open)?.as_deref() == Some("true");
+        let path = self.keys[..level.min(self.keys.len())]
+            .iter()
+            .map(|index| row.values.get(*index).cloned().flatten())
+            .collect();
+        Some(OutlineRow { level, open, path })
+    }
+
+    /// The field (from 0) the store column `index` holds the key of.
+    pub fn field_of(&self, index: usize) -> Option<usize> {
+        self.keys.iter().position(|key| *key == index)
+    }
+}
+
 #[derive(Clone)]
 pub struct ResultSnapshot {
     pub store: Arc<Mutex<Store>>,
@@ -84,6 +137,8 @@ pub struct ResultSnapshot {
     page_cache: Arc<Mutex<PageCache>>,
     /// Rows in `store`, before search and filters.
     store_row_count: usize,
+    /// Set when the rows are an outline's.
+    pub outline: Option<ResultOutline>,
 }
 
 #[derive(Default)]
@@ -133,6 +188,7 @@ impl ResultSnapshot {
             row_map: None,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
             store_row_count: source.row_count(),
+            outline: None,
         }
     }
 
@@ -206,6 +262,7 @@ impl ResultSnapshot {
             row_map,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
             store_row_count: source.row_count(),
+            outline: None,
         }
     }
 
@@ -242,6 +299,7 @@ impl ResultSnapshot {
             row_map: rows.row_map,
             page_cache: Arc::new(Mutex::new(PageCache::default())),
             store_row_count: source.row_count(),
+            outline: None,
         }
     }
 
@@ -308,22 +366,35 @@ impl ResultSnapshot {
     }
 
     /// Writes every displayed row and column, in display order, to `path`.
-    /// Returns the number of rows written.
+    /// Returns the number of rows written. An outline writes every key of
+    /// each row, whatever its layout shows, and a `Level` column after them.
     pub fn export_to_file(
         &self,
         path: &std::path::Path,
         format: crate::domain::export::FileFormat,
     ) -> Result<usize, String> {
-        self.store
-            .lock()
-            .map_err(|_| "store lock poisoned".to_owned())?
-            .export_view(
-                self.row_map.as_deref(),
-                &self.row_ids,
-                &self.column_indices,
-                path,
-                format,
-            )
+        let store = self.store.lock().map_err(|_| "store lock poisoned".to_owned())?;
+        let Some(outline) = &self.outline else {
+            return store.export_view(self.row_map.as_deref(), &self.row_ids, &self.column_indices, None, path, format);
+        };
+        let mut columns = outline.keys.clone();
+        columns.extend(self.column_indices.iter().filter(|index| !outline.keys.contains(index)));
+        let mut names = columns
+            .iter()
+            .map(|index| store.schema()[*index].name.clone())
+            .collect::<Vec<_>>();
+        let mut level = "Level".to_owned();
+        while names.contains(&level) {
+            level.insert_str(0, "Outline ");
+        }
+        columns.push(outline.level);
+        names.push(level);
+        store.export_view(self.row_map.as_deref(), &self.row_ids, &columns, Some(&names), path, format)
+    }
+
+    pub fn with_outline(mut self, outline: Option<ResultOutline>) -> Self {
+        self.outline = outline;
+        self
     }
 
     pub fn fetch_rows(&self, start: usize, count: usize) -> Result<Vec<CachedRow>, String> {

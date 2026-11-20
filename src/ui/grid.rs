@@ -27,6 +27,39 @@ const CELL_PREVIEW_LIMIT: usize = 200;
 const SEARCH_HIGHLIGHT: Color = Color::rgba(0xffd84d99);
 const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 
+/// What an outline row shows in the key column at store index `index`, or
+/// `None` where the cell shows its value as usual. A row shows the key of
+/// its own level, with ▸ on a collapsed item and ▾ on an expanded one; the
+/// keys it totals over are blank, and so are its parents' keys outside the
+/// tabular layout. The compact layout indents every label in one column.
+fn outline_cell(
+    outline: &crate::domain::frame::ResultOutline,
+    row: &crate::domain::frame::OutlineRow,
+    cached: &crate::infrastructure::store::CachedRow,
+    index: usize,
+) -> Option<String> {
+    use crate::domain::documents::OutlineLayout;
+    let field = outline.field_of(index)?;
+    let leaf = row.level >= outline.fields();
+    let marker = match (leaf, row.open) {
+        (true, _) => "",
+        (false, true) => "▾ ",
+        (false, false) => "▸ ",
+    };
+    let label = |field: usize| {
+        let value = outline.keys.get(field).and_then(|key| cached.values.get(*key)).and_then(Option::as_deref);
+        format!("{marker}{}", cell_preview(value, "VARCHAR", None).0)
+    };
+    let own = row.level.checked_sub(1)?;
+    match outline.layout {
+        OutlineLayout::Compact => Some(format!("{}{}", "    ".repeat(own), label(own))),
+        _ if field > own => Some(String::new()),
+        _ if field == own => (!leaf).then(|| label(field)),
+        OutlineLayout::Tabular => None,
+        OutlineLayout::Outline => Some(String::new()),
+    }
+}
+
 fn cell_preview(value: Option<&str>, dtype: &str, format: Option<NumericFormat>) -> (String, bool) {
     let text = display_cell(value, dtype, format, CELL_PREVIEW_LIMIT);
     let hidden = text.chars().count() > CELL_PREVIEW_LIMIT || text.contains(['\r', '\n', '\t']);
@@ -1383,6 +1416,13 @@ impl GridView {
     }
 
     /// Measures up to four columns' samples, as each frame would.
+    fn compact_outline(&self) -> bool {
+        self.result
+            .outline
+            .as_ref()
+            .is_some_and(|outline| outline.layout == crate::domain::documents::OutlineLayout::Compact)
+    }
+
     pub(crate) fn infer_widths<V: GridHost>(&mut self, font: &Font, cx: &mut Cx<V>) {
         let mut inferred = false;
         let mut processed_candidates = false;
@@ -1433,6 +1473,15 @@ impl GridView {
                     break;
                 }
                 measured = measured.max(width);
+            }
+            // Compact labels are indented a step per level below the first,
+            // where the samples come from.
+            if column == 0
+                && self.compact_outline()
+                && let Some(outline) = &self.result.outline
+            {
+                let indent = format!("{}▾ ", "    ".repeat(outline.fields().saturating_sub(1)));
+                measured = measured.max(measure("Row labels", font)) + measure(&indent, font);
             }
             let width = inferred_width(measured);
             self.widths[column] = width;
@@ -1518,6 +1567,13 @@ impl GridView {
                 format!("{}{}", column.0, sort)
             })
             .collect::<Vec<_>>();
+        let mut labels = labels;
+        // The compact layout's first column holds every field's labels.
+        if self.compact_outline()
+            && let Some(first) = labels.first_mut()
+        {
+            *first = "Row labels".into();
+        }
         let height = (0..self.result.columns.len())
             .map(|column| {
                 let width = (self.widths[column] - 17.0).max(1.0);
@@ -1707,6 +1763,12 @@ impl GridView {
                 if row % 2 == 1 {
                     canvas.fill(rect(rows_area.x, y, rows_area.w, row_height), even);
                 }
+                let outline_row = self
+                    .result
+                    .outline
+                    .as_ref()
+                    .zip(page_rows.get(offset))
+                    .and_then(|(outline, cached)| Some((outline, outline.row(cached)?, cached)));
                 for pass_frozen in [false, true] {
                     if !pass_frozen {
                         canvas.push_clip(rect(scroll_clip.x, rows_area.y, scroll_clip.w, rows_area.h));
@@ -1724,7 +1786,15 @@ impl GridView {
                             .get(offset)
                             .and_then(|cached| cached.values.get(column_indices[column]))
                             .and_then(Option::as_deref);
-                        let (mut text, hidden) = cell_preview(value, &dtypes[column], self.formats[column]);
+                        let (mut text, hidden) = match &outline_row {
+                            Some((outline, outline_row, cached)) => {
+                                match outline_cell(outline, outline_row, cached, column_indices[column]) {
+                                    Some(label) => (label, false),
+                                    None => cell_preview(value, &dtypes[column], self.formats[column]),
+                                }
+                            }
+                            None => cell_preview(value, &dtypes[column], self.formats[column]),
+                        };
                         let selected = rectangle
                             .as_ref()
                             .is_some_and(|(rows, columns)| rows.contains(&row) && columns.contains(&column));
@@ -1779,6 +1849,13 @@ impl GridView {
                                 italic: style.italic || font.italic,
                                 ..font.clone()
                             },
+                            // An outline's subtotal rows stand out from its leaves.
+                            _ if outline_row
+                                .as_ref()
+                                .is_some_and(|(outline, row, _)| row.level < outline.fields()) =>
+                            {
+                                font.semibold()
+                            }
                             _ => font.clone(),
                         };
                         let available = (text_box.w - font.size - if active_cell { 4.0 } else { 1.0 }).max(1.0);
@@ -2443,5 +2520,51 @@ mod preview_tests {
             ),
             ("18,446,744,073,709,551,615".into(), false)
         );
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::outline_cell;
+    use crate::domain::documents::OutlineLayout;
+    use crate::domain::frame::ResultOutline;
+    use crate::infrastructure::store::CachedRow;
+
+    /// Store columns: region, product, total, level, open.
+    fn row(region: &str, product: Option<&str>, level: usize, open: bool) -> CachedRow {
+        CachedRow {
+            rowid: 0,
+            values: vec![
+                Some(region.into()),
+                product.map(Into::into),
+                Some("3".into()),
+                Some(level.to_string()),
+                Some(open.to_string()),
+            ],
+        }
+    }
+
+    fn shown(layout: OutlineLayout, cached: &CachedRow) -> Vec<Option<String>> {
+        let outline = ResultOutline { layout, keys: vec![0, 1], level: 3, open: 4 };
+        let outline_row = outline.row(cached).unwrap();
+        (0..3).map(|index| outline_cell(&outline, &outline_row, cached, index)).collect()
+    }
+
+    fn texts(values: &[Option<&str>]) -> Vec<Option<String>> {
+        values.iter().map(|value| value.map(String::from)).collect()
+    }
+
+    #[test]
+    fn outline_rows_mark_items_and_blank_the_keys_they_total_over() {
+        let collapsed = row("North", None, 1, false);
+        let open = row("North", None, 1, true);
+        let leaf = row("North", Some("A"), 2, false);
+        // `None` leaves the cell to show its value as usual.
+        assert_eq!(shown(OutlineLayout::Tabular, &collapsed), texts(&[Some("▸ North"), Some(""), None]));
+        assert_eq!(shown(OutlineLayout::Tabular, &open), texts(&[Some("▾ North"), Some(""), None]));
+        assert_eq!(shown(OutlineLayout::Tabular, &leaf), texts(&[None, None, None]));
+        assert_eq!(shown(OutlineLayout::Outline, &leaf), texts(&[Some(""), None, None]));
+        assert_eq!(shown(OutlineLayout::Compact, &open)[0].as_deref(), Some("▾ North"));
+        assert_eq!(shown(OutlineLayout::Compact, &leaf)[0].as_deref(), Some("    A"));
     }
 }

@@ -68,6 +68,35 @@ Pick a result column on the left and press **Enter** to write its quoted name in
 
 **T** shows or hides totals: a grand total row under the grid and, for pivots, a **(Total)** column for each row. Totals aggregate the source rows, so means, medians and distinct counts total correctly rather than summing the cells above.
 
+## Expand and collapse
+
+A query grouped by several fields can be read at different depths, like an Excel PivotTable's outline.
+
+- **Ctrl+Alt+Left** on a group-by column collapses that field and every field after it: the query groups by the fields before it only. On a measure column it collapses the last shown field. **Ctrl+Alt+Right** shows the next field again. The Group By manager dims the collapsed fields.
+- **Alt+Left** collapses one item into a single subtotal row, marked **▸**: on a key cell, the item of that column; elsewhere, the row's parent. **Alt+Right** on a ▸ row expands it again. Expanded items are marked **▾** where they show a row of their own.
+
+Every subtotal aggregates the source rows, as totals do, so means, medians and distinct counts stay correct. Subtotal rows are bold, and the keys they total over are blank.
+
+The **Outline:** commands in the command palette do the rest:
+
+| Command | What it does |
+| --- | --- |
+| Outline: Choose a layout | **Tabular** keeps every field in its own column with the keys on every row. **Outline** puts a row above each expanded item and leaves its keys blank on the children. **Compact** shows one indented **Row labels** column. |
+| Outline: Show or hide this field's subtotals | In the tabular layout, adds a subtotal row above each expanded item of the cursor's field. In the others, shows or blanks the values on the item's own row. |
+| Outline: Expand to this field's level | Collapses every item of the cursor's field, leaving the fields before it expanded. Alt+Right then opens items one at a time. |
+| Outline: Expand every item | Opens every collapsed item. |
+| Outline: Turn off | Shows the flat result again. |
+
+While the outline is on:
+
+- A search keeps the rows above each match, so a match stays under its parents.
+- The rows keep the outline's order, each item above its children, so sorting asks you to turn the outline off first.
+- **Enter** on a subtotal row drills down by its own keys only, and **=** filters by the keys a row shows. In the compact layout, **=** on a label filters by its item's keys.
+- Conditional formatting scales read the leaf rows only, so subtotals don't stretch them.
+- An export writes every row's keys, whatever the layout shows, with a **Level** column (1 for the first field).
+
+The collapsed fields, collapsed items, layout and subtotals are saved with the view, and **Ctrl+Z** undoes each change.
+
 ## Drilling down
 
 Press **Enter** on a result cell to open the source rows behind it: the row's group-by values, plus the pivot values when the cell is a pivoted measure. The query's slicers and filters carry over. Press **U** to return to the query, or **Shift+Enter** to open the drill-down in a new window.

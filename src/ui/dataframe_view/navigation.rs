@@ -870,14 +870,17 @@ impl DataFrameView {
             Some(rows) => rows,
             None => result.fetch_rows(row, 1)?,
         };
-        let values = &cached
-            .first()
-            .ok_or("The active row is no longer available")?
-            .values;
-        let group_values = (0..group_count.min(result.column_count()))
-            .map(|index| values.get(result.column_indices[index]).cloned().flatten())
-            .collect::<Vec<_>>();
-        let on_group_column = column < group_count;
+        let first = cached.first().ok_or("The active row is no longer available")?;
+        let values = &first.values;
+        // An outline row filters by the keys down to its level: a subtotal
+        // covers every value of the fields below it.
+        let group_values = match result.outline.as_ref().and_then(|outline| outline.row(first)) {
+            Some(outline_row) => outline_row.path,
+            None => (0..group_count.min(result.column_count()))
+                .map(|index| values.get(result.column_indices[index]).cloned().flatten())
+                .collect::<Vec<_>>(),
+        };
+        let on_group_column = column < config.key_columns();
         let pivot_keys = if on_group_column || config.pivot_by.is_empty() {
             Vec::new()
         } else {

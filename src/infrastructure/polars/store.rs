@@ -1150,6 +1150,7 @@ impl PolarsStore {
         &self,
         row_ids: &RowIds,
         columns: &[usize],
+        names: Option<&[String]>,
         path: &Path,
         format: crate::domain::export::FileFormat,
     ) -> Result<usize, String> {
@@ -1157,6 +1158,14 @@ impl PolarsStore {
             return Err("There are no columns to export".into());
         }
         let mut frame = self.view_frame(row_ids, columns)?;
+        if let Some(names) = names {
+            let current = frame.get_column_names_owned();
+            for (old, new) in current.iter().zip(names) {
+                if old.as_str() != new {
+                    frame.rename(old.as_str(), new.as_str().into()).map_err(polars_error)?;
+                }
+            }
+        }
         super::export::write(&mut frame, path, format)?;
         Ok(frame.height())
     }
@@ -1832,7 +1841,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("rows.csv");
         let written = store
-            .export_view(&rows.row_ids, &[0], &path, crate::domain::export::FileFormat::Csv)
+            .export_view(&rows.row_ids, &[0], None, &path, crate::domain::export::FileFormat::Csv)
             .unwrap();
         assert_eq!(written, 5);
         assert_eq!(

@@ -420,12 +420,13 @@ impl Store {
         row_map: Option<&ViewRowMap>,
         row_ids: &RowIds,
         columns: &[usize],
+        names: Option<&[String]>,
         path: &Path,
         format: crate::domain::export::FileFormat,
     ) -> Result<usize, String> {
         match self {
-            Self::DuckDb(store) => store.export_view(row_map, row_ids, columns, path, format),
-            Self::Polars(store) => store.export_view(row_ids, columns, path, format),
+            Self::DuckDb(store) => store.export_view(row_map, row_ids, columns, names, path, format),
+            Self::Polars(store) => store.export_view(row_ids, columns, names, path, format),
         }
     }
 

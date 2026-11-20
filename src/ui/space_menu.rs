@@ -44,7 +44,16 @@ impl SpaceMenu {
             || !matches!(
                 command,
                 CommandId::Group
-                    | CommandId::Pivot
+                                        | CommandId::CollapseField
+                    | CommandId::ExpandField
+                    | CommandId::CollapseItem
+                    | CommandId::ExpandItem
+                    | CommandId::OutlineLayout
+                    | CommandId::ToggleSubtotals
+                    | CommandId::ExpandToLevel
+                    | CommandId::ExpandAll
+                    | CommandId::FlatResult
+| CommandId::Pivot
                     | CommandId::Aggregation
                     | CommandId::Having
                     | CommandId::AddSlicer
