@@ -92,7 +92,7 @@ fn numeric_shortcuts_follow_active_columns_and_restore_from_settings() {
     assert!(repository.load_settings().unwrap().column_formats.is_empty());
     viewer.press("right , shift-. > shift-,");
     assert_eq!(numeric_format(&viewer, "sales"), Some(ONE_DECIMAL));
-    viewer.press("alt-left");
+    viewer.press("{");
     viewer.run_until_parked();
     viewer.render();
     assert_eq!(viewer.read(|view| view.session.result.columns[0].0.clone()), "sales");
@@ -138,7 +138,7 @@ fn column_shortcuts_change_every_selected_column_and_keep_moves_in_view() {
     assert_eq!(numeric_format(&viewer, "c22"), Some(format));
     assert!(viewer.read(|view| view.grid.scroll_x) > 0.);
     for _ in 0..3 {
-        press(&viewer, "alt-right");
+        press(&viewer, "}");
     }
     viewer.read(|view| {
         let order: Vec<&str> = view.session.result.columns.iter().map(|column| column.0.as_str()).collect();

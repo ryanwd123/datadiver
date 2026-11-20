@@ -1590,7 +1590,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Move column left",
         context: KeyContext::TableGrid,
         command: None,
-        default_bindings: &["alt-left"],
+        default_bindings: &["{"],
     },
     ActionSpec {
         id: ActionId::MoveColumnRight,
@@ -1598,7 +1598,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Move column right",
         context: KeyContext::TableGrid,
         command: None,
-        default_bindings: &["alt-right"],
+        default_bindings: &["}"],
     },
     ActionSpec {
         id: ActionId::CommandMenuExport,

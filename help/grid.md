@@ -28,7 +28,7 @@ The status bar summarizes the selected cells: how many, their nulls and unique v
 ## Columns
 
 - **F** freezes columns up to the active one, so they stay in view while you scroll right; **Shift+F** unfreezes all.
-- **Alt+Left** and **Alt+Right** move the selected columns of a table; they move together and stay in view.
+- **{** and **}** move the selected columns of a table; they move together and stay in view.
 - **Ctrl+K H** hides the selected columns and **Ctrl+K Shift+H** chooses which columns show. Hidden columns keep their place, and a `column:` search term still searches them.
 - **(** and **)** narrow or widen the selected columns. **Recalculate column widths** in the command palette fits every column to its contents again.
 
