@@ -195,8 +195,6 @@ pub enum ActionId {
     ToggleTotals,
     CollapseField,
     ExpandField,
-    CollapseFieldOrExtendLeft,
-    ExpandFieldOrExtendRight,
     CollapseItem,
     ExpandItem,
     ConditionalFormatting,
@@ -1357,7 +1355,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Outline: collapse this field",
         context: KeyContext::QueryGrid,
         command: Some(CommandId::CollapseField),
-        default_bindings: &["alt-shift-left"],
+        default_bindings: &["alt-shift-left", "ctrl-alt-left"],
     },
     ActionSpec {
         id: ActionId::ExpandField,
@@ -1365,24 +1363,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Outline: expand the next field",
         context: KeyContext::QueryGrid,
         command: Some(CommandId::ExpandField),
-        default_bindings: &["alt-shift-right"],
-    },
-    // Outside outline mode these keep extending the selection to the edge.
-    ActionSpec {
-        id: ActionId::CollapseFieldOrExtendLeft,
-        category: ActionCategory::DataExploration,
-        name: "Outline: collapse this field (outside outline mode, extend selection to the first column)",
-        context: KeyContext::QueryGrid,
-        command: None,
-        default_bindings: &["ctrl-shift-left"],
-    },
-    ActionSpec {
-        id: ActionId::ExpandFieldOrExtendRight,
-        category: ActionCategory::DataExploration,
-        name: "Outline: expand the next field (outside outline mode, extend selection to the last column)",
-        context: KeyContext::QueryGrid,
-        command: None,
-        default_bindings: &["ctrl-shift-right"],
+        default_bindings: &["alt-shift-right", "ctrl-alt-right"],
     },
     ActionSpec {
         id: ActionId::CollapseItem,

@@ -25,11 +25,6 @@ impl DataFrameView {
         }
     }
 
-    /// Whether the open query is in outline mode.
-    pub(crate) fn outline_mode(&self) -> bool {
-        self.query_config().is_some_and(|config| config.outline.is_some())
-    }
-
     fn outline_note(&mut self, text: impl Into<String>, cx: &mut Cx<Self>) {
         self.copy_status = Some(text.into());
         cx.notify();

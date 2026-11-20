@@ -375,26 +375,26 @@ fn collapsing_a_field_keeps_items_above_it_as_they_were_opened_by_hand() {
         view.schedule_search(String::new(), cx);
     });
     viewer.run_until_parked();
-    // Outside outline mode, Ctrl+Shift+Right extends the selection.
+    // Ctrl+Shift+Right still extends the selection.
     press_on_cell(&viewer, 0, 0, "ctrl-shift-right");
     viewer.read(|view| assert_eq!(view.grid.selection().unwrap().active.column, 3));
     toggle_outline(&viewer);
     // Collapse everything, then open North and its product A by hand.
-    press_on_cell(&viewer, 0, 1, "ctrl-shift-left");
-    press_on_cell(&viewer, 0, 1, "ctrl-shift-left");
+    press_on_cell(&viewer, 0, 1, "ctrl-alt-left");
+    press_on_cell(&viewer, 0, 1, "ctrl-alt-left");
     assert_eq!(rows(&viewer).len(), 2);
     press_on_cell(&viewer, 0, 0, "alt-right");
     press_on_cell(&viewer, 1, 0, "alt-right");
     assert_eq!(rows(&viewer).len(), 5);
     // On a leaf of North A, the product level collapses; North stays open
     // and South stays closed.
-    press_on_cell(&viewer, 2, 0, "ctrl-shift-left");
+    press_on_cell(&viewer, 2, 0, "ctrl-alt-left");
     let outline = config(&viewer).outline.unwrap();
     assert_eq!(outline.level, Some(1));
     assert_eq!(outline.toggled, [text(&["North"])]);
     assert_eq!(rows(&viewer), [text(&["North", "3"]), text(&["North", "1"]), text(&["North", "2"]), text(&["South", "12"])]);
     // Again, with every product collapsed, the level above collapses.
-    press_on_cell(&viewer, 1, 0, "ctrl-shift-left");
+    press_on_cell(&viewer, 1, 0, "ctrl-alt-left");
     assert_eq!(rows(&viewer).len(), 2);
     press_on_cell(&viewer, 0, 0, "alt-shift-left");
     assert_eq!(status(&viewer), "This is the outline's top level");
