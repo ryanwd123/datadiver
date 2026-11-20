@@ -20,13 +20,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
 - **Settings to consider adding:** default row limit, restore the last session on startup,
   confirm before closing unsaved views, default slicer options for new files.
 
- 
-## Tier 4: bigger features
-
-
-- [ ] **14. Expand / collapse in group-by and pivot (Excel-style outline).** See the design below.
-  Build it in phases so nothing that works today changes until the outline is switched on.
-
 ## Tier 5: AI features
 
 - [ ] **17. More agentic ideas** (rough order of value):
@@ -61,51 +54,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
       - Builds for every platform in the community CI, and a rebuild per DuckDB release.
     - Worth a spike after step 1.
 
-## Design: expand / collapse (item 14)
-
-The current result is flat: there are no subtotals, ROLLUP, or per-level keys. The risk is in
-the features that assume a flat result, so the design keeps them unchanged until outline mode is on.
-
-- **Phase A, field level only (low risk).** `ctrl-alt-left` on a group-by column collapses that
-  *field*: the query groups by the fields to its left only. `ctrl-alt-right` expands the next
-  field again.
-  - New `QueryConfig.depth: Option<usize>`.
-  - The result is still flat and correctly aggregated from source rows. Sort, search, drill,
-    heat map, totals, and export all work unchanged.
-  - The collapsed fields show in the pivot panel as greyed out.
-- **Phase B, item level + outline layout.** `alt-left` / `alt-right` collapse or expand one item.
-  These keys are free in `QueryGrid`; in tables they move columns.
-  - **SQL:** `GROUP BY GROUPING SETS ((k1), (k1,k2), …, (k1..kn))` with `GROUPING_ID()` as a
-    hidden `__level` column.
-    - Every level aggregates source rows, so mean, median, and distinct-count stay correct, as with
-      totals.
-    - Visible rows:
-      - a leaf row whose ancestors are all expanded,
-      - a subtotal row for each collapsed item,
-      - in outline layout, a header or subtotal row for each expanded item.
-      - Collapsed paths are passed as a `VALUES` list.
-    - Order by `k1, GROUPING(k2), k2, …` so each parent sits next to its children.
-    - **Pivot:** `PIVOT` can't take GROUPING SETS, so UNION ALL one pivot per depth. The
-      `(Total)` LEFT JOIN code is the template.
-  - **State:** `QueryConfig.collapsed: Vec<Vec<Value>>` (key paths) and
-    `layout: Tabular | Outline | Compact`, saved and undoable.
-  - **Layouts:**
-    - **Tabular:** each field in its own column, labels repeated.
-    - **Outline:** a subtotal row above its children, with the parent key cells blank on child
-      rows.
-    - **Compact:** one indented "Row labels" column.
-    - The layout is mostly a grid rendering choice driven by `__level`, plus a ▸/▾ glyph.
-  - **Must adapt** (each with tests):
-    - Result sort sorts within siblings, or is disabled while collapsed.
-    - Search keeps the ancestors of matching rows.
-    - `drill::cell_filters` uses only the keys at the row's level, never `IS NULL` for rolled-up
-      keys.
-    - The heat map excludes subtotal rows or scales per level.
-    - `filter_active_value` on a subtotal row filters by its path.
-    - Export writes what is shown, with a level column.
-    - Hide `__level` the way hidden columns work for tables.
-- **Phase C:** subtotal on/off per field, and "expand to level N".
-
 ## Loose ends from finished work
 
 - Aggregate function reference: the structured operations (`pivot_editor::OPERATIONS`) as a
@@ -119,5 +67,8 @@ the features that assume a flat result, so the design keeps them unchanged until
 - Condition card: debounce while typing, and a matching-row count.
 - Pasted-table files are never cleaned up (`pasted/` in the data folder).
 - Cell detail pane: resizable, and its width remembered.
-- Heat map: covered by item 13.
-- Subtotals: covered by item 14.
+- Outline: sort within siblings (sorting is off while the outline is on), keep the cursor on an
+  item after collapsing it, and search past the row limit (an outline cut at the limit searches
+  only the rows it read; flat queries rerun the search inside the query).
+- Polars scan mode: CSV types come from the first 10,000 rows, as in DuckDB's scans, so a later
+  value that breaks them fails the query that reaches it.
