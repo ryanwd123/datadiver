@@ -55,12 +55,14 @@ impl DataFrameView {
             rows.push((ViewOption::SqlReadMode, "Read mode", detail.into(), None));
         }
         if self.query_file().is_some() {
+            let engine = self.session.source.engine;
             rows.push((
                 ViewOption::ReadMode,
                 "Read mode",
-                "Scan: DuckDB reads the file in place on every query · Enter reads it into memory".into(),
+                format!("Scan: {} reads the file in place on every query · Enter reads it into memory", engine.label()),
                 None,
             ));
+            rows.push((ViewOption::Engine, "Query engine", format!("{} · Enter switches", engine.label()), None));
         }
         if self.settings_file().is_some() {
             rows.push((

@@ -65,7 +65,7 @@ Switch a file with **Query engine** in **View options** (the gear at the end of 
 **Read mode**, in **View options**, decides whether a file is read into memory at all.
 
 - **In memory** (the default) reads the file with its engine. The row **Limit** beside the search caps how many rows are read, so a file too big for the machine never fills it; when a file has more rows than the limit, the status bar says **Read the first N rows of the file**.
-- **Scan** leaves the file where it is: it opens as a query that DuckDB reads in place on every run, so files too big to hold still group, pivot and filter. Each run reads the file again, so it is slower than in memory.
+- **Scan** leaves the file where it is: it opens as a query that the file's engine reads in place on every run, so files too big to hold still group, pivot and filter. Each run reads the file again, so it is slower than in memory. Both engines scan CSV, TSV and Parquet files; Polars reads `.xlsx` and `.csv.gz` files whole even in scan mode, since it cannot scan them. **Query engine** still switches the engine while a file is scanned.
 
 ## Favorites
 

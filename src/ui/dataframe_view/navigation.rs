@@ -3,7 +3,7 @@
 use super::*;
 use crate::application::state::ApplicationState;
 use crate::infrastructure::json_store::FavoriteTarget;
-use crate::infrastructure::readers::{file_read, read_source};
+use crate::infrastructure::readers::{file_read, load_relation, read_source, scan_file};
 use crate::infrastructure::source_database::LoadMode;
 use crate::infrastructure::sources::SourceLoad;
 use crate::ui::platform::system;
@@ -232,15 +232,14 @@ impl DataFrameView {
                 let source = if let Some(id) = &sql_source {
                     FrameSnapshot::new(sql_source_rows(&repository, &database, id, query_limit, stream_source)?, existing.source_revision + 1)
                 } else if let Some(view) = &database_view {
-                    FrameSnapshot::new(database.load_view(view)?, existing.source_revision + 1)
+                    FrameSnapshot::new(load_relation(&repository, &table_writer, &database, view)?, existing.source_revision + 1)
                 } else {
                     let options;
                     (options, file) = file_read(&repository, &table_writer, &read_path);
                     if direct_destination && file.scan {
                         // A file set to scan opens as a query read in place.
                         scanned = true;
-                        let scan = crate::domain::documents::DatabaseView::file(read_path.to_string_lossy());
-                        FrameSnapshot::new(database.load_view(&scan)?, existing.source_revision + 1)
+                        FrameSnapshot::new(scan_file(&database, &read_path, options)?, existing.source_revision + 1)
                     } else {
                         match sources.load_reusing(&read_path, options, LoadMode::Check, existing.source_identity.as_ref())? {
                             SourceLoad::Reused => existing,
@@ -482,9 +481,8 @@ impl DataFrameView {
                     let (options, file) = file_read(&repository, &table_writer, &path);
                     read_source(&path, &sources, options, mode).map(|store| (store, file))
                 }
-                SourceTarget::DatabaseView(view) => database
-                    .load_view(&view)
-                    .map(|store| (store.into(), Default::default())),
+                SourceTarget::DatabaseView(view) => load_relation(&repository, &table_writer, &database, &view)
+                    .map(|store| (store, Default::default())),
                 SourceTarget::SqlSource(id) => {
                     sql_source_rows(&repository, &database, &id, query_limit, stream_source).map(|store| (store, Default::default()))
                 }

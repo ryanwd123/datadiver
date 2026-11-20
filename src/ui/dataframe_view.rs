@@ -1149,8 +1149,10 @@ impl DataFrameView {
         let database = self.database.clone();
         let source_revision = self.session.source.source_revision;
         let read_view = database_view.clone();
+        let repository = self.repository.clone();
+        let table_writer = self.table_writer.clone();
         cx.spawn(
-            move || database.load_view(&read_view),
+            move || crate::infrastructure::readers::load_relation(&repository, &table_writer, &database, &read_view),
             move |view: &mut Self, cx, result| {
                 view.source_check_pending = false;
                 if view.loading

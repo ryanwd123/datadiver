@@ -67,6 +67,45 @@ pub fn with_categorical_text(frame: DataFrame) -> Result<DataFrame, String> {
         .map_err(polars_error)
 }
 
+/// `path` as a lazy frame read in place on every collect: CSV, TSV and
+/// Parquet files are scanned, so opening one reads only its schema. Workbooks
+/// and gzip CSV can't be scanned and are read whole. CSV types come from the
+/// first rows, as DuckDB's scans do, so a later value that breaks them fails
+/// the query that reaches it.
+pub fn scan_frame(path: &Path, categorical: bool) -> Result<LazyFrame, String> {
+    let scan = || -> Result<LazyFrame, String> {
+        let reference = || PlRefPath::try_from_path(path).map_err(polars_error);
+        match file_kind(path)? {
+            FileKind::Delimited(_) if is_gzip_csv(path) => read_frame(path).map(DataFrame::lazy),
+            FileKind::Delimited(separator) => LazyCsvReader::new(reference()?)
+                .with_has_header(true)
+                .with_infer_schema_length(Some(INFER_ROWS))
+                .with_separator(separator)
+                .with_try_parse_dates(true)
+                .finish()
+                .map_err(polars_error),
+            FileKind::Parquet => {
+                LazyFrame::scan_parquet(reference()?, ScanArgsParquet::default()).map_err(polars_error)
+            }
+            FileKind::Xlsx => read_xlsx(path, None).map(DataFrame::lazy),
+        }
+    };
+    let mut frame = scan().map_err(|error| format!("could not scan {}: {error}", path.display()))?;
+    if categorical {
+        let schema = frame.collect_schema().map_err(polars_error)?;
+        let categories = DataType::from_categories(Categories::global());
+        let text = schema
+            .iter()
+            .filter(|(_, dtype)| **dtype == DataType::String)
+            .map(|(name, _)| col(name.clone()).cast(categories.clone()))
+            .collect::<Vec<_>>();
+        if !text.is_empty() {
+            frame = frame.with_columns(text);
+        }
+    }
+    Ok(frame)
+}
+
 pub fn read_frame(path: &Path) -> Result<DataFrame, String> {
     read_frame_limited(path, None).map(|(frame, _)| frame)
 }

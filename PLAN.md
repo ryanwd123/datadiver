@@ -13,9 +13,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
   spelled differently by each engine (`domain::slicers::scalar_key` vs
   `polars::expressions::scalar_key`), so a view saved under one engine can lose those selections
   under the other. Normalize the keys, or convert them on switch.
-- **Polars scan mode** for files bigger than memory (the IceSlice plan has the design). Today a
-  big file is read whole by either engine; DuckDB tables from an attached database are the way
-  around it.
 - **Reset database connection** detaches databases, reruns the startup script, and replaces the
   SQL editor's connection, but cannot close the database file: every open DuckDB table holds a
   connection, and DuckDB refuses a second open of the file in one process. `SET GLOBAL` options
@@ -26,23 +23,7 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
  
 ## Tier 4: bigger features
 
-- [ ] **13. Conditional formatting (beyond the heat map).** Today `QueryConfig.heatmap: bool` gives
-  one green linear scale on query measures (`src/domain/heatmap.rs`, `grid.rs` `heat_ranges`).
-  - **Model:** replace the bool with `formats: Vec<FormatRule>` on both `QueryConfig` and
-    `TableConfig`, saved with the view and covered by undo. Each rule has target columns and a kind:
-    - **Color scale:** 2-color or 3-color. Diverging around 0 or the midpoint.
-      Palettes: green, red, blue, red–green.
-    - **Data bars:** a bar proportional to the value.
-    - **Condition rule:** a condition in the *same language as condition cards* (`>100`,
-      `=North`, `2024-01..`) → text or background color. Reuses `parse_condition` and
-      `column_predicate`.
-    - **Duplicates / top-N / bottom-N.**
-  - **Evaluation:**
-    - Scales still use min/max over the whole result (`numeric_ranges`, cached).
-    - Condition rules are evaluated in SQL as a `CASE` → rule index per row, fetched with each
-      page, so they work over tables of any size.
-  - **UI:** a *Conditional formatting* dialog listing rules (add, edit, reorder, delete), plus
-    `Space m` as the quick toggle of today's heat map.
+
 - [ ] **14. Expand / collapse in group-by and pivot (Excel-style outline).** See the design below.
   Build it in phases so nothing that works today changes until the outline is switched on.
 

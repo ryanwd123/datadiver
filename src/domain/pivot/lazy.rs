@@ -437,7 +437,7 @@ fn limited(
 ) -> Result<LazyFrame, String> {
     match result_view {
         Some((store, view)) => store.apply_view(view, frame, limit),
-        None => Ok(frame.limit(limit.min(IdxSize::MAX as u64) as IdxSize)),
+        None => Ok(crate::infrastructure::polars::store::limit_rows(frame, limit)),
     }
 }
 
@@ -1595,5 +1595,78 @@ mod tests {
             dimension_editor_expression(&Dimension::from("Year"), source.schema()).unwrap(),
             "\"Year\""
         );
+    }
+
+    /// A file scanned in place gives the same rows as the file read into
+    /// memory, for every kind of query, from CSV and Parquet alike.
+    #[test]
+    fn scanned_files_give_the_same_results_as_files_in_memory() {
+        let folder = tempfile::tempdir().unwrap();
+        let memory = athletes();
+        let mut frame = memory.collect(memory.query_frame(false)).unwrap();
+        let csv = folder.path().join("athletes.csv");
+        CsvWriter::new(std::fs::File::create(&csv).unwrap()).finish(&mut frame).unwrap();
+        let parquet = folder.path().join("athletes.parquet");
+        ParquetWriter::new(std::fs::File::create(&parquet).unwrap()).finish(&mut frame).unwrap();
+        let sum = structured("Score", AggregationOp::Sum);
+        let configs = [
+            QueryConfig {
+                group_by: vec!["Year".into()],
+                aggregations: vec![sum.clone(), structured("Name", AggregationOp::DistinctNonNullCount)],
+                totals: true,
+                ..Default::default()
+            },
+            QueryConfig {
+                group_by: vec!["Year".into()],
+                pivot_by: vec!["Sex".into()],
+                aggregations: vec![sum.clone()],
+                totals: true,
+                ..Default::default()
+            },
+            QueryConfig {
+                aggregations: vec![sum, structured("Score", AggregationOp::RowCount)],
+                ..Default::default()
+            },
+        ];
+        let filters = [slicer("Season", "Winter")];
+        for path in [&csv, &parquet] {
+            let scan = PolarsStore::scan(path, false).unwrap();
+            assert!(scan.is_database_view());
+            assert_eq!(names(&scan), names(&memory));
+            for config in &configs {
+                for slicers in [&filters[..], &[]] {
+                    assert_eq!(
+                        rows(&execute(&scan, config, slicers).unwrap()),
+                        rows(&execute(&memory, config, slicers).unwrap()),
+                        "{path:?} {config:?}"
+                    );
+                }
+                let clock = EvaluationClock::system();
+                assert_eq!(
+                    execute_totals(&scan, config, &filters, &[], &clock).unwrap(),
+                    execute_totals(&memory, config, &filters, &[], &clock).unwrap()
+                );
+            }
+            // With no group by, the file's own rows: every one in file order,
+            // or the first `limit` of those the slicers keep.
+            let rows_of = |store: &PolarsStore, limit| {
+                let mut trace = SqlTrace::default();
+                let clock = EvaluationClock::system();
+                rows(&execute_query(store, &QueryConfig::default(), &filters, &[], &clock, limit, None, &mut trace).unwrap())
+            };
+            let winter = rows(&memory).into_iter().filter(|row| row[3].as_deref() == Some("Winter")).collect::<Vec<_>>();
+            assert_eq!(rows_of(&scan, 10), winter);
+            assert_eq!(rows_of(&scan, 2).len(), 2);
+            assert_eq!(rows_of(&scan, 10).len(), 3);
+            // Categorical text groups the same way.
+            let categorical = PolarsStore::scan(path, true).unwrap();
+            assert_ne!(categorical.column("Sex").unwrap().sql_type, "VARCHAR");
+            assert_eq!(
+                rows(&execute(&categorical, &configs[1], &filters).unwrap()),
+                rows(&execute(&memory, &configs[1], &filters).unwrap())
+            );
+            // Scanned stores read their rows only through queries.
+            assert!(scan.fetch_row_ids(&[0]).is_err());
+        }
     }
 }

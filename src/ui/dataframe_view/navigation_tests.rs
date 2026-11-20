@@ -1291,61 +1291,76 @@ fn categorical_text_is_a_file_option_with_a_default_in_settings() {
 
 #[test]
 fn read_mode_scans_a_file_in_place_and_reads_it_into_memory_again() {
-    let home = tempfile::tempdir().unwrap();
-    let repository = repository(home.path());
-    let path = home.path().join("sales.csv");
-    std::fs::write(&path, "region,n
-North,1
-South,2
-North,3
-").unwrap();
-    let viewer = viewer(repository.clone());
-    open(&viewer, FileEntry::Source(path.clone()));
-    let scanned = |viewer: &Viewer| viewer.read(|view| view.session.source.store.lock().unwrap().is_database_view());
-    assert!(!scanned(&viewer));
-    viewer.view_option(super::view_options::ViewOption::ReadMode);
-    viewer.read(|view| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.dialog.is_none());
-        assert_eq!(view.query_file().as_deref(), Some(path.to_string_lossy().as_ref()));
-        assert_eq!(view.session.result.row_count(), 3);
-    });
-    assert!(scanned(&viewer));
-    // The scanned file reloads once it changes on disk.
-    let check = || {
-        viewer.update(|view, cx| view.check_source(cx));
+    use crate::infrastructure::store::Engine;
+    for engine in Engine::ALL {
+        let home = tempfile::tempdir().unwrap();
+        let repository = repository(home.path());
+        repository
+            .save_settings(&crate::infrastructure::json_store::Settings {
+                default_engine: engine,
+                ..Default::default()
+            })
+            .unwrap();
+        let path = home.path().join("sales.csv");
+        std::fs::write(&path, "region,n\nNorth,1\nSouth,2\nNorth,3\n").unwrap();
+        let viewer = viewer(repository.clone());
+        open(&viewer, FileEntry::Source(path.clone()));
+        let scanned = |viewer: &Viewer| viewer.read(|view| view.session.source.store.lock().unwrap().is_database_view());
+        assert!(!scanned(&viewer));
+        viewer.view_option(super::view_options::ViewOption::ReadMode);
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{engine:?}: {:?}", view.error);
+            assert!(view.dialog.is_none());
+            assert_eq!(view.query_file().as_deref(), Some(path.to_string_lossy().as_ref()));
+            assert_eq!(view.session.result.row_count(), 3);
+        });
+        assert!(scanned(&viewer), "{engine:?}");
+        assert_eq!(self::engine(&viewer), engine);
+        // The scanned file reloads once it changes on disk.
+        let check = || {
+            viewer.update(|view, cx| view.check_source(cx));
+            viewer.run_until_parked();
+        };
+        check();
+        assert!(viewer.read(|view| view.source_probe.is_some()));
+        check();
+        std::fs::write(&path, "region,n\nNorth,1\nSouth,2\nNorth,3\nEast,4\n").unwrap();
+        check();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.session.result.row_count(), 4, "{engine:?}");
+        });
+        // The choice is the file's, so opening it again scans it.
+        viewer.update(|view, _| view.table_writer.flush().unwrap());
+        assert!(repository.load_table_preferences(&path).unwrap().file.scan);
+        open(&viewer, FileEntry::Source(path.clone()));
+        assert!(scanned(&viewer));
+        // The other engine scans it too, keeping the query.
+        let other = Engine::ALL.into_iter().find(|other| *other != engine).unwrap();
+        viewer.update(|view, cx| view.set_file_engine(other, cx));
         viewer.run_until_parked();
-    };
-    check();
-    assert!(viewer.read(|view| view.source_probe.is_some()));
-    check();
-    std::fs::write(&path, "region,n
-North,1
-South,2
-North,3
-East,4
-").unwrap();
-    check();
-    viewer.read(|view| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.session.result.row_count(), 4);
-    });
-    // The choice is the file's, so opening it again scans it.
-    viewer.update(|view, _| view.table_writer.flush().unwrap());
-    assert!(repository.load_table_preferences(&path).unwrap().file.scan);
-    open(&viewer, FileEntry::Source(path.clone()));
-    assert!(scanned(&viewer));
-    // The command switches back, and the file is read into memory.
-    viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleScan, cx));
-    viewer.run_until_parked();
-    viewer.read(|view| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.query_file().is_none());
-        assert_eq!(view.session.result.row_count(), 4);
-    });
-    assert!(!scanned(&viewer));
-    viewer.update(|view, _| view.table_writer.flush().unwrap());
-    assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.session.result.row_count(), 4);
+        });
+        assert!(scanned(&viewer));
+        assert_eq!(self::engine(&viewer), other);
+        viewer.update(|view, cx| view.set_file_engine(engine, cx));
+        viewer.run_until_parked();
+        assert_eq!(self::engine(&viewer), engine);
+        // The command switches back, and the file is read into memory.
+        viewer.update(|view, cx| view.dispatch_command(CommandId::ToggleScan, cx));
+        viewer.run_until_parked();
+        viewer.read(|view| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.query_file().is_none());
+            assert_eq!(view.session.result.row_count(), 4);
+        });
+        assert!(!scanned(&viewer));
+        assert_eq!(self::engine(&viewer), engine);
+        viewer.update(|view, _| view.table_writer.flush().unwrap());
+        assert!(!repository.load_table_preferences(&path).unwrap().file.scan);
+    }
 }
 
 #[test]

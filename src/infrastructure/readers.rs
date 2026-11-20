@@ -2,11 +2,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::table_preferences::TablePreferencesWriter;
+use crate::domain::documents::DatabaseView;
 use crate::domain::table_preferences::FileSettings;
 use crate::infrastructure::json_store::ViewRepository;
-use crate::infrastructure::source_database::LoadMode;
+use crate::infrastructure::polars::store::PolarsStore;
+use crate::infrastructure::source_database::{LoadMode, SourceDatabase};
 use crate::infrastructure::sources::{ReadOptions, Sources};
-use crate::infrastructure::store::Store;
+use crate::infrastructure::store::{Engine, Store};
 
 pub fn read_source(
     path: &Path,
@@ -15,6 +17,40 @@ pub fn read_source(
     mode: LoadMode,
 ) -> Result<Store, String> {
     sources.load(path, options, mode)
+}
+
+/// A file opened to be read in place on every query by `options.engine`,
+/// for files too big to hold in memory.
+pub fn scan_file(database: &Arc<SourceDatabase>, path: &Path, options: ReadOptions) -> Result<Store, String> {
+    match options.engine {
+        Engine::DuckDb => database
+            .load_view(&DatabaseView::file(path.to_string_lossy()))
+            .map(Store::from),
+        Engine::Polars => {
+            crate::infrastructure::source_database::source_reader(path)?;
+            if !path.is_file() {
+                return Err(format!("cannot access source {}", path.display()));
+            }
+            PolarsStore::scan(path, options.categorical).map(Store::from)
+        }
+    }
+}
+
+/// A database relation, or a file opened in scan mode, which the engine its
+/// file settings choose reads in place.
+pub fn load_relation(
+    repository: &ViewRepository,
+    table_writer: &TablePreferencesWriter,
+    database: &Arc<SourceDatabase>,
+    view: &DatabaseView,
+) -> Result<Store, String> {
+    match view.file_path() {
+        Some(path) => {
+            let path = Path::new(path);
+            scan_file(database, path, read_options(repository, table_writer, path))
+        }
+        None => database.load_view(view).map(Store::from),
+    }
 }
 
 /// How `path` is read: its own file settings, or the profile's default

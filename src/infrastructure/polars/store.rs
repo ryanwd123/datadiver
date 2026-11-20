@@ -36,6 +36,9 @@ pub struct PolarsStore {
     identity: Option<FrameIdentity>,
     /// The row limit a file read or query result stopped at, leaving rows out.
     cut_at: Option<usize>,
+    /// A file read in place on every query instead of `frame`, which is then
+    /// empty. Its views are limited queries, as for DuckDB's scans.
+    scan: Option<LazyFrame>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -103,9 +106,23 @@ impl PolarsStore {
             columns,
             identity: None,
             cut_at: None,
+            scan: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// A store over `path` read in place: queries scan the file each run, and
+    /// opening it reads only the schema (see [`super::readers::scan_frame`]).
+    pub fn scan(path: &Path, categorical: bool) -> Result<Self, String> {
+        let mut frame = super::readers::scan_frame(path, categorical)?;
+        let schema = frame
+            .collect_schema()
+            .map_err(|error| format!("could not scan {}: {}", path.display(), polars_error(error)))?;
+        let mut store = Self::from_frame(DataFrame::empty());
+        store.columns = schema_columns(&schema);
+        store.scan = Some(frame);
+        Ok(store)
     }
 
     pub(crate) fn with_identity(mut self, identity: FrameIdentity) -> Self {
@@ -133,10 +150,10 @@ impl PolarsStore {
         Ok(())
     }
 
-    /// Polars stores always hold every row, unlike DuckDB views read only
-    /// through limited queries.
+    /// Whether the rows are read in place through limited queries: a scanned
+    /// file. Other Polars stores hold every row.
     pub fn is_database_view(&self) -> bool {
-        false
+        self.scan.is_some()
     }
 
     pub fn persistent_identity(&self) -> Option<FrameIdentity> {
@@ -146,7 +163,10 @@ impl PolarsStore {
     /// Every row as a lazy frame. With `rowid`, adds a `rowid` column numbering
     /// the rows from 0 for SQL that names it, unless the source has its own.
     pub fn query_frame(&self, rowid: bool) -> LazyFrame {
-        let frame = self.frame.as_ref().clone().lazy();
+        let frame = match &self.scan {
+            Some(scan) => scan.clone(),
+            None => self.frame.as_ref().clone().lazy(),
+        };
         if rowid && self.column("rowid").is_none() {
             frame
                 .with_row_index("rowid", None)
@@ -192,7 +212,12 @@ impl PolarsStore {
         self.row_count
     }
 
+    /// The rows in memory. A scanned file has none: its rows are read
+    /// through queries, whose results are in-memory stores.
     fn frame(&self) -> Result<&DataFrame, String> {
+        if self.scan.is_some() {
+            return Err("a scanned file is read through queries, not by row".into());
+        }
         Ok(self.frame.as_ref())
     }
 
@@ -661,9 +686,7 @@ impl PolarsStore {
             frame = frame.filter(predicate);
         }
         let order = self.sort_columns(&view.sort)?;
-        Ok(self
-            .sorted(frame, &order, &view.sort)
-            .limit(limit.min(IdxSize::MAX as u64) as IdxSize))
+        Ok(limit_rows(self.sorted(frame, &order, &view.sort), limit))
     }
 
     /// `view`'s search terms and filters as one predicate, or `None` when they
@@ -1242,6 +1265,17 @@ impl PolarsStore {
             });
         }
         Ok((result, unique))
+    }
+}
+
+/// The first `limit` rows of `frame`. A limit past what Polars can index
+/// means every row: Polars sizes a sort's top-k buffer by the limit, so an
+/// export's unlimited rerun would otherwise ask for terabytes.
+pub fn limit_rows(frame: LazyFrame, limit: u64) -> LazyFrame {
+    if limit >= IdxSize::MAX as u64 {
+        frame
+    } else {
+        frame.limit(limit as IdxSize)
     }
 }
 

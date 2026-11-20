@@ -54,7 +54,7 @@ impl DataFrameView {
             self.palette(&format!("Engine for {name}"), "Choose an engine", items, dialogs::PaletteKind::Engines, cx);
             return;
         }
-        let Some(path) = self.settings_file() else {
+        let Some(path) = self.read_mode_file() else {
             self.copy_status = Some("Files, SQL sources and SQL scripts choose an engine; database tables and the startup script run on DuckDB".into());
             cx.notify();
             return;
@@ -78,12 +78,19 @@ impl DataFrameView {
     /// Saves `edit` to the open file's settings and reads the file again
     /// with them, keeping the view.
     fn change_file_settings(&mut self, edit: impl FnOnce(&mut FileSettings), cx: &mut Cx<Self>) {
-        let Some(path) = self.settings_file() else {
+        let Some(path) = self.read_mode_file() else {
             return;
         };
-        let mut file = self.file_settings;
+        let scanned = self.query_file().is_some();
+        // A scanned file's view may not have read its settings, so start from the saved ones.
+        let current = if scanned {
+            self.table_writer.load(&path).map(|preferences| preferences.file).unwrap_or_default()
+        } else {
+            self.file_settings
+        };
+        let mut file = current;
         edit(&mut file);
-        if file == self.file_settings {
+        if file == current {
             return;
         }
         let patch = TablePreferencesPatch {
@@ -95,9 +102,14 @@ impl DataFrameView {
             cx.notify();
             return;
         }
-        self.file_settings = file;
         // The reader sees the edit before it is written.
-        self.load_source(path, false, LoadMode::Check, cx);
+        if scanned {
+            let scan = crate::domain::documents::DatabaseView::file(path.to_string_lossy());
+            self.load_database_view(scan, false, cx);
+        } else {
+            self.file_settings = file;
+            self.load_source(path, false, LoadMode::Check, cx);
+        }
     }
 
     pub(crate) fn set_file_engine(&mut self, engine: Engine, cx: &mut Cx<Self>) {
