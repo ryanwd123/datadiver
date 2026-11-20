@@ -70,10 +70,12 @@ Pick a result column on the left and press **Enter** to write its quoted name in
 
 ## Expand and collapse
 
-A query grouped by several fields can be read at different depths, like an Excel PivotTable's outline.
+A query grouped by several fields can be read at different depths, like an Excel PivotTable's outline. Turn **outline mode** on or off from the command menu: **Ctrl+K**, then **O**. It starts in the compact layout, with every expanded item's subtotal on its own row. Turning it off shows the flat result of every field again.
 
-- **Ctrl+Alt+Left** on a group-by column collapses that field and every field after it: the query groups by the fields before it only. On a measure column it collapses the last shown field. **Ctrl+Alt+Right** shows the next field again. The Group By manager dims the collapsed fields.
-- **Alt+Left** collapses one item into a single subtotal row, marked **▸**: on a key cell, the item of that column; elsewhere, the row's parent. **Alt+Right** on a ▸ row expands it again. Expanded items are marked **▾** where they show a row of their own.
+In outline mode:
+
+- **Alt+Shift+Left** on a group-by column collapses that field and every field after it: the query groups by the fields before it only. On a measure column it collapses the last shown field. The first field stays; at the top level, the status bar says so. **Alt+Shift+Right** shows the next field again, and at the lowest level lists the columns to expand every item into. The Group By manager dims the collapsed fields.
+- **Alt+Left** collapses one item into a single subtotal row, marked **▸**: on a key cell, the item of that column; elsewhere, the row's parent. **Alt+Right** on a ▸ row expands it again. On a row of the lowest level, **Alt+Right** opens that item alone into the next field: a collapsed one, or a column you choose from a list. Expanded items are marked **▾** where they show a row of their own.
 
 Every subtotal aggregates the source rows, as totals do, so means, medians and distinct counts stay correct. Subtotal rows are bold, and the keys they total over are blank.
 
@@ -81,21 +83,21 @@ The **Outline:** commands in the command palette do the rest:
 
 | Command | What it does |
 | --- | --- |
-| Outline: Choose a layout | **Tabular** keeps every field in its own column with the keys on every row. **Outline** puts a row above each expanded item and leaves its keys blank on the children. **Compact** shows one indented **Row labels** column. |
-| Outline: Show or hide this field's subtotals | In the tabular layout, adds a subtotal row above each expanded item of the cursor's field. In the others, shows or blanks the values on the item's own row. |
+| Outline: Turn outline mode on or off | The same as **Ctrl+K**, **O**. |
+| Outline: Choose a layout | **Compact** shows one indented **Row labels** column. **Outline** puts a row above each expanded item and leaves its keys blank on the children. **Tabular** keeps every field in its own column with the keys on every row. |
+| Outline: Show or hide this field's subtotals | In the tabular layout, removes or adds the subtotal row above each expanded item of the cursor's field. In the others, blanks or shows the values on the item's own row. |
 | Outline: Expand to this field's level | Collapses every item of the cursor's field, leaving the fields before it expanded. Alt+Right then opens items one at a time. |
 | Outline: Expand every item | Opens every collapsed item. |
-| Outline: Turn off | Shows the flat result again. |
 
-While the outline is on:
+While outline mode is on:
 
 - A search keeps the rows above each match, so a match stays under its parents.
-- The rows keep the outline's order, each item above its children, so sorting asks you to turn the outline off first.
+- The rows keep the outline's order, each item above its children, so sorting asks you to turn outline mode off first.
 - **Enter** on a subtotal row drills down by its own keys only, and **=** filters by the keys a row shows. In the compact layout, **=** on a label filters by its item's keys.
 - Conditional formatting scales read the leaf rows only, so subtotals don't stretch them.
 - An export writes every row's keys, whatever the layout shows, with a **Level** column (1 for the first field).
 
-The collapsed fields, collapsed items, layout and subtotals are saved with the view, and **Ctrl+Z** undoes each change.
+Outline mode, the collapsed fields and items, the layout and subtotals are saved with the view, and **Ctrl+Z** undoes each change.
 
 ## Drilling down
 

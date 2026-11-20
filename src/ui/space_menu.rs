@@ -52,7 +52,7 @@ impl SpaceMenu {
                     | CommandId::ToggleSubtotals
                     | CommandId::ExpandToLevel
                     | CommandId::ExpandAll
-                    | CommandId::FlatResult
+                    | CommandId::ToggleOutline
 | CommandId::Pivot
                     | CommandId::Aggregation
                     | CommandId::Having

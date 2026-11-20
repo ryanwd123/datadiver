@@ -122,7 +122,7 @@ impl PivotPanel {
                     let mut item = Item::new(dimension_label(entry));
                     if index >= collapsed_from {
                         item.muted = true;
-                        item.detail = Some("collapsed · Ctrl+Alt+Right in the grid expands it".into());
+                        item.detail = Some("collapsed · Alt+Shift+Right in the grid expands it".into());
                     }
                     item
                 })

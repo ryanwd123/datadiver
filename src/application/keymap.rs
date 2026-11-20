@@ -235,6 +235,7 @@ pub enum ActionId {
     CommandMenuExport,
     CommandMenuRunAction,
     CommandMenuCopyColumnNames,
+    CommandMenuToggleOutline,
     FilterToValue,
     ExcludeValue,
     ResultFilter,
@@ -1354,7 +1355,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Outline: collapse this field",
         context: KeyContext::QueryGrid,
         command: Some(CommandId::CollapseField),
-        default_bindings: &["ctrl-alt-left"],
+        default_bindings: &["alt-shift-left"],
     },
     ActionSpec {
         id: ActionId::ExpandField,
@@ -1362,7 +1363,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "Outline: expand the next field",
         context: KeyContext::QueryGrid,
         command: Some(CommandId::ExpandField),
-        default_bindings: &["ctrl-alt-right"],
+        default_bindings: &["alt-shift-right"],
     },
     ActionSpec {
         id: ActionId::CollapseItem,
@@ -1675,6 +1676,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         context: KeyContext::CommandMenu,
         command: Some(CommandId::CopyColumnNames),
         default_bindings: &["n"],
+    },
+    ActionSpec {
+        id: ActionId::CommandMenuToggleOutline,
+        category: ActionCategory::CommandMenu,
+        name: "Outline mode on or off",
+        context: KeyContext::QueryCommandMenu,
+        command: Some(CommandId::ToggleOutline),
+        default_bindings: &["o"],
     },
 ];
 

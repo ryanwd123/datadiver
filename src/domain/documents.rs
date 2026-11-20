@@ -379,11 +379,12 @@ pub struct Outline {
     /// Items in the other state from the one `level` starts them in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub toggled: Vec<OutlinePath>,
-    /// Levels whose expanded items show their subtotals. In the tabular
-    /// layout such an item gets a subtotal row; the other layouts always
-    /// show a row above an expanded item, with its subtotals only here.
+    /// Levels whose expanded items hide their subtotals. Elsewhere, the
+    /// tabular layout gives an expanded item a subtotal row; the other
+    /// layouts always show a row above an expanded item, its subtotals
+    /// blank at these levels.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub subtotals: Vec<usize>,
+    pub hidden_subtotals: Vec<usize>,
 }
 
 impl Outline {
@@ -409,12 +410,12 @@ impl Outline {
 
     /// Whether expanded items at `level` show a row of their own.
     pub fn shows_header(&self, level: usize) -> bool {
-        self.layout != OutlineLayout::Tabular || self.subtotals.contains(&level)
+        self.layout != OutlineLayout::Tabular || self.shows_subtotals(level)
     }
 
     /// Whether expanded items at `level` show their subtotals.
     pub fn shows_subtotals(&self, level: usize) -> bool {
-        self.subtotals.contains(&level)
+        !self.hidden_subtotals.contains(&level)
     }
 }
 
@@ -423,17 +424,17 @@ impl Outline {
 #[serde(rename_all = "snake_case")]
 pub enum OutlineLayout {
     /// Each field in its own column, with the keys repeated on every row.
-    #[default]
     Tabular,
     /// Each field in its own column; an expanded item's row sits above its
     /// children, which leave its keys blank.
     Outline,
     /// One indented column of row labels.
+    #[default]
     Compact,
 }
 
 impl OutlineLayout {
-    pub const ALL: [OutlineLayout; 3] = [Self::Tabular, Self::Outline, Self::Compact];
+    pub const ALL: [OutlineLayout; 3] = [Self::Compact, Self::Outline, Self::Tabular];
 
     pub fn label(self) -> &'static str {
         match self {

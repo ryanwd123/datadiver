@@ -333,7 +333,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::ToggleSubtotals,
     CommandId::ExpandToLevel,
     CommandId::ExpandAll,
-    CommandId::FlatResult,
+    CommandId::ToggleOutline,
     CommandId::ConditionalFormatting,
     CommandId::RecalculateWidths,
     CommandId::HideColumns,

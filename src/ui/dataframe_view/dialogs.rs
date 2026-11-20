@@ -79,6 +79,8 @@ pub enum PaletteKind {
     /// Past SQL runs, newest first.
     SqlHistory(Vec<String>),
     OutlineLayouts,
+    /// Columns to group by next, and the one item to open into them.
+    ExpandInto(Vec<String>, Option<crate::domain::documents::OutlinePath>),
 }
 
 pub struct PaletteDialog {
@@ -1365,6 +1367,13 @@ impl DataFrameView {
                 if let Some(range) = ranges.get(index).cloned() {
                     self.close_dialog(cx);
                     self.go_to_sql_range(range, cx);
+                }
+            }
+            PaletteKind::ExpandInto(columns, item) => {
+                if let Some(column) = columns.get(index).cloned() {
+                    let item = item.clone();
+                    self.close_dialog(cx);
+                    self.expand_into(column, item, cx);
                 }
             }
             PaletteKind::OutlineLayouts => {

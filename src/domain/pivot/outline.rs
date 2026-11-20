@@ -151,30 +151,40 @@ mod tests {
 
     #[test]
     fn only_levels_that_can_show_rows_are_queried() {
-        // Nothing collapsed in the tabular layout: only the leaves.
-        let plan = OutlinePlan::new(&config(Outline::default()), keys()).unwrap();
+        // Tabular without subtotals, nothing collapsed: only the leaves.
+        let bare = Outline {
+            layout: OutlineLayout::Tabular,
+            hidden_subtotals: vec![1, 2],
+            ..Default::default()
+        };
+        let plan = OutlinePlan::new(&config(bare.clone()), keys()).unwrap();
         assert_eq!(levels(&plan), [3]);
         // A collapsed item needs its level, and hides its children.
         let collapsed = Outline {
             toggled: vec![vec![Some("x".into())]],
-            ..Default::default()
+            ..bare.clone()
         };
         let plan = OutlinePlan::new(&config(collapsed), keys()).unwrap();
         assert_eq!(levels(&plan), [1, 3]);
         assert_eq!(plan.parts()[1].ancestors.len(), 1);
         assert!(!plan.parts()[1].ancestors[0].negate);
-        // Other layouts show every expanded item's row.
+        // By default every expanded item shows a row with its subtotals.
+        let plan = OutlinePlan::new(&config(Outline::default()), keys()).unwrap();
+        assert_eq!(levels(&plan), [1, 2, 3]);
+        assert!(plan.parts().iter().all(|part| part.subtotals));
+        // Other layouts keep the rows of items whose subtotals are hidden.
         let outline = Outline {
             layout: OutlineLayout::Outline,
+            hidden_subtotals: vec![1],
             ..Default::default()
         };
         let plan = OutlinePlan::new(&config(outline), keys()).unwrap();
         assert_eq!(levels(&plan), [1, 2, 3]);
-        assert!(!plan.parts()[0].subtotals && plan.parts()[2].subtotals);
+        assert!(!plan.parts()[0].subtotals && plan.parts()[1].subtotals);
         // Expanding to level 1 stops there, unless an item is expanded by hand.
         let top = Outline {
             level: Some(1),
-            ..Default::default()
+            ..bare
         };
         assert_eq!(levels(&OutlinePlan::new(&config(top.clone()), keys()).unwrap()), [1]);
         let mut opened = top;

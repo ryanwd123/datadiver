@@ -165,7 +165,7 @@ impl DataFrameView {
             CommandId::ToggleSubtotals => self.toggle_subtotals(cx),
             CommandId::ExpandToLevel => self.expand_to_level(cx),
             CommandId::ExpandAll => self.expand_all(cx),
-            CommandId::FlatResult => self.flat_result(cx),
+            CommandId::ToggleOutline => self.toggle_outline(cx),
             CommandId::ConditionalFormatting => self.open_format_manager(cx),
             CommandId::RecalculateWidths => self.recalculate_widths(cx),
             CommandId::HideColumns => self.hide_selected_columns(cx),
@@ -398,7 +398,7 @@ impl DataFrameView {
     pub(crate) fn sort_active(&mut self, descending: bool, cx: &mut Cx<Self>) {
         if self.session.result.outline.is_some() {
             self.copy_status =
-                Some("An outline keeps each item above its children; Outline: Turn off shows a result you can sort".into());
+                Some("An outline keeps each item above its children; turn outline mode off (Ctrl+K, O) to sort".into());
             cx.notify();
             return;
         }

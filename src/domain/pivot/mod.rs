@@ -691,10 +691,11 @@ mod parity_tests {
         let north = vec![text("North")];
         let south_a = vec![text("South"), text("A")];
         let outlines = [
-            Outline { toggled: vec![north.clone()], ..Default::default() },
-            Outline { toggled: vec![north.clone(), south_a.clone()], subtotals: vec![1], ..Default::default() },
-            Outline { layout: OutlineLayout::Outline, toggled: vec![south_a.clone()], subtotals: vec![2], ..Default::default() },
+            Outline { layout: OutlineLayout::Tabular, toggled: vec![north.clone()], hidden_subtotals: vec![1, 2], ..Default::default() },
+            Outline { toggled: vec![north.clone(), south_a.clone()], layout: OutlineLayout::Tabular, hidden_subtotals: vec![2], ..Default::default() },
+            Outline { layout: OutlineLayout::Outline, toggled: vec![south_a.clone()], hidden_subtotals: vec![1], ..Default::default() },
             Outline { level: Some(1), toggled: vec![vec![text("East")]], ..Default::default() },
+            Outline { toggled: vec![south_a.clone()], ..Default::default() },
         ];
         for outline in outlines {
             let config = QueryConfig { outline: Some(outline.clone()), ..base.clone() };
@@ -759,7 +760,7 @@ mod parity_tests {
             pivot_by: vec![Dimension::from("size")],
             aggregations: vec![aggregation("amount", AggregationOp::Sum)],
             totals: true,
-            outline: Some(Outline { toggled: vec![north], ..Default::default() }),
+            outline: Some(Outline { layout: OutlineLayout::Tabular, toggled: vec![north], hidden_subtotals: vec![1], ..Default::default() }),
             ..Default::default()
         };
         let flat_config = QueryConfig { outline: None, ..config.clone() };

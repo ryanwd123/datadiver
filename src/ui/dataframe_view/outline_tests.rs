@@ -91,38 +91,90 @@ fn setup() -> (tempfile::TempDir, Viewer, std::path::PathBuf) {
     (home, viewer, path)
 }
 
+/// Opens the command menu and presses O, turning outline mode on or off.
+fn toggle_outline(viewer: &Viewer) {
+    viewer.select(0, 0);
+    viewer.render();
+    viewer.press("ctrl-k o");
+    viewer.run_until_parked();
+    viewer.render();
+}
+
+/// The title of the open palette.
+fn palette_title(viewer: &Viewer) -> Option<String> {
+    viewer.read(|view| match &view.dialog {
+        Some(super::dialogs::Dialog::Palette(dialog)) => Some(dialog.title.clone()),
+        _ => None,
+    })
+}
+
 #[test]
-fn ctrl_alt_arrows_collapse_and_expand_whole_fields() {
+fn outline_mode_turns_on_from_the_command_menu_and_alt_shift_arrows_change_fields() {
     let (_home, viewer, _) = setup();
-    assert_eq!(rows(&viewer).len(), 4);
-    // On the product column, the query groups by region only.
-    press_on_cell(&viewer, 0, 1, "ctrl-alt-left");
+    // The outline keys need outline mode.
+    press_on_cell(&viewer, 0, 1, "alt-shift-left");
+    assert!(status(&viewer).contains("Outline mode is off"), "{}", status(&viewer));
+    assert_eq!(config(&viewer).depth, None);
+    toggle_outline(&viewer);
+    assert_eq!(config(&viewer).outline.map(|outline| outline.layout), Some(OutlineLayout::Compact));
+    // Compact by default, with every region's subtotal above its products.
+    assert_eq!(
+        rows(&viewer),
+        [
+            text(&["North", "3"]),
+            text(&["North", "1"]),
+            text(&["North", "2"]),
+            text(&["South", "12"]),
+            text(&["South", "3"]),
+            text(&["South", "9"]),
+        ]
+    );
+    // On a measure, the last shown field collapses: the query groups by region.
+    press_on_cell(&viewer, 0, 1, "alt-shift-left");
     assert_eq!(config(&viewer).depth, Some(1));
     assert_eq!(rows(&viewer), [text(&["North", "3"]), text(&["South", "12"])]);
-    assert!(status(&viewer).contains("first 1 field"), "{}", status(&viewer));
-    // On the first field, only the grand total is left.
-    press_on_cell(&viewer, 0, 0, "ctrl-alt-left");
-    assert_eq!(config(&viewer).depth, Some(0));
-    assert_eq!(rows(&viewer), [text(&["15"])]);
-    press_on_cell(&viewer, 0, 0, "ctrl-alt-right");
-    press_on_cell(&viewer, 0, 0, "ctrl-alt-right");
+    // The top level stays.
+    press_on_cell(&viewer, 0, 1, "alt-shift-left");
+    assert_eq!(status(&viewer), "This is the outline's top level");
+    assert_eq!(config(&viewer).depth, Some(1));
+    press_on_cell(&viewer, 0, 0, "alt-left");
+    assert_eq!(status(&viewer), "This is the outline's top level");
+    assert_eq!(config(&viewer).outline.unwrap().toggled.len(), 0);
+    press_on_cell(&viewer, 0, 0, "alt-shift-right");
+    assert_eq!(config(&viewer).depth, None);
+    assert_eq!(rows(&viewer).len(), 6);
+    // At the lowest level, expanding lists the columns to expand into.
+    press_on_cell(&viewer, 0, 0, "alt-shift-right");
+    assert_eq!(palette_title(&viewer).as_deref(), Some("Expand every item into"));
+    viewer.press("enter");
+    viewer.run_until_parked();
+    viewer.render();
+    assert_eq!(config(&viewer).group_by.last(), Some(&Dimension::from("amount")));
+    assert_eq!(rows(&viewer).len(), 11);
+    // Undo takes the new field back out.
+    command(&viewer, CommandId::Undo);
+    assert_eq!(config(&viewer).group_by.len(), 2);
+    // Turning outline mode off shows every field flat.
+    press_on_cell(&viewer, 0, 1, "alt-shift-left");
+    assert_eq!(config(&viewer).depth, Some(1));
+    toggle_outline(&viewer);
+    assert_eq!(config(&viewer).outline, None);
     assert_eq!(config(&viewer).depth, None);
     assert_eq!(rows(&viewer).len(), 4);
-    press_on_cell(&viewer, 0, 0, "ctrl-alt-right");
-    assert_eq!(status(&viewer), "Every group-by field is shown");
-    // Undo brings the collapsed field back.
-    command(&viewer, CommandId::Undo);
-    assert_eq!(config(&viewer).depth, Some(1));
+    assert!(viewer.read(|view| view.session.result.outline.is_none()));
 }
 
 #[test]
 fn alt_arrows_collapse_items_into_subtotal_rows_that_drill_and_filter_by_their_keys() {
     let (_home, viewer, path) = setup();
+    toggle_outline(&viewer);
+    viewer.update(|view, cx| view.set_outline_layout(OutlineLayout::Tabular, cx));
+    viewer.run_until_parked();
     // Alt+Left on North's region cell collapses North into one row.
     press_on_cell(&viewer, 0, 0, "alt-left");
     assert_eq!(
         rows(&viewer),
-        [text(&["North", "", "3"]), text(&["South", "A", "3"]), text(&["South", "B", "9"])]
+        [text(&["North", "", "3"]), text(&["South", "", "12"]), text(&["South", "A", "3"]), text(&["South", "B", "9"])]
     );
     viewer.read(|view| {
         assert!(view.session.result.outline.is_some());
@@ -130,7 +182,7 @@ fn alt_arrows_collapse_items_into_subtotal_rows_that_drill_and_filter_by_their_k
         assert_eq!(view.session.result.column_count(), 3);
     });
     // A leaf's Alt+Left on its measure collapses its parent.
-    press_on_cell(&viewer, 2, 2, "alt-left");
+    press_on_cell(&viewer, 3, 2, "alt-left");
     assert_eq!(rows(&viewer), [text(&["North", "", "3"]), text(&["South", "", "12"])]);
     // Sorting would separate items from their children.
     press_on_cell(&viewer, 0, 2, "]");
@@ -144,9 +196,14 @@ fn alt_arrows_collapse_items_into_subtotal_rows_that_drill_and_filter_by_their_k
         assert_eq!(view.session.value_filters().iter().map(ValueFilter::label).collect::<Vec<_>>(), ["region = South"]);
         assert_eq!(view.session.result.row_count(), 3);
     });
+    // A fresh draft starts flat, outside outline mode.
     open(&viewer, FileEntry::View(query(&path)));
-    // A fresh draft starts flat again.
     assert_eq!(rows(&viewer).len(), 4);
+    press_on_cell(&viewer, 0, 0, "alt-left");
+    assert!(status(&viewer).contains("Outline mode is off"));
+    toggle_outline(&viewer);
+    viewer.update(|view, cx| view.set_outline_layout(OutlineLayout::Tabular, cx));
+    viewer.run_until_parked();
     press_on_cell(&viewer, 0, 0, "alt-left");
     // Filtering by the rolled-up product cell has no key to use.
     press_on_cell(&viewer, 0, 1, "=");
@@ -154,14 +211,36 @@ fn alt_arrows_collapse_items_into_subtotal_rows_that_drill_and_filter_by_their_k
     viewer.update(|view, _| view.error = None);
     // Alt+Right expands it again; on an expanded row it says so.
     press_on_cell(&viewer, 0, 0, "alt-right");
-    assert_eq!(rows(&viewer).len(), 4);
+    assert_eq!(rows(&viewer).len(), 6);
     press_on_cell(&viewer, 0, 0, "alt-right");
     assert!(status(&viewer).contains("expanded already"));
+    // On a leaf, Alt+Right lists the columns to open that item into.
+    press_on_cell(&viewer, 1, 2, "alt-right");
+    assert_eq!(palette_title(&viewer).as_deref(), Some("Expand A into"));
+    viewer.press("enter");
+    viewer.run_until_parked();
+    viewer.render();
+    let outline = config(&viewer).outline.unwrap();
+    assert_eq!(outline.level, Some(2));
+    assert_eq!(outline.toggled, [text(&["North", "A"])]);
+    assert_eq!(
+        rows(&viewer),
+        [
+            text(&["North", "", "", "3"]),
+            text(&["North", "A", "", "1"]),
+            text(&["North", "A", "1", "1"]),
+            text(&["North", "B", "", "2"]),
+            text(&["South", "", "", "12"]),
+            text(&["South", "A", "", "3"]),
+            text(&["South", "B", "", "9"]),
+        ]
+    );
 }
 
 #[test]
 fn layouts_subtotals_levels_search_and_export_follow_the_outline() {
     let (home, viewer, _) = setup();
+    toggle_outline(&viewer);
     viewer.update(|view, cx| view.set_outline_layout(OutlineLayout::Outline, cx));
     viewer.run_until_parked();
     viewer.render();
@@ -227,7 +306,7 @@ fn layouts_subtotals_levels_search_and_export_follow_the_outline() {
     assert_eq!(lines[1], "North,,3,1");
     assert_eq!(lines[2], "North,A,1,2");
     // Turning the outline off shows the flat result, which sorts again.
-    command(&viewer, CommandId::FlatResult);
+    toggle_outline(&viewer);
     assert!(viewer.read(|view| view.session.result.outline.is_none()));
     assert_eq!(rows(&viewer).len(), 4);
 }

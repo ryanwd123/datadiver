@@ -71,7 +71,7 @@ pub enum CommandId {
     ToggleSubtotals,
     ExpandToLevel,
     ExpandAll,
-    FlatResult,
+    ToggleOutline,
     ConditionalFormatting,
     RecalculateWidths,
     HideColumns,
@@ -534,13 +534,13 @@ pub const COMMANDS: &[Command] = &[
         id: CommandId::CollapseField,
         key: "outline_collapse_field",
         label: "Outline: Collapse this field (group by the fields before it)",
-        default_binding: Some("ctrl-alt-left"),
+        default_binding: Some("alt-shift-left"),
     },
     Command {
         id: CommandId::ExpandField,
         key: "outline_expand_field",
-        label: "Outline: Expand the next collapsed field",
-        default_binding: Some("ctrl-alt-right"),
+        label: "Outline: Expand the next field, or choose a column to expand into",
+        default_binding: Some("alt-shift-right"),
     },
     Command {
         id: CommandId::CollapseItem,
@@ -579,9 +579,9 @@ pub const COMMANDS: &[Command] = &[
         default_binding: None,
     },
     Command {
-        id: CommandId::FlatResult,
-        key: "outline_off",
-        label: "Outline: Turn off and show the flat result",
+        id: CommandId::ToggleOutline,
+        key: "toggle_outline",
+        label: "Outline: Turn outline mode on or off",
         default_binding: None,
     },
     Command {
