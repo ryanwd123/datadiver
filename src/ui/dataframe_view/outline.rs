@@ -25,6 +25,11 @@ impl DataFrameView {
         }
     }
 
+    /// Whether the open query is in outline mode.
+    pub(crate) fn outline_mode(&self) -> bool {
+        self.query_config().is_some_and(|config| config.outline.is_some())
+    }
+
     fn outline_note(&mut self, text: impl Into<String>, cx: &mut Cx<Self>) {
         self.copy_status = Some(text.into());
         cx.notify();
@@ -206,33 +211,28 @@ impl DataFrameView {
         }
     }
 
-    /// Collapses every item of the cursor's field into its subtotal row, the
-    /// fields before it staying expanded; on a measure column, or on a field
-    /// collapsed already, the level above. Items keep their ▸ markers, so
-    /// each one still expands on its own. The first field stays expanded
-    /// only by hand: at the top level nothing changes.
+    /// Collapses every item of the cursor's field into its subtotal row,
+    /// leaving the items above as they are; on a measure column, the field
+    /// above the groups. When every item there is collapsed already, it
+    /// collapses the level above instead. Items keep their ▸ markers, so each
+    /// one still expands on its own. At the top level nothing changes.
     pub(crate) fn collapse_field(&mut self, cx: &mut Cx<Self>) {
-        let current = match self.outline_query() {
-            Ok(config) => {
-                let fields = config.shown_group_by().len();
-                let level = config.outline.as_ref().and_then(|outline| outline.level);
-                level.unwrap_or(fields).min(fields)
-            }
+        let (fields, outline) = match self.outline_query() {
+            Ok(config) => (config.shown_group_by().len(), config.outline.clone().unwrap_or_default()),
             Err(note) => return self.outline_note(note, cx),
         };
         let field = self.active_outline_row().ok().and_then(|active| active.field);
         // The last field's rows are groups, with nothing below to collapse.
-        let target = match field {
-            Some(field) if field + 1 < current => field + 1,
-            _ => current - 1,
-        };
+        let mut target = field.map_or(fields, |field| field + 1).min(fields.saturating_sub(1));
+        while target > 0 && collapse_to(&outline, target) == outline {
+            target -= 1;
+        }
         if target == 0 {
             return self.outline_note(TOP_LEVEL, cx);
         }
+        let collapsed = collapse_to(&outline, target);
         self.edit_query(|config| {
-            let outline = config.outline.get_or_insert_with(Default::default);
-            outline.level = Some(target);
-            outline.toggled.retain(|path| path.len() < target);
+            config.outline = Some(collapsed);
             true
         }, cx);
     }
@@ -457,4 +457,14 @@ fn expand_only(config: &mut QueryConfig, path: &[Option<String>], fields: usize)
         outline.toggled.retain(|toggled| toggled.len() < fields);
     }
     outline.set_collapsed(path, false);
+}
+
+/// `outline` with every item at `level` and below collapsed, the items above
+/// keeping their state: items that start collapsed above `level` stay so,
+/// and the ones opened or closed by hand there keep their toggle.
+fn collapse_to(outline: &Outline, level: usize) -> Outline {
+    let mut collapsed = outline.clone();
+    collapsed.level = Some(outline.level.map_or(level, |start| start.min(level)));
+    collapsed.toggled.retain(|path| path.len() < level);
+    collapsed
 }

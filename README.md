@@ -137,7 +137,7 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | , | Toggle thousands grouping of the selected columns |
 | T | Show or hide totals (queries) |
 | Ctrl+K, O | Turn outline mode on or off (queries) |
-| Alt+Shift+← / Alt+Shift+→ | Outline mode: collapse every item of the field under the cursor / expand the deepest collapsed level |
+| Alt+Shift+← / Alt+Shift+→, or Ctrl+Shift+← / Ctrl+Shift+→ | Outline mode: collapse every item of the field under the cursor / expand the deepest collapsed level |
 | Alt+← / Alt+→ | Outline mode: collapse an item into a subtotal row / expand it |
 | M | Conditional formatting |
 | D | Show or hide cell detail |
