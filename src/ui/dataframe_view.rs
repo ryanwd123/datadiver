@@ -1423,6 +1423,7 @@ impl DataFrameView {
                 }
             }
             GridEvent::SortDirectionRequested(descending) => self.sort_active(descending, cx),
+            GridEvent::OutlineToggleRequested(row) => self.toggle_outline_row(row, cx),
             GridEvent::SortRequested(column) => {
                 self.session.toggle_sort(column);
                 self.grid.set_sort(self.session.sort.clone());

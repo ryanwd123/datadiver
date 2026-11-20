@@ -74,8 +74,8 @@ A query grouped by several fields can be read at different depths, like an Excel
 
 In outline mode:
 
-- **Alt+Shift+Left** on a group-by column collapses that field and every field after it: the query groups by the fields before it only. On a measure column it collapses the last shown field. The first field stays; at the top level, the status bar says so. **Alt+Shift+Right** shows the next field again, and at the lowest level lists the columns to expand every item into. The Group By manager dims the collapsed fields.
-- **Alt+Left** collapses one item into a single subtotal row, marked **▸**: on a key cell, the item of that column; elsewhere, the row's parent. **Alt+Right** on a ▸ row expands it again. On a row of the lowest level, **Alt+Right** opens that item alone into the next field: a collapsed one, or a column you choose from a list. Expanded items are marked **▾** where they show a row of their own.
+- **Alt+Shift+Left** collapses every item of the cursor's field into its subtotal row, each still marked **▸** so it expands on its own; the fields before it stay expanded. On a measure column, or pressed again, it collapses the level above. At the top level nothing changes, and the status bar says so. **Alt+Shift+Right** expands every item of the deepest collapsed level, and with nothing collapsed lists the columns to expand every item into.
+- **Alt+Left** collapses one item into a single subtotal row, marked **▸**: on a key cell, the item of that column; elsewhere, the row's parent. **Alt+Right** on a ▸ row expands it again, and a click on a **▸** or **▾** marker expands or collapses its item. On a row of the lowest level, **Alt+Right** opens that item alone into the next field: a collapsed one, or a column you choose from a list. Expanded items are marked **▾** where they show a row of their own.
 
 Every subtotal aggregates the source rows, as totals do, so means, medians and distinct counts stay correct. Subtotal rows are bold, and the keys they total over are blank.
 

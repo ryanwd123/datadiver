@@ -36,6 +36,8 @@ pub enum Hit {
 pub enum GridHit {
     Header(usize),
     Cell { row: usize, column: usize },
+    /// The ▸ or ▾ marker of an outline row's item.
+    OutlineMarker { row: usize, column: usize },
     /// The rows area outside any cell.
     Body,
     VerticalBar,

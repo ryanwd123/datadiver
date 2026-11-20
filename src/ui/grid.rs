@@ -60,6 +60,14 @@ fn outline_cell(
     }
 }
 
+const OUTLINE_MARKERS: [char; 2] = ['▸', '▾'];
+
+/// Where an outline label's ▸ or ▾ marker starts, after its indent.
+fn outline_marker(text: &str) -> Option<usize> {
+    let rest = text.trim_start_matches(' ');
+    rest.starts_with(OUTLINE_MARKERS).then(|| text.len() - rest.len())
+}
+
 fn cell_preview(value: Option<&str>, dtype: &str, format: Option<NumericFormat>) -> (String, bool) {
     let text = display_cell(value, dtype, format, CELL_PREVIEW_LIMIT);
     let hidden = text.chars().count() > CELL_PREVIEW_LIMIT || text.contains(['\r', '\n', '\t']);
@@ -167,6 +175,8 @@ pub enum GridEvent {
     SelectionCleared,
     MoveColumn(isize),
     ToggleFrozen,
+    /// A click on the ▸ or ▾ marker of this outline row.
+    OutlineToggleRequested(usize),
 }
 
 /// A popup while the pointer rests on a cell: its full text when the cell
@@ -1204,6 +1214,11 @@ impl GridView {
                 self.begin_selection_drag(Cell { row, column }, shift);
                 true
             }
+            GridHit::OutlineMarker { row, column } if !right => {
+                self.select(Cell { row, column }, false);
+                self.events.push(GridEvent::OutlineToggleRequested(row));
+                false
+            }
             GridHit::VerticalBar => {
                 let bar = self.layout.vertical_bar;
                 let content = self.result.row_count() as f32 * self.row_height;
@@ -1795,6 +1810,7 @@ impl GridView {
                             }
                             None => cell_preview(value, &dtypes[column], self.formats[column]),
                         };
+                        let marker = outline_row.as_ref().and_then(|_| outline_marker(&text));
                         let selected = rectangle
                             .as_ref()
                             .is_some_and(|(rows, columns)| rows.contains(&row) && columns.contains(&column));
@@ -1910,6 +1926,17 @@ impl GridView {
                             self.notes.insert((row, column), note);
                         }
                         canvas.hit(cell, Hit::Grid(GridHit::Cell { row, column }));
+                        // The ▸ or ▾ marker expands or collapses its item on a click.
+                        if let Some(start) = marker
+                            && text.get(start..).is_some_and(|rest| rest.starts_with(OUTLINE_MARKERS))
+                        {
+                            let end = start + text[start..].chars().next().map_or(0, char::len_utf8);
+                            if let Some(part) = layout.range_rects(start, end).first() {
+                                let part = part.offset(origin.x, origin.y);
+                                let area = rect(part.x - 4.0, cell.y, part.w + 8.0, cell.h);
+                                canvas.hit_cursor(area, Hit::Grid(GridHit::OutlineMarker { row, column }), Cursor::Hand);
+                            }
+                        }
                     }
                     if !pass_frozen {
                         canvas.pop_clip();

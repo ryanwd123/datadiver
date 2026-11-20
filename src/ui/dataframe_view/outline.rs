@@ -206,40 +206,97 @@ impl DataFrameView {
         }
     }
 
-    /// Groups by only the fields before the cursor's field (the last shown
-    /// one on a measure column), so the rest collapse into their totals. The
-    /// first field always stays.
+    /// Collapses every item of the cursor's field into its subtotal row, the
+    /// fields before it staying expanded; on a measure column, or on a field
+    /// collapsed already, the level above. Items keep their ▸ markers, so
+    /// each one still expands on its own. The first field stays expanded
+    /// only by hand: at the top level nothing changes.
     pub(crate) fn collapse_field(&mut self, cx: &mut Cx<Self>) {
-        let shown = match self.outline_query() {
-            Ok(config) => config.shown_group_by().len(),
+        let current = match self.outline_query() {
+            Ok(config) => {
+                let fields = config.shown_group_by().len();
+                let level = config.outline.as_ref().and_then(|outline| outline.level);
+                level.unwrap_or(fields).min(fields)
+            }
             Err(note) => return self.outline_note(note, cx),
         };
-        let field = self.active_outline_row().ok().and_then(|active| active.field).unwrap_or(shown - 1);
-        let depth = field.max(1);
-        if depth >= shown {
+        let field = self.active_outline_row().ok().and_then(|active| active.field);
+        // The last field's rows are groups, with nothing below to collapse.
+        let target = match field {
+            Some(field) if field + 1 < current => field + 1,
+            _ => current - 1,
+        };
+        if target == 0 {
             return self.outline_note(TOP_LEVEL, cx);
         }
-        if self.edit_query(|config| config.depth.replace(depth) != Some(depth), cx) {
-            let names = if depth == 1 { "field" } else { "fields" };
-            self.outline_note(format!("Grouped by the first {depth} {names}; Alt+Shift+Right expands the next"), cx);
+        self.edit_query(|config| {
+            let outline = config.outline.get_or_insert_with(Default::default);
+            outline.level = Some(target);
+            outline.toggled.retain(|path| path.len() < target);
+            true
+        }, cx);
+    }
+
+    /// Expands every item of the deepest collapsed level. With nothing
+    /// collapsed, shows the next collapsed group-by field, or lists the
+    /// columns to expand every item into.
+    pub(crate) fn expand_field(&mut self, cx: &mut Cx<Self>) {
+        let (fields, level, hidden) = match self.outline_query() {
+            Ok(config) => (
+                config.shown_group_by().len(),
+                config.outline.as_ref().and_then(|outline| outline.level),
+                config.shown_group_by().len() < config.group_by.len(),
+            ),
+            Err(note) => return self.outline_note(note, cx),
+        };
+        match level.filter(|level| *level < fields) {
+            Some(level) => {
+                self.edit_query(|config| {
+                    let outline = config.outline.get_or_insert_with(Default::default);
+                    outline.level = (level + 1 < fields).then_some(level + 1);
+                    // Items at `level` now start expanded; the ones opened by
+                    // hand there need nothing more.
+                    outline.toggled.retain(|path| path.len() != level);
+                    true
+                }, cx);
+            }
+            None if hidden => {
+                self.edit_query(|config| {
+                    show_next_field(config);
+                    true
+                }, cx);
+            }
+            None => self.open_expand_into(None, cx),
         }
     }
 
-    /// Shows the next collapsed group-by field again, or at the lowest
-    /// level, lists the columns to expand every item into.
-    pub(crate) fn expand_field(&mut self, cx: &mut Cx<Self>) {
-        let hidden = match self.outline_query() {
-            Ok(config) => config.shown_group_by().len() < config.group_by.len(),
-            Err(note) => return self.outline_note(note, cx),
+    /// Collapses or expands the item of the outline row `row`, as a click on
+    /// its ▸ or ▾ marker does.
+    pub(crate) fn toggle_outline_row(&mut self, row: usize, cx: &mut Cx<Self>) {
+        let result = &self.session.result;
+        let Some(outline) = &result.outline else {
+            return;
         };
-        if hidden {
-            self.edit_query(|config| {
-                show_next_field(config);
-                true
-            }, cx);
-        } else {
-            self.open_expand_into(None, cx);
+        let rows = match result.cached_rows(row, 1) {
+            Some(rows) => rows,
+            None => match result.fetch_rows(row, 1) {
+                Ok(rows) => rows,
+                Err(error) => return self.outline_note(error, cx),
+            },
+        };
+        let Some(outline_row) = rows.first().and_then(|cached| outline.row(cached)) else {
+            return;
+        };
+        if outline_row.level >= outline.fields() {
+            return;
         }
+        let collapse = outline_row.open;
+        self.edit_query(|config| {
+            config
+                .outline
+                .get_or_insert_with(Default::default)
+                .set_collapsed(&outline_row.path, collapse)
+        }, cx);
     }
 
     /// Lists the source columns not grouped or pivoted yet, to group by next:

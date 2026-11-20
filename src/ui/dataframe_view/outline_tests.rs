@@ -5,6 +5,7 @@ use crate::domain::documents::{
     Aggregation, AggregationOp, Dimension, DocumentDefinition, OutlineLayout, QueryConfig, ValueFilter, ViewKind,
 };
 use crate::infrastructure::json_store::ViewRepository;
+use crate::ui::hit::{GridHit, Hit};
 use crate::ui::platform::system::fake;
 
 const SALES: &str = "region,product,amount\nNorth,A,1\nNorth,B,2\nSouth,A,3\nSouth,B,4\nSouth,B,5\n";
@@ -129,19 +130,34 @@ fn outline_mode_turns_on_from_the_command_menu_and_alt_shift_arrows_change_field
             text(&["South", "9"]),
         ]
     );
-    // On a measure, the last shown field collapses: the query groups by region.
+    // On a measure, every item of the last level above the groups
+    // collapses, keeping its marker to expand it again.
+    let level = |viewer: &Viewer| config(viewer).outline.and_then(|outline| outline.level);
     press_on_cell(&viewer, 0, 1, "alt-shift-left");
-    assert_eq!(config(&viewer).depth, Some(1));
+    assert_eq!(level(&viewer), Some(1));
+    assert_eq!(config(&viewer).depth, None);
     assert_eq!(rows(&viewer), [text(&["North", "3"]), text(&["South", "12"])]);
+    viewer.read(|view| assert!(view.session.result.outline.is_some()));
     // The top level stays.
     press_on_cell(&viewer, 0, 1, "alt-shift-left");
     assert_eq!(status(&viewer), "This is the outline's top level");
-    assert_eq!(config(&viewer).depth, Some(1));
+    assert_eq!(level(&viewer), Some(1));
     press_on_cell(&viewer, 0, 0, "alt-left");
     assert_eq!(status(&viewer), "This is the outline's top level");
     assert_eq!(config(&viewer).outline.unwrap().toggled.len(), 0);
+    // A click on North's marker opens North alone, and another closes it.
+    let click_marker = |row: usize| {
+        viewer.render();
+        viewer.click(|hit| matches!(hit, Hit::Grid(GridHit::OutlineMarker { row: at, .. }) if *at == row));
+        viewer.run_until_parked();
+        viewer.render();
+    };
+    click_marker(0);
+    assert_eq!(rows(&viewer), [text(&["North", "3"]), text(&["North", "1"]), text(&["North", "2"]), text(&["South", "12"])]);
+    click_marker(0);
+    assert_eq!(rows(&viewer).len(), 2);
     press_on_cell(&viewer, 0, 0, "alt-shift-right");
-    assert_eq!(config(&viewer).depth, None);
+    assert_eq!(level(&viewer), None);
     assert_eq!(rows(&viewer).len(), 6);
     // At the lowest level, expanding lists the columns to expand into.
     press_on_cell(&viewer, 0, 0, "alt-shift-right");
@@ -154,9 +170,9 @@ fn outline_mode_turns_on_from_the_command_menu_and_alt_shift_arrows_change_field
     // Undo takes the new field back out.
     command(&viewer, CommandId::Undo);
     assert_eq!(config(&viewer).group_by.len(), 2);
-    // Turning outline mode off shows every field flat.
+    // Turning outline mode off shows every row of every field.
     press_on_cell(&viewer, 0, 1, "alt-shift-left");
-    assert_eq!(config(&viewer).depth, Some(1));
+    assert_eq!(level(&viewer), Some(1));
     toggle_outline(&viewer);
     assert_eq!(config(&viewer).outline, None);
     assert_eq!(config(&viewer).depth, None);
