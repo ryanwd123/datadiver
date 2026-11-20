@@ -326,3 +326,36 @@ fn layouts_subtotals_levels_search_and_export_follow_the_outline() {
     assert!(viewer.read(|view| view.session.result.outline.is_none()));
     assert_eq!(rows(&viewer).len(), 4);
 }
+
+#[test]
+fn collapsing_keeps_the_widths_and_compact_labels_fit_every_field() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("sales.csv");
+    // Products have much longer names than regions.
+    std::fs::write(
+        &path,
+        "region,product,amount\nN,A product with a very long name indeed,1\nN,B,2\nS,Another long product name here,3\n",
+    )
+    .unwrap();
+    let viewer = viewer(repository(home.path()));
+    open(&viewer, FileEntry::Source(path.clone()));
+    open(&viewer, FileEntry::View(query(&path)));
+    toggle_outline(&viewer);
+    let settled = |viewer: &Viewer| {
+        for _ in 0..20 {
+            viewer.render();
+            viewer.run_until_parked();
+        }
+        viewer.read(|view| view.grid.widths.clone())
+    };
+    let widths = settled(&viewer);
+    // The labels column fits the long products, not just the short regions.
+    assert!(widths[0] > 200.0, "{widths:?}");
+    // Collapsing and expanding change rows, never the widths.
+    press_on_cell(&viewer, 0, 1, "alt-shift-left");
+    assert_eq!(rows(&viewer).len(), 2);
+    assert_eq!(viewer.read(|view| view.grid.widths.clone()), widths);
+    press_on_cell(&viewer, 0, 0, "alt-shift-right");
+    assert_eq!(viewer.read(|view| view.grid.widths.clone()), widths);
+    assert_eq!(settled(&viewer), widths);
+}

@@ -1276,6 +1276,13 @@ impl DataFrameView {
         self.sync_grid_formats();
         let mut config = self.session.query_config();
         config.result_sort.clear();
+        // Collapsing or expanding items and subtotals changes which rows show,
+        // not what the columns hold, so the widths stay put.
+        if let Some(outline) = &mut config.outline {
+            outline.level = None;
+            outline.toggled.clear();
+            outline.hidden_subtotals.clear();
+        }
         let autofit = self.navigation_backup.is_none()
             && self
                 .fitted_query_config

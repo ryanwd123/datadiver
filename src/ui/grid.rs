@@ -333,6 +333,8 @@ pub struct GridView {
     selection: Option<Selection>,
     pub(crate) widths: Vec<f32>,
     width_owner: String,
+    /// The widest compact row label measured since the last request for them.
+    compact_label_width: f32,
     width_store: usize,
     pub(crate) width_epoch: u64,
     pub(crate) known_widths: BTreeMap<String, f32>,
@@ -473,6 +475,7 @@ impl GridView {
             selection,
             widths,
             width_owner: String::new(),
+            compact_label_width: 0.0,
             width_store: 0,
             width_epoch: 0,
             known_widths: BTreeMap::new(),
@@ -681,6 +684,21 @@ impl GridView {
             .filter(|(_, column)| self.pending_widths.insert(column.0.clone()))
             .map(|(index, column)| (column.0.clone(), self.formats[index]))
             .collect::<Vec<_>>();
+        // The compact layout's labels come from every key field, so it
+        // samples each of them for its first column.
+        let mut columns = columns;
+        if self.compact_outline()
+            && let Some(outline) = &self.result.outline
+            && columns.first().is_some_and(|(name, _)| outline.names.first() == Some(name))
+        {
+            self.compact_label_width = 0.0;
+            columns.extend(
+                outline.names[1..]
+                    .iter()
+                    .filter(|name| self.pending_widths.insert((*name).clone()))
+                    .map(|name| (name.clone(), None)),
+            );
+        }
         if columns.is_empty() {
             cx.notify();
             return;
@@ -1459,51 +1477,53 @@ impl GridView {
                 continue;
             }
             self.pending_widths.remove(&candidate.column);
-            let Some(column) = self
-                .result
-                .columns
-                .iter()
-                .position(|column| column.0 == candidate.column)
-            else {
+            // The compact layout's first column holds every key field's
+            // labels, each indented a step per level below the first.
+            let compact_field = self
+                .compact_outline()
+                .then(|| self.result.outline.as_ref()?.names.iter().position(|name| *name == candidate.column))
+                .flatten();
+            let Some(column) = (match compact_field {
+                Some(_) => Some(0).filter(|_| self.result.column_count() > 0),
+                None => self.result.columns.iter().position(|column| column.0 == candidate.column),
+            }) else {
                 continue;
             };
             let measure = |text: &str, font: &Font| {
                 let width = text::measure(text, font).0;
                 if width.is_finite() { width } else { f32::NAN }
             };
-            let name_width = measure(&candidate.column, font);
+            let header = if compact_field.is_some() { "Row labels" } else { candidate.column.as_str() };
+            let name_width = measure(header, font);
             let dtype_width = measure(&type_label(&self.result.dtypes[column]), &dtype_font);
             let mut measured = if name_width.is_finite() && dtype_width.is_finite() {
                 name_width.max(dtype_width)
             } else {
                 f32::NAN
             };
+            let indent = compact_field.map_or(0.0, |field| measure(&format!("{}▾ ", "    ".repeat(field)), font));
             for text in &candidate.samples {
                 if !measured.is_finite() {
                     break;
                 }
-                let width = measure(text, font);
+                let width = measure(text, font) + indent;
                 if !width.is_finite() {
                     measured = f32::NAN;
                     break;
                 }
                 measured = measured.max(width);
             }
-            // Compact labels are indented a step per level below the first,
-            // where the samples come from.
-            if column == 0
-                && self.compact_outline()
-                && let Some(outline) = &self.result.outline
-            {
-                let indent = format!("{}▾ ", "    ".repeat(outline.fields().saturating_sub(1)));
-                measured = measured.max(measure("Row labels", font)) + measure(&indent, font);
+            let mut width = inferred_width(measured);
+            if compact_field.is_some() {
+                width = width.max(self.compact_label_width);
+                self.compact_label_width = width;
             }
-            let width = inferred_width(measured);
+            let name = self.result.columns[column].0.clone();
             self.widths[column] = width;
-            self.known_widths.insert(candidate.column.clone(), width);
+            self.known_widths.insert(name.clone(), width);
             self.events.push(GridEvent::WidthChanged {
                 owner: self.width_owner.clone(),
-                column: candidate.column,
+                column: name,
                 width,
             });
             inferred = true;
@@ -2572,7 +2592,7 @@ mod outline_tests {
     }
 
     fn shown(layout: OutlineLayout, cached: &CachedRow) -> Vec<Option<String>> {
-        let outline = ResultOutline { layout, keys: vec![0, 1], level: 3, open: 4 };
+        let outline = ResultOutline { layout, keys: vec![0, 1], names: vec!["region".into(), "product".into()], level: 3, open: 4 };
         let outline_row = outline.row(cached).unwrap();
         (0..3).map(|index| outline_cell(&outline, &outline_row, cached, index)).collect()
     }

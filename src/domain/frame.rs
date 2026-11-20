@@ -75,6 +75,8 @@ pub struct ResultOutline {
     pub layout: crate::domain::documents::OutlineLayout,
     /// The key columns, from the first field.
     pub keys: Vec<usize>,
+    /// Their names.
+    pub names: Vec<String>,
     pub level: usize,
     pub open: usize,
 }
@@ -96,6 +98,7 @@ impl ResultOutline {
         Some(Self {
             layout,
             keys: keys.iter().map(|key| position(key)).collect::<Option<Vec<_>>>()?,
+            names: keys.to_vec(),
             level: position(LEVEL)?,
             open: position(OPEN)?,
         })
