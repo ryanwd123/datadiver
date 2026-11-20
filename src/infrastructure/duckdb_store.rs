@@ -86,6 +86,10 @@ pub struct DuckDbStore {
     /// The relation reads temporary objects of this store's connection, so
     /// its queries run on that connection rather than a clone.
     session_bound: bool,
+    /// An outline's result: the names of its key columns, from the first.
+    /// Its views keep the rows in outline order and keep the ancestors of
+    /// the rows a search or filter keeps.
+    outline: Option<Vec<String>>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -419,6 +423,7 @@ impl DuckDbStore {
             renamed_source_rowid: None,
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            outline: None,
             owned_table: None,
             session_bound: false,
             result_cut_at: None,
@@ -454,6 +459,7 @@ impl DuckDbStore {
             renamed_source_rowid,
             row_count,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            outline: None,
             owned_table: None,
             session_bound: false,
             result_cut_at: None,
@@ -575,6 +581,7 @@ impl DuckDbStore {
             // The relation is lazy: opening it binds its schema without scanning rows.
             row_count: 0,
             retired_view_row_maps: Arc::new(Mutex::new(Vec::new())),
+            outline: None,
             owned_table: None,
             session_bound: false,
             result_cut_at: None,
@@ -1252,6 +1259,9 @@ impl DuckDbStore {
     }
 
     pub fn query_row_ids(&self, view: &ViewQuery) -> Result<Vec<i64>, String> {
+        if self.outline.is_some() {
+            return Ok(self.query_view_rows(view)?.row_ids.to_vec());
+        }
         self.drop_retired_view_row_maps()?;
         let (sql, values) = self.build_view_sql(view)?;
         let mut statement = self
@@ -1278,6 +1288,9 @@ impl DuckDbStore {
         trace: &mut SqlTrace,
     ) -> Result<MaterializedViewRows, String> {
         self.drop_retired_view_row_maps()?;
+        if let Some(keys) = self.outline.clone() {
+            return self.outline_view_rows(&keys, view, trace);
+        }
         if let Some(count) = self.natural_row_count(view, trace)? {
             return Ok(MaterializedViewRows {
                 row_ids: RowIds::Natural(count),
@@ -1312,6 +1325,91 @@ impl DuckDbStore {
         })?;
         super::performance::record("row_map_creation", create_start);
         self.collect_view_rows(table_name, row_map)
+    }
+
+    /// An outline's rows in outline order: those the view's search and
+    /// filters keep, and the rows of their ancestors, so each match stays
+    /// under its parents. An item's row at level `L` is an ancestor of the
+    /// rows at level `L` and deeper that share its first `L` keys.
+    fn outline_view_rows(
+        &self,
+        keys: &[String],
+        view: &ViewQuery,
+        trace: &mut SqlTrace,
+    ) -> Result<MaterializedViewRows, String> {
+        use crate::domain::pivot::outline::LEVEL;
+        let (predicates, values, _) = self.view_clauses(&ViewQuery {
+            sort: Vec::new(),
+            ..view.clone()
+        })?;
+        if predicates.is_empty()
+            && let Some(count) = self.natural_row_count(&ViewQuery::default(), trace)?
+        {
+            return Ok(MaterializedViewRows {
+                row_ids: RowIds::Natural(count),
+                row_map: None,
+            });
+        }
+        let matched = if predicates.is_empty() {
+            "true".to_owned()
+        } else {
+            format!("coalesce(({}), false)", predicates.join(" AND "))
+        };
+        let level = quote_identifier(LEVEL);
+        let mut windows = String::new();
+        let mut keep = vec!["__dd_matched".to_owned()];
+        for depth in 1..keys.len() {
+            let mut partition = vec![format!("{level} >= {depth}")];
+            for key in &keys[..depth] {
+                partition.push(quote_identifier(&self.filter_column(key)?.storage_name));
+            }
+            windows.push_str(&format!(
+                ",\n        bool_or(__dd_matched) OVER (PARTITION BY {}) AS __dd_kept_{depth}",
+                partition.join(", ")
+            ));
+            keep.push(format!("({level} = {depth} AND __dd_kept_{depth})"));
+        }
+        let (table_name, row_map) = self.allocate_view_row_map();
+        let create_sql = format!(
+            "CREATE TEMP TABLE {} AS\nSELECT\n    row_number() OVER (ORDER BY __dd_row) - 1 AS display_position,\n    __dd_row AS source_row_id\nFROM (\n    SELECT __dd_row, __dd_matched, {level}{windows}\n    FROM (SELECT rowid AS __dd_row, *, {matched} AS __dd_matched FROM {}) AS __dd_rows\n) AS __dd_kept\nWHERE {}",
+            quote_identifier(&table_name),
+            self.table_sql,
+            keep.join(" OR ")
+        );
+        trace.execute("Result search", &create_sql, &values, || {
+            super::cancellation::interruptible(&self.connection, || {
+                self.connection
+                    .execute(&create_sql, params_from_iter(values.iter()))
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        })?;
+        self.collect_view_rows(table_name, row_map)
+    }
+
+    /// Sets `columns` (storage names) to NULL on the rows where `predicate`
+    /// holds, in this result's own table.
+    pub fn set_null_where(&self, columns: &[String], predicate: &str) -> Result<(), String> {
+        if columns.is_empty() {
+            return Ok(());
+        }
+        let assignments = columns
+            .iter()
+            .map(|column| format!("{} = NULL", quote_identifier(column)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.connection
+            .execute_batch(&format!("UPDATE {} SET {assignments} WHERE {predicate}", self.table_sql))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Marks this result as an outline over the key columns `keys`.
+    pub fn set_outline(&mut self, keys: Vec<String>) {
+        self.outline = Some(keys);
+    }
+
+    pub fn outline_keys(&self) -> Option<&[String]> {
+        self.outline.as_deref()
     }
 
     /// The row count when `view` shows every row in rowid order and the rowids
@@ -3130,6 +3228,8 @@ mod tests {
                 totals: false,
                 result_filters: Vec::new(),
                 having: Vec::new(),
+                depth: None,
+                outline: None,
             };
             let slicers = [SlicerDefinition {
                 sql: false,

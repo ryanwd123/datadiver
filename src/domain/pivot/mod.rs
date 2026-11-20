@@ -2,6 +2,7 @@
 //! `sql` builds DuckDB SQL, and `lazy` builds Polars lazy frames.
 
 pub mod lazy;
+pub mod outline;
 pub mod sql;
 
 use crate::domain::documents::{QueryConfig, SlicerDefinition, ValueFilter};
@@ -104,11 +105,42 @@ pub fn execute_query(
 ) -> Result<Store, String> {
     // One row past the limit shows whether the query goes on.
     let fetch = limit.saturating_add(1).min(i64::MAX as u64);
-    let mut store = execute_engine_query(source, config, slicers, filters, clock, fetch, result_view, trace)?;
+    let flat = config.flattened();
+    let outline = match config.active_outline() {
+        Some(_) => outline::OutlinePlan::new(config, key_names(source, config)?),
+        None => None,
+    };
+    // An outline keeps its own order, and its search runs over its rows.
+    let mut store = match &outline {
+        Some(plan) => match source {
+            Store::DuckDb(source) => {
+                sql::execute_outline(source, &flat, plan, slicers, filters, clock, fetch, trace).map(Store::from)?
+            }
+            Store::Polars(source) => {
+                lazy::execute_outline(source, &flat, plan, slicers, filters, clock, fetch, trace).map(Store::from)?
+            }
+        },
+        None => execute_engine_query(source, &flat, slicers, filters, clock, fetch, result_view, trace)?,
+    };
     if store.row_count() as u64 > limit {
         store.cut_to(limit as usize)?;
     }
     Ok(store)
+}
+
+/// The result names of the shown group-by fields, from the first.
+fn key_names(source: &Store, config: &QueryConfig) -> Result<Vec<String>, String> {
+    config
+        .shown_group_by()
+        .iter()
+        .map(|dimension| match dimension {
+            crate::domain::documents::Dimension::Column(name) => source
+                .column(name)
+                .map(|column| column.name.clone())
+                .ok_or_else(|| format!("group-by column not found: {name}")),
+            crate::domain::documents::Dimension::Expression { sql } => source.dimension_name(sql),
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -153,6 +185,7 @@ pub fn execute_totals(
     filters: &[ValueFilter],
     clock: &EvaluationClock,
 ) -> Result<TotalsRow, String> {
+    let config = &config.flattened();
     match source {
         Store::DuckDb(source) => sql::execute_totals(source, config, slicers, filters, clock),
         Store::Polars(source) => lazy::execute_totals(source, config, slicers, filters, clock),
@@ -599,5 +632,145 @@ mod parity_tests {
         let amounts = ordered(&duckdb);
         assert_eq!(amounts.len(), 125);
         assert_eq!(amounts, ordered(&polars));
+    }
+
+    /// An outline's rows in order, the same in both engines: every subtotal
+    /// is the flat query's row at that depth, children follow their parent,
+    /// and a search keeps the ancestors of the rows it matches.
+    #[test]
+    fn outlines_match_across_engines_and_subtotal_source_rows() {
+        use crate::domain::documents::{Outline, OutlineLayout};
+        use crate::infrastructure::store::ViewQuery;
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("sales.csv");
+        let mut text = String::from("region,product,size,amount\n");
+        for n in 0..240 {
+            let region = ["North", "South", "East"][n % 3];
+            let product = ["A", "B"][(n / 3) % 2];
+            let size = if n % 11 == 0 { String::new() } else { ["S", "L"][(n / 7) % 2].into() };
+            text.push_str(&format!("{region},{product},{size},{}\n", (n * 7) % 13));
+        }
+        std::fs::write(&path, text).unwrap();
+        let load = |engine| sources.load(&path, ReadOptions { engine, ..ReadOptions::default() }, LoadMode::Check).unwrap();
+        let (duckdb, polars) = (load(Engine::DuckDb), load(Engine::Polars));
+        let clock = EvaluationClock::system();
+        let base = QueryConfig {
+            group_by: ["region", "product", "size"].map(Dimension::from).to_vec(),
+            aggregations: vec![
+                aggregation("amount", AggregationOp::Sum),
+                aggregation("amount", AggregationOp::Mean),
+                aggregation("amount", AggregationOp::DistinctNonNullCount),
+            ],
+            ..Default::default()
+        };
+        let run = |store: &Store, config: &QueryConfig| {
+            execute_filtered(store, config, &[], &[], &clock, 1000, &mut SqlTrace::default()).unwrap()
+        };
+        let ordered = |store: &Store| {
+            let ids = store.initial_row_ids().unwrap();
+            store.fetch_row_ids(&ids).unwrap().into_iter().map(|row| row.values).collect::<Vec<_>>()
+        };
+        let names = |store: &Store| store.schema().iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let depth_of = |row: &[Option<String>], at: usize| row[at].as_deref().unwrap().parse::<usize>().unwrap();
+        // Means can differ in their last digit between engines.
+        let same = |a: &[Vec<Option<String>>], b: &[Vec<Option<String>>]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.len() == b.len()
+                        && a.iter().zip(b).all(|(a, b)| match (a, b) {
+                            (Some(a), Some(b)) => {
+                                a == b
+                                    || a.parse::<f64>().ok().zip(b.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() < 1e-9)
+                            }
+                            _ => a == b,
+                        })
+                })
+        };
+        let text = |value: &str| Some(value.to_owned());
+        let north = vec![text("North")];
+        let south_a = vec![text("South"), text("A")];
+        let outlines = [
+            Outline { toggled: vec![north.clone()], ..Default::default() },
+            Outline { toggled: vec![north.clone(), south_a.clone()], subtotals: vec![1], ..Default::default() },
+            Outline { layout: OutlineLayout::Outline, toggled: vec![south_a.clone()], subtotals: vec![2], ..Default::default() },
+            Outline { level: Some(1), toggled: vec![vec![text("East")]], ..Default::default() },
+        ];
+        for outline in outlines {
+            let config = QueryConfig { outline: Some(outline.clone()), ..base.clone() };
+            let (left, right) = (run(&duckdb, &config), run(&polars, &config));
+            assert_eq!(left.outline_keys(), Some(&["region".to_string(), "product".into(), "size".into()][..]));
+            assert_eq!(names(&left), names(&right), "{outline:?}");
+            let rows = ordered(&left);
+            assert!(same(&rows, &ordered(&right)), "{outline:?}\n{rows:?}\n{:?}", ordered(&right));
+            let level_at = names(&left).iter().position(|name| name == outline::LEVEL).unwrap();
+            let open_at = names(&left).iter().position(|name| name == outline::OPEN).unwrap();
+            // Every row is the flat query's row at its depth, except an open
+            // row without subtotals, whose measures are blank.
+            for depth in 1..=3 {
+                let flat = ordered(&run(&duckdb, &QueryConfig { depth: Some(depth), ..base.clone() }));
+                for row in rows.iter().filter(|row| depth_of(row, level_at) == depth) {
+                    let found = flat.iter().find(|flat_row| flat_row[..depth] == row[..depth]).unwrap();
+                    assert!(row[depth..3].iter().all(Option::is_none), "{row:?}");
+                    let open = row[open_at].as_deref() == Some("true");
+                    if open && !outline.shows_subtotals(depth) {
+                        assert!(row[3..level_at].iter().all(Option::is_none), "{row:?}");
+                    } else {
+                        assert!(same(&[row[3..level_at].to_vec()], &[found[depth..].to_vec()]), "{row:?} {found:?}");
+                    }
+                }
+            }
+            for (index, row) in rows.iter().enumerate() {
+                let depth = depth_of(row, level_at);
+                // A row's own state follows the outline, and no ancestor is collapsed.
+                let closed = depth < 3 && row[open_at].as_deref() == Some("false");
+                assert_eq!(outline.is_collapsed(&row[..depth]), closed, "{row:?}");
+                assert!((1..depth).all(|parent| !outline.is_collapsed(&row[..parent])), "{row:?}");
+                // Shown parents come before their children.
+                for later in &rows[index + 1..] {
+                    let later_depth = depth_of(later, level_at);
+                    assert!(!(later_depth < depth && later[..later_depth] == row[..later_depth]), "{later:?} after {row:?}");
+                }
+            }
+            // A search keeps each match's ancestors and nothing else.
+            let search = ViewQuery { tokens: crate::domain::query::parse("size:L").unwrap(), ..Default::default() };
+            let kept = |store: &Store| {
+                let ids = store.query_row_ids(&search).unwrap();
+                store.fetch_row_ids(&ids).unwrap().into_iter().map(|row| row.values).collect::<Vec<_>>()
+            };
+            let found = kept(&left);
+            // Expanding to level 1 shows no leaves for size to match.
+            assert_eq!(found.is_empty(), outline.level.is_some());
+            assert!(same(&found, &kept(&right)), "{outline:?}
+{found:?}
+{:?}", kept(&right));
+            for row in &found {
+                let depth = depth_of(row, level_at);
+                assert!(
+                    row[2].as_deref() == Some("L")
+                        || found.iter().any(|other| other[2].as_deref() == Some("L") && other[..depth] == row[..depth]),
+                    "{row:?}"
+                );
+            }
+        }
+        // A pivot with totals keeps its columns at every level.
+        let config = QueryConfig {
+            group_by: ["region", "product"].map(Dimension::from).to_vec(),
+            pivot_by: vec![Dimension::from("size")],
+            aggregations: vec![aggregation("amount", AggregationOp::Sum)],
+            totals: true,
+            outline: Some(Outline { toggled: vec![north], ..Default::default() }),
+            ..Default::default()
+        };
+        let flat_config = QueryConfig { outline: None, ..config.clone() };
+        assert_eq!(names(&run(&duckdb, &flat_config)), names(&run(&polars, &flat_config)), "flat");
+        let (left, right) = (run(&duckdb, &config), run(&polars, &config));
+        assert_eq!(names(&left), names(&right));
+        assert_eq!(ordered(&left), ordered(&right));
+        let flat = ordered(&run(&duckdb, &QueryConfig { depth: Some(1), outline: None, ..config.clone() }));
+        let collapsed = ordered(&left).into_iter().find(|row| row[0].as_deref() == Some("North")).unwrap();
+        assert_eq!(collapsed[1], None);
+        let flat_north = flat.iter().find(|row| row[0].as_deref() == Some("North")).unwrap();
+        assert_eq!(collapsed[2..flat_north.len() + 1], flat_north[1..]);
     }
 }

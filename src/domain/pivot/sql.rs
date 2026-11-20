@@ -9,6 +9,7 @@ use crate::domain::documents::{
 };
 use crate::domain::schema::ColumnType;
 use crate::domain::sql::SqlTrace;
+use super::outline::OutlinePlan;
 use crate::infrastructure::duckdb_store::{
     ColumnFilter, ColumnSchema, DuckDbStore, QueryEnum, QueryInput, ViewQuery,
     filters_mention_rowid, quote_identifier,
@@ -115,9 +116,45 @@ pub fn execute_query(
     result_view: Option<ResultView<'_>>,
     trace: &mut SqlTrace,
 ) -> Result<DuckDbStore, String> {
+    check_limit(limit)?;
+    let built = build_query(source, config, slicers, filters, clock, result_view.is_some())?;
+    let mut parameters = built.parameters;
+    let sql = limited(built.sql, limit, result_view, &mut parameters)?;
+    source.materialize_query_traced(
+        built.stage,
+        &sql,
+        &parameters,
+        (!built.enums.is_empty()).then_some(QueryInput { enums: &built.enums }),
+        trace,
+    )
+}
+
+fn check_limit(limit: u64) -> Result<(), String> {
     if limit == 0 || limit > i64::MAX as u64 {
         return Err("query limit must be between 1 and 9223372036854775807".into());
     }
+    Ok(())
+}
+
+/// A query's SQL before the limit, with its parameters, the pivot value
+/// types it reads, and the stage it is traced under.
+struct BuiltQuery {
+    stage: &'static str,
+    sql: String,
+    parameters: Vec<Value>,
+    enums: Vec<QueryEnum>,
+}
+
+/// Builds the query's SQL. With `fixed_columns`, a pivot reads its values
+/// first, so the SQL can sit inside a larger statement.
+fn build_query(
+    source: &DuckDbStore,
+    config: &QueryConfig,
+    slicers: &[SlicerDefinition],
+    filters: &[ValueFilter],
+    clock: &EvaluationClock,
+    fixed_columns: bool,
+) -> Result<BuiltQuery, String> {
     validate_columns(source.schema(), config)?;
     if !config.pivot_by.is_empty() && config.group_by.is_empty() {
         return Err("Add a group by to set up this pivot".into());
@@ -138,23 +175,15 @@ pub fn execute_query(
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            let mut values = values;
-            let sql = limited(
-                format!(
+            return Ok(BuiltQuery {
+                stage: "Database view materialization",
+                sql: format!(
                     "SELECT {projection}\nFROM {}{where_sql}",
                     source.query_relation(filters_mention_rowid(&slicer_filters, filters), &[])
                 ),
-                limit,
-                result_view,
-                &mut values,
-            )?;
-            return source.materialize_query_traced(
-                "Database view materialization",
-                &sql,
-                &values,
-                None,
-                trace,
-            );
+                parameters: values,
+                enums: Vec::new(),
+            });
         }
         return Err("empty query configuration must use table mode".into());
     }
@@ -200,7 +229,7 @@ pub fn execute_query(
     let mut expressions = Vec::new();
     let mut parameters = Vec::new();
     if pivot_by.is_empty() {
-        let (sql, mut parameters) = grouped_select(
+        let (sql, parameters) = grouped_select(
             source,
             config,
             &dimensions,
@@ -209,14 +238,12 @@ pub fn execute_query(
             &where_values,
             clock,
         )?;
-        let sql = limited(format!("{sql}{order}"), limit, result_view, &mut parameters)?;
-        return source.materialize_query_traced(
-            "Query materialization",
-            &sql,
-            &parameters,
-            None,
-            trace,
-        );
+        return Ok(BuiltQuery {
+            stage: "Query materialization",
+            sql: format!("{sql}{order}"),
+            parameters,
+            enums: Vec::new(),
+        });
     }
 
     let ordered = config.aggregations.iter().any(is_ordered);
@@ -363,7 +390,7 @@ pub fn execute_query(
     // parameterized input during dynamic-column preprocessing.
     let identity = NEXT_QUERY_ENUM.fetch_add(1, Ordering::Relaxed);
     // A result view binds its own search parameters around the pivot.
-    let enums = if parameters.is_empty() && totals.is_none() && result_view.is_none() {
+    let enums = if parameters.is_empty() && totals.is_none() && !fixed_columns {
         Vec::new()
     } else {
         let discovery_sql = source.query_relation(filters_read_rowid, &derived);
@@ -371,15 +398,12 @@ pub fn execute_query(
             .iter()
             .enumerate()
             .map(|(index, column)| {
-                let nonnull = if where_sql.is_empty() {
-                    format!(" WHERE {column} IS NOT NULL")
-                } else {
-                    format!("{where_sql} AND {column} IS NOT NULL")
-                };
+                // NULL is a value of its own, named as DuckDB names it when
+                // it reads the values itself; the pivot matches it by that name.
                 QueryEnum {
                     name: format!("__qp_query_enum_{identity}_{index}"),
                     sql: format!(
-                        "SELECT DISTINCT CAST({column} AS VARCHAR)\nFROM {}{nonnull}\nORDER BY 1",
+                        "SELECT coalesce(__qp_label, 'NULL')\nFROM (SELECT DISTINCT CAST({column} AS VARCHAR) AS __qp_label\nFROM {}{where_sql}) AS __qp_labels\nORDER BY __qp_label NULLS LAST",
                         discovery_sql
                     ),
                     values: where_values.clone(),
@@ -393,7 +417,9 @@ pub fn execute_query(
         .map(|(index, column)| {
             enums.get(index).map_or_else(
                 || column.clone(),
-                |enumeration| format!("{column} IN {}", quote_identifier(&enumeration.name)),
+                |enumeration| {
+                    format!("coalesce(CAST({column} AS VARCHAR), 'NULL') IN {}", quote_identifier(&enumeration.name))
+                },
             )
         })
         .collect::<Vec<_>>()
@@ -451,18 +477,152 @@ pub fn execute_query(
             )
         }
     };
-    let sql = limited(sql, limit, result_view, &mut parameters)?;
-    source.materialize_query_traced(
-        "Query materialization",
+    Ok(BuiltQuery {
+        stage: "Query materialization",
+        sql,
+        parameters,
+        enums,
+    })
+}
+
+/// The query as an outline; see [`super::lazy::execute_outline`]. Each
+/// level is a query of its own inside one statement, its pivot values read
+/// first, and the levels join by column name.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_outline(
+    source: &DuckDbStore,
+    config: &QueryConfig,
+    plan: &OutlinePlan,
+    slicers: &[SlicerDefinition],
+    filters: &[ValueFilter],
+    clock: &EvaluationClock,
+    limit: u64,
+    trace: &mut SqlTrace,
+) -> Result<DuckDbStore, String> {
+    use super::outline::{LEVEL, OPEN};
+    check_limit(limit)?;
+    let keys = plan.keys();
+    let mut parameters = Vec::new();
+    let mut enums = Vec::new();
+    let mut parts = Vec::new();
+    for (index, part) in plan.parts().iter().enumerate() {
+        let level_config = QueryConfig {
+            group_by: config.group_by[..part.level].to_vec(),
+            ..config.clone()
+        };
+        let built = build_query(source, &level_config, slicers, filters, clock, true)?;
+        enums.extend(built.enums);
+        // Parameters bind in the order their text appears: the open flag,
+        // the level's query, then the filter.
+        let (open, open_parameters) = match &part.own {
+            Some(set) => {
+                let mut values = Vec::new();
+                (format!("NOT {}", path_set(set, &keys, &mut values)), values)
+            }
+            None => ("false".to_owned(), Vec::new()),
+        };
+        let mut keep_parameters = Vec::new();
+        let mut keep = part
+            .ancestors
+            .iter()
+            .map(|ancestor| format!("NOT {}", path_set(ancestor, &keys, &mut keep_parameters)))
+            .collect::<Vec<_>>();
+        if let Some(set) = &part.own
+            && !part.headers
+        {
+            keep.push(path_set(set, &keys, &mut keep_parameters));
+        }
+        if part.empty {
+            keep.push("false".into());
+        }
+        let filter = if keep.is_empty() {
+            String::new()
+        } else {
+            format!("\nWHERE {}", keep.join("\n    AND "))
+        };
+        let sql = format!(
+            "SELECT *, CAST({} AS INTEGER) AS {}, {open} AS {}\nFROM (\n{}\n) AS __dd_part_{index}{filter}",
+            part.level,
+            quote_identifier(LEVEL),
+            quote_identifier(OPEN),
+            built.sql,
+        );
+        let mut values = open_parameters;
+        values.extend(built.parameters);
+        values.extend(keep_parameters);
+        parts.push((sql, values));
+    }
+    // The deepest level comes first, so the union's columns start with
+    // every key in order.
+    parts.reverse();
+    let (parts, values): (Vec<_>, Vec<_>) = parts.into_iter().unzip();
+    parameters.extend(values.into_iter().flatten());
+    let level = quote_identifier(LEVEL);
+    let mut order = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            // A parent's row comes before its children's.
+            order.push(format!("{level} > {index}"));
+        }
+        order.push(format!("{} ASC NULLS LAST", quote_identifier(key)));
+    }
+    // Levels lack the keys below them; joining by name fills those with NULL.
+    let sql = format!(
+        "SELECT *\nFROM (\n{}\n) AS __dd_outline\nORDER BY {}",
+        parts.join("\nUNION ALL BY NAME\n"),
+        order.join(", ")
+    );
+    let sql = limited(sql, limit, None, &mut parameters)?;
+    let mut store = source.materialize_query_traced(
+        "Outline materialization",
         &sql,
         &parameters,
-        if enums.is_empty() {
-            None
-        } else {
-            Some(QueryInput { enums: &enums })
-        },
+        (!enums.is_empty()).then_some(QueryInput { enums: &enums }),
         trace,
-    )
+    )?;
+    // An expanded item's row shows no subtotals at levels without them.
+    let blank = plan
+        .parts()
+        .iter()
+        .filter(|part| !part.subtotals)
+        .map(|part| part.level.to_string())
+        .collect::<Vec<_>>();
+    if !blank.is_empty() {
+        // The measures' names are known only now. Updating in place keeps
+        // their types, which another copy of the result could widen.
+        let measures = store
+            .schema()
+            .iter()
+            .filter(|column| !keys.contains(&column.name) && column.name != LEVEL && column.name != OPEN)
+            .map(|column| column.storage_name.clone())
+            .collect::<Vec<_>>();
+        let predicate = format!("{} AND {} IN ({})", quote_identifier(OPEN), quote_identifier(LEVEL), blank.join(", "));
+        store.set_null_where(&measures, &predicate)?;
+    }
+    store.set_outline(keys);
+    Ok(store)
+}
+
+/// Whether a row's item at `set.level` is collapsed, as SQL; see
+/// [`super::outline::PathSet`]. Keys match as text, as the grid shows them.
+fn path_set(set: &super::outline::PathSet, keys: &[String], parameters: &mut Vec<Value>) -> String {
+    let mut any = Vec::new();
+    for path in &set.paths {
+        let all = keys
+            .iter()
+            .zip(path)
+            .map(|(key, value)| match value {
+                None => format!("{} IS NULL", quote_identifier(key)),
+                Some(text) => {
+                    parameters.push(Value::Text(text.clone()));
+                    format!("CAST({} AS VARCHAR) IS NOT DISTINCT FROM ?", quote_identifier(key))
+                }
+            })
+            .collect::<Vec<_>>();
+        any.push(format!("({})", all.join(" AND ")));
+    }
+    let any = if any.is_empty() { "false".into() } else { format!("({})", any.join(" OR ")) };
+    if set.negate { format!("(NOT {any})") } else { any }
 }
 
 /// Aggregations that keep source row order: they read rowid.
@@ -1593,6 +1753,8 @@ mod tests {
             totals: false,
             result_filters: Vec::new(),
             having: Vec::new(),
+                depth: None,
+                outline: None,
         }
     }
 
@@ -1617,6 +1779,8 @@ mod tests {
             totals: true,
             result_filters: Vec::new(),
             having: Vec::new(),
+            depth: None,
+            outline: None,
             ..Default::default()
         }
     }
@@ -1715,6 +1879,8 @@ mod tests {
             totals: true,
             result_filters: Vec::new(),
             having: Vec::new(),
+            depth: None,
+            outline: None,
             ..Default::default()
         };
         assert!(
@@ -1984,6 +2150,8 @@ mod tests {
                 totals: false,
                 result_filters: Vec::new(),
                 having: Vec::new(),
+                depth: None,
+                outline: None,
             },
             &[],
         )
@@ -2015,6 +2183,8 @@ mod tests {
             totals: false,
             result_filters: Vec::new(),
             having: Vec::new(),
+            depth: None,
+            outline: None,
         };
         let result = execute(&source(), &config, &[]).unwrap();
         assert_eq!(result.row_count(), 2);
@@ -2054,6 +2224,8 @@ mod tests {
                 totals: false,
                 result_filters: Vec::new(),
                 having: Vec::new(),
+                depth: None,
+                outline: None,
             },
             &[],
         )

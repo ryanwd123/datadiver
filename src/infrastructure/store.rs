@@ -255,6 +255,11 @@ impl Store {
         dispatch!(self, store => store.cut_at())
     }
 
+    /// The key columns of an outline's result, from the first.
+    pub fn outline_keys(&self) -> Option<&[String]> {
+        dispatch!(self, store => store.outline_keys())
+    }
+
     /// Whether a file's rows were read in file order. Only DuckDB can read
     /// out of order.
     pub fn in_file_order(&self) -> bool {

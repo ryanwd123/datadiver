@@ -13,8 +13,10 @@ pub fn cell_filters(
     on_group_column: bool,
     pivot_keys: &[Vec<Option<String>>],
 ) -> Result<Vec<ValueFilter>, String> {
+    // A subtotal row has fewer keys than the fields: it covers every value
+    // of the rest, so only its own keys filter.
     let mut filters = config
-        .group_by
+        .shown_group_by()
         .iter()
         .zip(group_values)
         .map(|(target, value)| ValueFilter {

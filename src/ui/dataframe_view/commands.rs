@@ -405,7 +405,7 @@ impl DataFrameView {
         let Some(ViewKind::Query(current)) = self.session.working.as_ref().map(|view| &view.view) else {
             return;
         };
-        let Some(field) = current.group_by.get(selection.active.column).cloned() else {
+        let Some(field) = current.shown_group_by().get(selection.active.column).cloned() else {
             return;
         };
         let mut updated = current.clone();
@@ -507,7 +507,7 @@ impl DataFrameView {
         }
         let column = self.grid.selection()?.active.column;
         let name = self.session.result.columns.get(column)?.0.clone();
-        (column >= config.group_by.len()).then_some((column, name))
+        (column >= config.key_columns()).then_some((column, name))
     }
 
     /// Sets the condition on a result column and runs the view again.
@@ -670,7 +670,7 @@ impl DataFrameView {
                 Some(reason) => Err(reason.into()),
                 None => Ok(name()),
             },
-            Some(ViewKind::Query(config)) => config.group_by.get(column).cloned().ok_or_else(|| {
+            Some(ViewKind::Query(config)) => config.shown_group_by().get(column).cloned().ok_or_else(|| {
                 "Value filters apply to group-by columns; press Enter to drill down instead".to_owned()
             }),
             _ => Ok(name()),

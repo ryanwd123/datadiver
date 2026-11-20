@@ -514,6 +514,8 @@ impl QueryResultCache {
             && self.config.pivot_by == config.pivot_by
             && self.config.aggregations == config.aggregations
             && self.config.totals == config.totals
+            && self.config.depth == config.depth
+            && self.config.outline == config.outline
             && self.slicers == definition.slicers
             && self.filters == definition.filters
             && self.query_limit == query_limit
@@ -746,7 +748,7 @@ impl DataFrameView {
             Some(ViewKind::Table(_)) => {
                 crate::domain::table::visible_frozen_count(&session.effective_table_config())
             }
-            Some(ViewKind::Query(pivot)) => pivot.group_by.len(),
+            Some(ViewKind::Query(pivot)) => pivot.key_columns(),
             // A SQL result arrives after it runs; publishing it sets the count.
             Some(ViewKind::Sql(_)) => 0,
             None => 0,
@@ -1237,7 +1239,7 @@ impl DataFrameView {
             Some(ViewKind::Table(_)) => {
                 crate::domain::table::visible_frozen_count(&self.session.effective_table_config())
             }
-            Some(ViewKind::Query(pivot)) => pivot.group_by.len(),
+            Some(ViewKind::Query(pivot)) => pivot.key_columns(),
             Some(ViewKind::Sql(config)) => {
                 crate::domain::table::frozen_prefix(&config.frozen_columns, &self.result_column_names())
             }

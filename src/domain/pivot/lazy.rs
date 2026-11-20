@@ -17,6 +17,7 @@ use crate::infrastructure::polars::expressions::{
 };
 use crate::infrastructure::polars::store::{PolarsStore, dimension_expression};
 use crate::infrastructure::store::{ColumnFilter, ColumnSchema, ViewQuery, filters_mention_rowid};
+use super::outline::OutlinePlan;
 
 pub fn execute(
     source: &PolarsStore,
@@ -94,9 +95,27 @@ pub fn execute_query(
     result_view: Option<ResultView<'_>>,
     trace: &mut SqlTrace,
 ) -> Result<PolarsStore, String> {
+    check_limit(limit)?;
+    let (stage, frame) = result_frame(source, config, slicers, filters, clock)?;
+    let frame = limited(frame, limit, result_view)?;
+    source.materialize(stage, frame, trace)
+}
+
+fn check_limit(limit: u64) -> Result<(), String> {
     if limit == 0 || limit > i64::MAX as u64 {
         return Err("query limit must be between 1 and 9223372036854775807".into());
     }
+    Ok(())
+}
+
+/// The query's result rows before the limit, with the stage they are traced under.
+fn result_frame(
+    source: &PolarsStore,
+    config: &QueryConfig,
+    slicers: &[SlicerDefinition],
+    filters: &[ValueFilter],
+    clock: &EvaluationClock,
+) -> Result<(&'static str, LazyFrame), String> {
     validate_columns(source.schema(), config)?;
     if !config.pivot_by.is_empty() && config.group_by.is_empty() {
         return Err("Add a group by to set up this pivot".into());
@@ -112,8 +131,7 @@ pub fn execute_query(
             let frame = source
                 .filtered_frame(&slicer_filters, filters)?
                 .select(columns);
-            let frame = limited(frame, limit, result_view)?;
-            return source.materialize("Scanned file rows", frame, trace);
+            return Ok(("Scanned file rows", frame));
         }
         return Err("empty query configuration must use table mode".into());
     }
@@ -141,8 +159,121 @@ pub fn execute_query(
     } else {
         pivoted(source, frame, groups, pivots, &measures, config.totals)?
     };
-    let result = limited(result, limit, result_view)?;
-    source.materialize("Query materialization", result, trace)
+    Ok(("Query materialization", result))
+}
+
+/// The query as an outline: the rows of each level of `plan` (each level a
+/// query over source rows, grouped by its leading fields), the ones its
+/// collapsed items leave visible, with each parent next to its children.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_outline(
+    source: &PolarsStore,
+    config: &QueryConfig,
+    plan: &OutlinePlan,
+    slicers: &[SlicerDefinition],
+    filters: &[ValueFilter],
+    clock: &EvaluationClock,
+    limit: u64,
+    trace: &mut SqlTrace,
+) -> Result<PolarsStore, String> {
+    use super::outline::{LEVEL, OPEN};
+    check_limit(limit)?;
+    let keys = plan.keys();
+    let mut parts = Vec::new();
+    for part in plan.parts() {
+        let level_config = QueryConfig {
+            group_by: config.group_by[..part.level].to_vec(),
+            ..config.clone()
+        };
+        let (_, mut frame) = result_frame(source, &level_config, slicers, filters, clock)?;
+        let schema = frame.collect_schema().map_err(polars_error)?;
+        if part.empty {
+            frame = DataFrame::empty_with_schema(&schema).lazy();
+        }
+        let collapsed = |set: &super::outline::PathSet| path_set(set, &keys, &schema);
+        let mut keep = lit(true);
+        for ancestor in &part.ancestors {
+            keep = keep.and(collapsed(ancestor)?.not());
+        }
+        let own = match &part.own {
+            Some(set) => collapsed(set)?,
+            None => lit(false),
+        };
+        if part.level < plan.fields() && !part.headers {
+            keep = keep.and(own.clone());
+        }
+        let open = if part.level < plan.fields() { own.not() } else { lit(false) };
+        frame = frame.filter(keep).with_columns([
+            lit(part.level as i32).alias(LEVEL),
+            open.alias(OPEN),
+        ]);
+        if !part.subtotals {
+            // An expanded item's row shows no subtotals at this level.
+            let measures = schema
+                .iter_names()
+                .filter(|name| !keys[..part.level].iter().any(|key| key.as_str() == name.as_str()))
+                .map(|name| {
+                    when(col(OPEN))
+                        .then(lit(NULL).cast(schema.get(name).unwrap().clone()))
+                        .otherwise(col(name.clone()))
+                        .alias(name.clone())
+                })
+                .collect::<Vec<_>>();
+            if !measures.is_empty() {
+                frame = frame.with_columns(measures);
+            }
+        }
+        parts.push(frame);
+    }
+    // The deepest level comes first, so the columns start with every key in order.
+    parts.reverse();
+    let frame = concat_lf_diagonal(
+        parts,
+        UnionArgs {
+            to_supertypes: true,
+            ..Default::default()
+        },
+    )
+    .map_err(polars_error)?;
+    let level = || col(LEVEL);
+    let mut order = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            // A parent's row comes before its children's.
+            order.push(level().gt(lit(index as i32)));
+        }
+        order.push(col(key.as_str()));
+    }
+    let frame = frame.sort_by_exprs(
+        order,
+        SortMultipleOptions::default()
+            .with_nulls_last(true)
+            .with_maintain_order(true),
+    );
+    let mut store = source.materialize("Outline materialization", limited(frame, limit, None)?, trace)?;
+    store.set_outline(keys);
+    Ok(store)
+}
+
+/// Whether a row's item at `set.level` is collapsed: its key path is one of
+/// `set.paths`, or isn't when `set.negate`. Paths match the keys as text.
+fn path_set(set: &super::outline::PathSet, keys: &[String], schema: &Schema) -> Result<Expr, String> {
+    let mut any = lit(false);
+    for path in &set.paths {
+        let mut all = lit(true);
+        for (key, value) in keys.iter().zip(path) {
+            let dtype = schema
+                .get(key.as_str())
+                .ok_or_else(|| format!("outline key column not found: {key}"))?;
+            let column = col(key.as_str());
+            all = all.and(match value {
+                None => column.is_null(),
+                Some(text) => rendered(column, dtype).eq(lit(text.clone())).fill_null(false),
+            });
+        }
+        any = any.or(all);
+    }
+    Ok(if set.negate { any.not() } else { any })
 }
 
 /// One row per group, ordered by the groups, or one row in all without them.

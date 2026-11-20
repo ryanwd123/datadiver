@@ -319,6 +319,129 @@ pub struct QueryConfig {
     /// SQL's HAVING: `"Count" > 1`. A group stays when every one holds.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub having: Vec<String>,
+    /// Groups by only the first `depth` group-by fields; the fields after
+    /// them are collapsed. `None` groups by every field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth: Option<usize>,
+    /// Shows the groups as an Excel-style outline, with items that collapse
+    /// into a subtotal row. `None` shows the flat result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<Outline>,
+}
+
+impl QueryConfig {
+    /// The group-by fields the result has: all of them, or the first
+    /// `depth` while the rest are collapsed.
+    pub fn shown_group_by(&self) -> &[Dimension] {
+        &self.group_by[..self.depth.unwrap_or(usize::MAX).min(self.group_by.len())]
+    }
+
+    /// The flat query the engines run: the shown fields only, no outline.
+    pub fn flattened(&self) -> QueryConfig {
+        QueryConfig {
+            group_by: self.shown_group_by().to_vec(),
+            depth: None,
+            outline: None,
+            ..self.clone()
+        }
+    }
+
+    /// The outline when it has items to collapse: two shown fields or more.
+    pub fn active_outline(&self) -> Option<&Outline> {
+        self.outline.as_ref().filter(|_| self.shown_group_by().len() >= 2)
+    }
+
+    /// How many leading result columns show group keys: one per shown field,
+    /// or the single column of row labels in the compact layout.
+    pub fn key_columns(&self) -> usize {
+        match self.active_outline() {
+            Some(outline) if outline.layout == OutlineLayout::Compact => 1,
+            _ => self.shown_group_by().len(),
+        }
+    }
+}
+
+/// The key values of an outline item, one per group-by field from the
+/// first, as the grid shows them; `None` is SQL NULL.
+pub type OutlinePath = Vec<Option<String>>;
+
+/// How a query shows its groups as an outline. An item is the group of one
+/// path of key values; a collapsed item shows as one subtotal row, which
+/// aggregates source rows like the totals do.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Outline {
+    pub layout: OutlineLayout,
+    /// Items at this level (1 for the first field) and deeper start
+    /// collapsed: "expand to level N". `None` starts every item expanded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<usize>,
+    /// Items in the other state from the one `level` starts them in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub toggled: Vec<OutlinePath>,
+    /// Levels whose expanded items show their subtotals. In the tabular
+    /// layout such an item gets a subtotal row; the other layouts always
+    /// show a row above an expanded item, with its subtotals only here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subtotals: Vec<usize>,
+}
+
+impl Outline {
+    /// Whether the item at `path` (its level is the path's length) is collapsed.
+    pub fn is_collapsed(&self, path: &[Option<String>]) -> bool {
+        let starts_collapsed = self.level.is_some_and(|level| path.len() >= level);
+        starts_collapsed != self.toggled.iter().any(|toggled| toggled.as_slice() == path)
+    }
+
+    /// Collapses or expands the item at `path`. Returns whether it changed.
+    pub fn set_collapsed(&mut self, path: &[Option<String>], collapsed: bool) -> bool {
+        if self.is_collapsed(path) == collapsed {
+            return false;
+        }
+        match self.toggled.iter().position(|toggled| toggled.as_slice() == path) {
+            Some(index) => {
+                self.toggled.remove(index);
+            }
+            None => self.toggled.push(path.to_vec()),
+        }
+        true
+    }
+
+    /// Whether expanded items at `level` show a row of their own.
+    pub fn shows_header(&self, level: usize) -> bool {
+        self.layout != OutlineLayout::Tabular || self.subtotals.contains(&level)
+    }
+
+    /// Whether expanded items at `level` show their subtotals.
+    pub fn shows_subtotals(&self, level: usize) -> bool {
+        self.subtotals.contains(&level)
+    }
+}
+
+/// Where an outline shows its keys.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineLayout {
+    /// Each field in its own column, with the keys repeated on every row.
+    #[default]
+    Tabular,
+    /// Each field in its own column; an expanded item's row sits above its
+    /// children, which leave its keys blank.
+    Outline,
+    /// One indented column of row labels.
+    Compact,
+}
+
+impl OutlineLayout {
+    pub const ALL: [OutlineLayout; 3] = [Self::Tabular, Self::Outline, Self::Compact];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tabular => "Tabular",
+            Self::Outline => "Outline",
+            Self::Compact => "Compact",
+        }
+    }
 }
 
 /// A condition on one column of a query's result, in the language of

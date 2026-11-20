@@ -865,7 +865,7 @@ impl DataFrameView {
         };
         let (row, column, _) = self.active_cell_value()?;
         let result = &self.session.result;
-        let group_count = config.group_by.len();
+        let group_count = config.shown_group_by().len();
         let cached = match result.cached_rows(row, 1) {
             Some(rows) => rows,
             None => result.fetch_rows(row, 1)?,

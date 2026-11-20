@@ -39,6 +39,10 @@ pub struct PolarsStore {
     /// A file read in place on every query instead of `frame`, which is then
     /// empty. Its views are limited queries, as for DuckDB's scans.
     scan: Option<LazyFrame>,
+    /// An outline's result: the names of its key columns, from the first.
+    /// Its views keep the rows in outline order and keep the ancestors of
+    /// the rows a search or filter keeps.
+    outline: Option<Vec<String>>,
     #[cfg(test)]
     width_sampling_calls: std::sync::atomic::AtomicUsize,
 }
@@ -107,6 +111,7 @@ impl PolarsStore {
             identity: None,
             cut_at: None,
             scan: None,
+            outline: None,
             #[cfg(test)]
             width_sampling_calls: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -137,6 +142,15 @@ impl PolarsStore {
 
     pub fn cut_at(&self) -> Option<usize> {
         self.cut_at
+    }
+
+    /// Marks this result as an outline over the key columns `keys`.
+    pub fn set_outline(&mut self, keys: Vec<String>) {
+        self.outline = Some(keys);
+    }
+
+    pub fn outline_keys(&self) -> Option<&[String]> {
+        self.outline.as_deref()
     }
 
     /// Keeps the first `rows` rows of a query result and notes that the
@@ -597,6 +611,9 @@ impl PolarsStore {
         trace: &mut SqlTrace,
     ) -> Result<MaterializedViewRows, String> {
         let predicate = self.view_predicate(view)?;
+        if let Some(keys) = &self.outline {
+            return self.outline_view_rows(keys, predicate, trace);
+        }
         let order = self.sort_columns(&view.sort)?;
         if predicate.is_none() && order.is_empty() {
             let count = self.row_count;
@@ -620,6 +637,56 @@ impl PolarsStore {
         let rows = trace.execute("Result search and sort", &plan, &[], || self.collect(frame))?;
         crate::infrastructure::performance::record("row_map_creation", start);
         let _span = crate::infrastructure::performance::Span::new("row_id_extraction");
+        let ids = rows
+            .column(ROW)
+            .map_err(polars_error)?
+            .idx()
+            .map_err(polars_error)?
+            .into_no_null_iter()
+            .map(i64::from)
+            .collect::<Vec<_>>();
+        Ok(MaterializedViewRows {
+            row_ids: RowIds::Listed(ids.into()),
+            row_map: None,
+        })
+    }
+
+    /// An outline's rows in outline order: those `predicate` keeps, and the
+    /// rows of their ancestors, so each match stays under its parents. An
+    /// item's row at level `L` is an ancestor of the rows at level `L` and
+    /// deeper that share its first `L` keys.
+    fn outline_view_rows(
+        &self,
+        keys: &[String],
+        predicate: Option<Expr>,
+        trace: &mut SqlTrace,
+    ) -> Result<MaterializedViewRows, String> {
+        use crate::domain::pivot::outline::LEVEL;
+        let Some(predicate) = predicate else {
+            let count = self.row_count;
+            return trace.execute("Result search", "Every row in outline order", &[], || {
+                Ok(MaterializedViewRows {
+                    row_ids: RowIds::Natural(count),
+                    row_map: None,
+                })
+            });
+        };
+        let matched = predicate.fill_null(false);
+        let mut keep = matched.clone();
+        for level in 1..keys.len() {
+            let level_value = lit(level as i32);
+            let mut partition = vec![col(LEVEL).gt_eq(level_value.clone())];
+            partition.extend(keys[..level].iter().map(|key| col(key.as_str())));
+            let descendant_matched = matched.clone().any(false).over(partition).map_err(polars_error)?;
+            keep = keep.or(col(LEVEL).eq(level_value).and(descendant_matched));
+        }
+        let frame = self
+            .query_frame(false)
+            .with_row_index(ROW, None)
+            .filter(keep)
+            .select([col(ROW)]);
+        let plan = frame.describe_plan().unwrap_or_default();
+        let rows = trace.execute("Result search", &plan, &[], || self.collect(frame))?;
         let ids = rows
             .column(ROW)
             .map_err(polars_error)?
