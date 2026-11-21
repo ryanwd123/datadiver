@@ -28,6 +28,10 @@ use super::text::{self, Font, TextOptions};
 const WAKE_MESSAGE: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TOOLTIP_DELAY_MS: u128 = 600;
+/// The shortest time between frames. Presents don't wait for vblank (see
+/// `create_target`), so without this a fast input source, such as a
+/// touchpad or a drag, would paint once per message.
+const MIN_FRAME: std::time::Duration = std::time::Duration::from_millis(4);
 
 struct Tooltip {
     text: std::rc::Rc<str>,
@@ -61,6 +65,8 @@ pub struct WindowSlot<V: View> {
     pub owner: Option<WindowId>,
     pub(crate) state: RefCell<WindowState<V::Hit>>,
     dirty: Cell<bool>,
+    /// When the last frame started painting, for `MIN_FRAME`.
+    last_frame: Cell<Option<Instant>>,
 }
 
 impl<V: View> WindowSlot<V> {
@@ -79,6 +85,15 @@ impl<V: View> WindowSlot<V> {
 
     pub fn is_dirty(&self) -> bool {
         self.dirty.get()
+    }
+
+    /// When the next frame may paint, if painting now would be too soon
+    /// after the last one.
+    fn frame_due(&self, now: Instant) -> Option<Instant> {
+        self.last_frame
+            .get()
+            .map(|last| last + MIN_FRAME)
+            .filter(|due| *due > now)
     }
 
     pub(crate) fn viewport(&self) -> (f32, f32) {
@@ -201,6 +216,7 @@ pub(crate) fn new_slot<V: View>(
             tooltip: None,
         }),
         dirty: Cell::new(true),
+        last_frame: Cell::new(None),
     })
 }
 
@@ -264,6 +280,17 @@ fn render<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>) {
             }
             return;
         }
+        let now = Instant::now();
+        if slot.frame_due(now).is_some() {
+            // Too soon after the last frame; the message loop paints it when
+            // it is due.
+            slot.dirty.set(true);
+            unsafe {
+                let _ = ValidateRect(Some(hwnd), None);
+            }
+            return;
+        }
+        slot.last_frame.set(Some(now));
         if state.target.is_none() {
             state.target = create_target(hwnd);
             state.brushes.clear();
@@ -328,7 +355,11 @@ fn create_target(hwnd: HWND) -> Option<ID2D1HwndRenderTarget> {
             width: (client.right - client.left).max(1) as u32,
             height: (client.bottom - client.top).max(1) as u32,
         },
-        presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        // Waiting for vblank in EndDraw blocks the UI thread for most of each
+        // frame while scrolling, and input queues behind it: 29 ms from wheel
+        // to screen at 84 Hz, 6.5 ms without the wait. DWM composes the
+        // window, so there is no tearing. See PERFORMANCE.md, 2026-11-21.
+        presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
     };
     unsafe {
         d2d_factory()
@@ -610,12 +641,32 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
     }));
     init(runtime);
     drain(runtime);
+    // Wakes the loop for a frame held back by `MIN_FRAME`. A wait's timeout
+    // is rounded to the system timer tick (15.6 ms by default); a
+    // high-resolution timer is good to about half a millisecond.
+    let frame_timer = unsafe {
+        use windows::Win32::System::Threading::{CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, TIMER_ALL_ACCESS};
+        CreateWaitableTimerExW(None, PCWSTR::null(), CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS.0).ok()
+    };
     let mut message = MSG::default();
     loop {
+        let frame = frame_deadline(runtime);
+        let handles: Vec<HANDLE> = match (frame, frame_timer) {
+            (Some(due), Some(timer)) => {
+                // Negative: relative, in 100 ns units.
+                let wait = -((due.saturating_duration_since(Instant::now()).as_nanos() / 100).max(1) as i64);
+                match unsafe { windows::Win32::System::Threading::SetWaitableTimer(timer, &wait, 0, None, None, false) } {
+                    Ok(()) => vec![timer],
+                    Err(_) => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
         let timeout = runtime
             .next_deadline()
             .into_iter()
             .chain(tooltip_deadline(runtime))
+            .chain(frame)
             .min()
             .map(|deadline| {
                 deadline
@@ -625,7 +676,7 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
             })
             .unwrap_or(windows::Win32::System::Threading::INFINITE);
         unsafe {
-            MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            MsgWaitForMultipleObjectsEx(Some(&handles), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
             if message.message == WM_QUIT {
@@ -650,13 +701,27 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
 
 fn drain<V: View>(runtime: &Runtime<V>) {
     while runtime.drain(&|runtime, request| open_window(runtime, request), &|runtime, id| close_window(runtime, id)) {}
-    // Frames `render` skipped while their view was busy.
+    // Frames `render` skipped while their view was busy, or that are due
+    // after `MIN_FRAME`.
+    let now = Instant::now();
     let windows = runtime.windows.borrow().clone();
     for slot in windows {
-        if slot.dirty.get() && slot.view.try_borrow_mut().is_ok() {
+        if slot.dirty.get() && slot.frame_due(now).is_none() && slot.view.try_borrow_mut().is_ok() {
             slot.invalidate();
         }
     }
+}
+
+/// When the first window held back by `MIN_FRAME` may paint.
+fn frame_deadline<V: View>(runtime: &Runtime<V>) -> Option<Instant> {
+    let now = Instant::now();
+    runtime
+        .windows
+        .borrow()
+        .iter()
+        .filter(|slot| slot.dirty.get())
+        .filter_map(|slot| slot.frame_due(now))
+        .min()
 }
 
 fn tooltip_deadline<V: View>(runtime: &Runtime<V>) -> Option<Instant> {
@@ -872,6 +937,9 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
                     });
                 }
             }
+            // A sizing drag runs its own message loop, which never paints a
+            // frame held back by `MIN_FRAME`; paint each size at once.
+            slot.last_frame.set(None);
             slot.invalidate();
             dispatch(runtime, &slot, Event::Moved);
             LRESULT(0)
