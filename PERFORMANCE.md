@@ -56,12 +56,12 @@ Candidate areas (extend this list as the app grows):
 
 | Area | Last evaluated | Commit | Result | Re-check when |
 |------|----------------|--------|--------|---------------|
-| Idle CPU and wakeups (Windows) | 2026-10-31 | `c00a9fd` | Near zero except the SQL caret blink (full-window repaint, ~20 Mcycles/s) | The blink, source monitor, timers or render target change |
+| Idle CPU and wakeups (Windows) | 2026-10-31 | `c00a9fd` | Near zero except the SQL caret blink (full-window repaint, ~20 Mcycles/s; 14.6 after `d95bbba`, see 2026-11-21) | The blink, source monitor, timers or render target change |
 | Storage: in-memory vs persisted DuckDB | 2026-10-03 | `8df5ccb` | Persisted; see `performance/STORAGE.md` | The source database or row-map design changes |
 | Query modes: staged vs direct pivot | 2026-10-03 | `8df5ccb` | Direct; see `performance/QUERY_MODES.md` | The pivot pipeline changes |
 | Cached table widths | 2026-10-03 | `8df5ccb` | Cached; see `performance/TABLE_WIDTHS.md` | Width sampling changes |
 | Slicer discovery | 2026-10-31 | `43ee4c3` | GROUPING SETS scan; see `performance/SLICER_DISCOVERY.md` | The slicer picker's queries change |
-| Frame time and input-to-screen latency (scrolling) | 2026-11-21 | `bd31a2a` | A frame costs ~0.5 ms to build; the latency is present queueing. Wheel input takes 29 ms to reach the screen, 6.5 ms with `PRESENT_OPTIONS_IMMEDIATELY` | The present path, render target or message loop changes, or a view gets much heavier to paint |
+| Frame time and input-to-screen latency (scrolling) | 2026-11-21 | `d95bbba` | A frame costs ~0.5 ms to build; the latency was present queueing. Fixed in `d95bbba` (`IMMEDIATELY` plus a 4 ms frame cap): wheel to screen 29 → 6.6 ms | The present path, render target or message loop changes, or a view gets much heavier to paint |
 
 ---
 
@@ -112,6 +112,17 @@ Large window (3600×1400), wheel 120 Hz, to screen p50: baseline 29.1, A 6.6 (6.
 - **The `--benchmark-ui` metric `scroll_frame_interval` doesn't measure present:** its `Step::Frame` polls with 5 ms timers. Use `benches/frame_latency.ps1` for this question.
 
 **Recommendation:** Switch the HWND target to `D2D1_PRESENT_OPTIONS_IMMEDIATELY` and cap painting at about one frame per 4 ms (To Do 6). This is the biggest win for scrolling (−78%) for one line plus a small guard, and it changes nothing else measured. A flip-model swap chain with the waitable in the message loop is the better design for clicks and keys, but it's a much bigger change and slower than A for continuous scrolling. Keep it as an option (To Do 7).
+**After the change (`d95bbba`):** `IMMEDIATELY` plus a 4 ms minimum between frames. A frame held back by the cap is painted by the message loop on a high-resolution waitable timer, because plain wait timeouts round to the 15.6 ms tick; resizes skip the hold. Measured with the patch rebased onto `d95bbba` (`current` = as committed, `vsync` = the old path, `no-cap` = `DD_NO_CAP=1`), 3 runs each:
+
+| Scenario | current: to screen p50 / p95 (ms) | vsync | no-cap | current fps drawn / Mcycles/s | no-cap fps / Mcycles/s |
+|---|---:|---:|---:|---:|---:|
+| Wheel 120 Hz, 1200×800 | **6.6** / 11.8 | 28.8 / 34.2 | 6.7 / 11.9 | 121 / 260–272 | 121 / 281–298 |
+| Wheel 120 Hz, 3600×1400 | **6.8** / 11.9 | 28.8 / 34.3 | 6.8 / 12.1 | 121 / 261–299 | 121 / 322–351 |
+| Wheel 500 Hz, 1200×800 | **7.5** / 13.3 | 29.2 / 34.5 | 6.3 / 11.6 | **240** / 398–414 | 506 / 626–643 |
+| Key 30 Hz | 3.2 / 4.7 | 3.8 / 4.3 | 3.6 / 4.3 | 30 | 30 |
+
+The cap holds 500 Hz input to 240 fps, cutting process CPU by ~37% for +1.2 ms p50. Below 250 Hz it never engages. Mcycles/s varied more this session (vsync ran 180–350), so compare variants within a row. Idle (`idle_cpu.ps1`, 3 × 20 s): table 2.1 (1.5–2.6) Mcycles/s and 65 switches/s, unchanged. The SQL editor with the caret blinking dropped to 14.6 (6.2–15.5) Mcycles/s and 69 switches/s, from 20.6 and 90 on 2026-10-31: a blink paint no longer blocks on vblank. All 679 tests pass with and without `--features snapshots`. Not checked by hand: dragging a window edge (the sizing loop path), and tearing beyond the 6 px marker strip.
+
 **Re-check when:** the present path, render target or message loop changes, or a view starts taking >2 ms to paint. Re-run at 60 Hz and on an Intel or AMD GPU, since the numbers depend on the refresh period and on DWM/driver behavior. The probe posts window messages, so real HID input adds its own fixed latency on top, the same for every variant.
 
 ### 2026-10-31 — Idle CPU and wakeups (Windows)
@@ -164,5 +175,5 @@ Keep completed items as history; don't delete them.
 - [ ] Optional, bigger: make a blink repaint only the editor, e.g. keep the rest of the frame in a cached bitmap, or skip widgets outside the update rect. Expected impact: ~9 → ≤1 Mcycles per blink, and cheaper paints for anything else that invalidates a small area. Clipping alone does not help (experiment E). — see note 2026-10-31 Idle CPU
 - [ ] Pause the 1 s source monitor while the window is inactive and run one check on activation, or watch the file with `FindFirstChangeNotificationW`. Expected impact: −1.6 to −2.0 Mcycles/s and −5 switches/s for a background window with a file or the database tree open. — see note 2026-10-31 Idle CPU
 - [x] Lead for a "Frame/render time" session: hardware `EndDraw` takes ~10.7 ms per paint when painting continuously (vs 2–3 ms of drawing). Measure input-to-frame latency while scrolling and typing with `D2D1_PRESENT_OPTIONS_IMMEDIATELY`, or with a flip-model swap chain and a frame-latency waitable object. — see note 2026-10-31 Idle CPU (investigated 2026-11-21; see To Do 6–7)
-- [ ] Create the HWND render target with `D2D1_PRESENT_OPTIONS_IMMEDIATELY` (`create_target` in `src/ui/platform/window.rs`), and don't paint again within ~4 ms of the last paint: leave the window dirty and schedule it at the 4 ms mark. Expected impact: continuous wheel scrolling 29 → ~6.5 ms input-to-screen (p95 34 → 12 ms) at 84 Hz. Isolated input and idle CPU stay the same. Wheel/drag frames are capped at ~250/s, versus 85 today and an uncapped 121+ (≈ +15–40% CPU while scrolling). Re-run `benches/frame_latency.ps1` with the patch to confirm. — see note 2026-11-21 Frame time
+- [x] (done 2026-11-21, commit `d95bbba`; measured results in note 2026-11-21 Frame time, "After the change") Create the HWND render target with `D2D1_PRESENT_OPTIONS_IMMEDIATELY` (`create_target` in `src/ui/platform/window.rs`), and don't paint again within ~4 ms of the last paint: leave the window dirty and schedule it at the 4 ms mark. Expected impact: continuous wheel scrolling 29 → ~6.5 ms input-to-screen (p95 34 → 12 ms) at 84 Hz. Isolated input and idle CPU stay the same. Wheel/drag frames are capped at ~250/s, versus 85 today and an uncapped 121+ (≈ +15–40% CPU while scrolling). Re-run `benches/frame_latency.ps1` with the patch to confirm. — see note 2026-11-21 Frame time
 - [ ] Optional, bigger: replace the HWND target with a flip-model swap chain (D3D11 device, `ID2D1DeviceContext`, `FLIP_DISCARD`, maximum frame latency 1). Wait on its frame-latency waitable in `MsgWaitForMultipleObjectsEx`, and paint only once it signals. Expected impact: clicks and key presses 4–5 → 1.8 ms to screen (p95 12.6 → 2.3 ms) with no wasted frames. Continuous scrolling only improves to 18 ms (A gives 6.5). Costs: swap-chain resize and device-lost handling, and ~+40% CPU while scrolling. Only worth doing together with late-latched painting (start the frame ~3 ms before vblank) to fix the continuous case. The prototype is `DD_FLIP=loop` in `performance/frame-experiments.patch`. — see note 2026-11-21 Frame time

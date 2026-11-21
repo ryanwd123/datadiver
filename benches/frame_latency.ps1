@@ -10,8 +10,13 @@ with Desktop Duplication. Writes one CSV row per run and prints the medians.
 
 The app must be built with performance/frame-experiments.patch applied: its
 DD_FRAME_TRACE switch draws the frame marker and writes the per-frame trace,
-and DD_PRESENT / DD_FLIP pick the present path. Without the patch the probe
-finds no trace. See PERFORMANCE.md, 2026-11-21.
+and DD_PRESENT / DD_NO_CAP / DD_FLIP pick the present path. Without the patch the
+probe finds no trace. See PERFORMANCE.md, 2026-11-21.
+
+Variants: 'current' is the app as committed (PRESENT_OPTIONS_IMMEDIATELY, at
+most one frame per 4 ms); 'vsync' is the path before d95bbba (EndDraw waits
+for vblank); 'no-cap' is 'current' without the 4 ms cap; 'flip*' are flip-model
+swap chains (see src/ui/platform/frame_experiment.rs in the patch).
 
 The window is made topmost while it is measured; don't use the mouse wheel or
 keyboard over it, since stray input skews the match between posts and frames.
@@ -21,7 +26,7 @@ git apply performance/frame-experiments.patch
 cargo build --profile perf
 cargo build --release --manifest-path benches/frame_probe/Cargo.toml
 .\benches\frame_latency.ps1 -Runs 3
-.\benches\frame_latency.ps1 -Only wheel-120 -Variants baseline,flip-wait
+.\benches\frame_latency.ps1 -Only wheel-120 -Variants current,vsync
 #>
 param(
     [int]$Runs = 3,
@@ -31,12 +36,13 @@ param(
     [string]$Probe = "$PSScriptRoot\frame_probe\target\release\frame_probe.exe",
     [string]$Output = "$PSScriptRoot\..\target\frame_latency.csv",
     [string[]]$Only = @(),
-    [string[]]$Variants = @('baseline', 'immediately', 'flip', 'flip-0', 'flip-wait', 'flip-loop', 'flip-loop-0')
+    [string[]]$Variants = @('current', 'vsync', 'no-cap', 'flip', 'flip-0', 'flip-wait', 'flip-loop', 'flip-loop-0')
 )
 
 $variantEnv = @{
-    'baseline'    = @{}
-    'immediately' = @{ DD_PRESENT = 'immediately' }
+    'current'     = @{}
+    'vsync'       = @{ DD_PRESENT = 'none'; DD_NO_CAP = '1' }
+    'no-cap'      = @{ DD_NO_CAP = '1' }
     'flip'        = @{ DD_FLIP = '1' }
     'flip-wait'   = @{ DD_FLIP = 'wait' }
     'flip-0'      = @{ DD_FLIP = '0' }
@@ -48,6 +54,8 @@ $scenarios = [ordered]@{
     # A fast wheel spin or a precision touchpad: more input than frames.
     'wheel-120'       = @{ Input = 'wheel'; Rate = 120; Window = '1200x800' }
     'wheel-120-large' = @{ Input = 'wheel'; Rate = 120; Window = '3600x1400' }
+    # Faster than the 4 ms cap: a high-rate touchpad or a drag.
+    'wheel-500'       = @{ Input = 'wheel'; Rate = 500; Window = '1200x800' }
     # A held arrow key at the default keyboard repeat rate.
     'key-30'          = @{ Input = 'key'; Rate = 30; Window = '1200x800' }
 }
@@ -63,7 +71,7 @@ foreach ($name in $scenarios.Keys) {
             $env:DD_FRAME_TRACE = $trace
             foreach ($key in $variantEnv[$variant].Keys) { Set-Item "env:$key" $variantEnv[$variant][$key] }
             $process = Start-Process -FilePath $Exe -ArgumentList ($common + @('--window', $scenario.Window)) -PassThru
-            foreach ($key in @('DD_FRAME_TRACE', 'DD_PRESENT', 'DD_FLIP')) { Remove-Item "env:$key" -ErrorAction SilentlyContinue }
+            foreach ($key in @('DD_FRAME_TRACE', 'DD_PRESENT', 'DD_NO_CAP', 'DD_FLIP')) { Remove-Item "env:$key" -ErrorAction SilentlyContinue }
             Start-Sleep -Seconds $Settle
             $json = & $Probe --pid $process.Id --trace $trace --input $scenario.Input --rate $scenario.Rate --seconds $Seconds --label $variant
             if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force }
