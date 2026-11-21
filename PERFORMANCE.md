@@ -61,6 +61,7 @@ Candidate areas (extend this list as the app grows):
 | Query modes: staged vs direct pivot | 2026-10-03 | `8df5ccb` | Direct; see `performance/QUERY_MODES.md` | The pivot pipeline changes |
 | Cached table widths | 2026-10-03 | `8df5ccb` | Cached; see `performance/TABLE_WIDTHS.md` | Width sampling changes |
 | Slicer discovery | 2026-10-31 | `43ee4c3` | GROUPING SETS scan; see `performance/SLICER_DISCOVERY.md` | The slicer picker's queries change |
+| Frame time and input-to-screen latency (scrolling) | 2026-11-21 | `bd31a2a` | A frame costs ~0.5 ms to build; the latency is present queueing. Wheel input takes 29 ms to reach the screen, 6.5 ms with `PRESENT_OPTIONS_IMMEDIATELY` | The present path, render target or message loop changes, or a view gets much heavier to paint |
 
 ---
 
@@ -84,6 +85,34 @@ Entry template:
 **Recommendation:** What to do (or "no action needed").
 **Re-check when:** Conditions that would make this worth revisiting.
 -->
+
+### 2026-11-21 — Frame time and input-to-screen latency while scrolling
+**Commit:** `bd31a2a` · **Build:** release (`perf` profile = release, built into `target/perf`) · **Machine:** i7-13700K / 64 GB / Windows 11 Pro 22631 / RTX 3090 (driver 32.0.16.1088), one 3840×1600 display at **84 Hz** (11.9 ms per refresh)
+**Question:** The idle-CPU note found hardware `EndDraw` taking ~10.7 ms per paint under continuous painting. Is the UI thread blocked on present, how long does input take to reach the screen, and do other present paths do better?
+**Method:** `benches/frame_latency.ps1` drives `benches/frame_probe`. It starts the app (`--rows 1000000 --ephemeral --no-restore`) and settles 6 s. The probe then posts input to the window at a fixed rate for 5 s and records each post's QPC time. With `DD_FRAME_TRACE` the app draws its frame number as an 18-cell marker in the client corner and logs QPC times for each frame and each dispatched input. The probe reads the marker off the screen with Desktop Duplication, whose `LastPresentTime` is when DWM put the frame on the desktop, not the moment light leaves the panel. Every input is matched 1:1 to the first frame that drew it (600/600 or 150/150 in every run, 0 bad markers). Scenarios: wheel at 120 Hz (a fast spin or a touchpad) in a 1200×800 window and in a 3600×1400 window, and Down arrow at 30 Hz (a held key). All variants are env switches in `performance/frame-experiments.patch`. Values are the median of 3 runs (range of the run medians). Mcycles/s is the whole process during the 5 s of input.
+
+| Variant | Wheel 120 Hz: to screen p50 / p95 (ms) | fps drawn / shown | Mcycles/s | Key 30 Hz: to screen p50 / p95 (ms) | vs. baseline |
+|---|---:|---:|---:|---:|---|
+| Baseline: HWND target, `PRESENT_OPTIONS_NONE` | **29.1** (29.0–29.1) / 34.4 | 85 / 85 | 152–191 | 3.8–5.0 / 4.4–12.6 | — |
+| A: `PRESENT_OPTIONS_IMMEDIATELY` | **6.5** (6.4–6.6) / 11.8 | 121 / 85 | 211–227 | 5.2 (4.2–5.9) / 12.2 | wheel −78%; key same |
+| B: flip swap chain, `Present(1)` | 53.5 (52.7–56.8) / 59.2 | 85 / 84 | 344–398 | 1.8 (1.7–8.2) / 13.3 | wheel +84% |
+| C: flip, `Present(0)` | 52.9 (52.8–53.0) / 58.4 | 85 / 84 | 347–400 | 2.3 / 4.9 | wheel +82% |
+| D: flip, waitable (latency 1) waited at paint start | 29.3 (29.3–29.3) / 34.7 | 85 / 85 | 208–212 | 1.7 (1.6–3.4) / 2.2 | wheel same; key −60% |
+| **E: flip, waitable waited in the message loop** | **18.1** (18.1–18.1) / 23.5 | 85 / 84 | 250–254 | **1.8** (1.8–1.8) / **2.3** | wheel −38%; key −60% p50, −80% p95 |
+| E0: as E, `Present(0)` | 17.9 (17.9–18.0) / 23.4 | 85 / 85 | 218–224 | 1.9 (1.9–4.2) / 5.0 | as E |
+
+Large window (3600×1400), wheel 120 Hz, to screen p50: baseline 29.1, A 6.6 (6.4–6.9), B 52.9, C 53.1, D 29.4, E 18.2, E0 18.1. Per-frame CPU at either size: about 0.2 ms to record the paint plus 0.15–0.3 ms of `EndDraw` when it doesn't block. Idle (`benches/idle_cpu.ps1 -Only table`, same exe): baseline 2.9, E 2.6 and A 3.3 Mcycles/s, all within run-to-run spread, with the same 64/s NVIDIA thread and no paints.
+
+**Findings:**
+- **Building a frame is cheap:** ~0.5 ms of CPU even at 3600×1400. The latency comes from queueing, not drawing.
+- **Baseline: under continuous input the UI thread spends ~97% of each frame blocked in `EndDraw`** (11.5 ms of the 11.9 ms refresh), because present waits for vblank. Input posted during that wait isn't dispatched until the wait ends: 17.5 ms from post to submitted frame, and 29 ms (≈2.4 refreshes) to the screen. Isolated key presses don't hit this: 4–5 ms p50, though p95 reaches 12.6 ms when a press just misses a composition.
+- **A (`IMMEDIATELY`) is a one-line change that removes the wait.** Continuous wheel input reaches the screen in 6.5 ms, about half a refresh, which is the floor for DWM-composed output. Because nothing paces it, it draws a frame for every input batch: 121 fps drawn for 85 shown, so ~30% of frames are wasted, at +15–40% CPU while scrolling. Its frame rate follows the input rate, so a 500–1000 Hz input source (touchpad, drag) needs a cap. No tearing appeared (0 bad markers), but the 6 px marker can only catch tearing along its own strip.
+- **Flip model without a correct wait is worse:** B and C queue three frames (53 ms). D only moves the block from `EndDraw` to the start of `render()`, which runs after input is dispatched, so it matches the baseline.
+- **E (wait in `MsgWaitForMultipleObjectsEx`, paint only when signaled) gives the lowest latency for isolated input:** 1.8 ms p50 and 2.3 ms p95, with no wasted frames. Under continuous input it is still one refresh behind (18 ms), since the frame starts at the vblank that frees the buffer and shows at the next. It also costs the most to build: a D3D11 device and DXGI swap chain, resize and device-lost handling, and a message-loop change. Process CPU while scrolling is ~+40% over the baseline at the same 85 fps.
+- **The `--benchmark-ui` metric `scroll_frame_interval` doesn't measure present:** its `Step::Frame` polls with 5 ms timers. Use `benches/frame_latency.ps1` for this question.
+
+**Recommendation:** Switch the HWND target to `D2D1_PRESENT_OPTIONS_IMMEDIATELY` and cap painting at about one frame per 4 ms (To Do 6). This is the biggest win for scrolling (−78%) for one line plus a small guard, and it changes nothing else measured. A flip-model swap chain with the waitable in the message loop is the better design for clicks and keys, but it's a much bigger change and slower than A for continuous scrolling. Keep it as an option (To Do 7).
+**Re-check when:** the present path, render target or message loop changes, or a view starts taking >2 ms to paint. Re-run at 60 Hz and on an Intel or AMD GPU, since the numbers depend on the refresh period and on DWM/driver behavior. The probe posts window messages, so real HID input adds its own fixed latency on top, the same for every variant.
 
 ### 2026-10-31 — Idle CPU and wakeups (Windows)
 **Commit:** `c00a9fd` · **Build:** release · **Machine:** i7-13700K (24 logical) / 64 GB / Windows 11 Pro 22631 / RTX 3090, driver 32.0.16.1088
@@ -134,4 +163,6 @@ Keep completed items as history; don't delete them.
 - [ ] Kill the editor's blink timer while the host window is minimized (`IsIconic`) and restart it on restore. Expected impact: −3.5 switches/s minimized with the SQL editor focused. — see note 2026-10-31 Idle CPU
 - [ ] Optional, bigger: make a blink repaint only the editor, e.g. keep the rest of the frame in a cached bitmap, or skip widgets outside the update rect. Expected impact: ~9 → ≤1 Mcycles per blink, and cheaper paints for anything else that invalidates a small area. Clipping alone does not help (experiment E). — see note 2026-10-31 Idle CPU
 - [ ] Pause the 1 s source monitor while the window is inactive and run one check on activation, or watch the file with `FindFirstChangeNotificationW`. Expected impact: −1.6 to −2.0 Mcycles/s and −5 switches/s for a background window with a file or the database tree open. — see note 2026-10-31 Idle CPU
-- [ ] Lead for a "Frame/render time" session: hardware `EndDraw` takes ~10.7 ms per paint when painting continuously (vs 2–3 ms of drawing). Measure input-to-frame latency while scrolling and typing with `D2D1_PRESENT_OPTIONS_IMMEDIATELY`, or with a flip-model swap chain and a frame-latency waitable object. — see note 2026-10-31 Idle CPU
+- [x] Lead for a "Frame/render time" session: hardware `EndDraw` takes ~10.7 ms per paint when painting continuously (vs 2–3 ms of drawing). Measure input-to-frame latency while scrolling and typing with `D2D1_PRESENT_OPTIONS_IMMEDIATELY`, or with a flip-model swap chain and a frame-latency waitable object. — see note 2026-10-31 Idle CPU (investigated 2026-11-21; see To Do 6–7)
+- [ ] Create the HWND render target with `D2D1_PRESENT_OPTIONS_IMMEDIATELY` (`create_target` in `src/ui/platform/window.rs`), and don't paint again within ~4 ms of the last paint: leave the window dirty and schedule it at the 4 ms mark. Expected impact: continuous wheel scrolling 29 → ~6.5 ms input-to-screen (p95 34 → 12 ms) at 84 Hz. Isolated input and idle CPU stay the same. Wheel/drag frames are capped at ~250/s, versus 85 today and an uncapped 121+ (≈ +15–40% CPU while scrolling). Re-run `benches/frame_latency.ps1` with the patch to confirm. — see note 2026-11-21 Frame time
+- [ ] Optional, bigger: replace the HWND target with a flip-model swap chain (D3D11 device, `ID2D1DeviceContext`, `FLIP_DISCARD`, maximum frame latency 1). Wait on its frame-latency waitable in `MsgWaitForMultipleObjectsEx`, and paint only once it signals. Expected impact: clicks and key presses 4–5 → 1.8 ms to screen (p95 12.6 → 2.3 ms) with no wasted frames. Continuous scrolling only improves to 18 ms (A gives 6.5). Costs: swap-chain resize and device-lost handling, and ~+40% CPU while scrolling. Only worth doing together with late-latched painting (start the frame ~3 ms before vblank) to fix the continuous case. The prototype is `DD_FLIP=loop` in `performance/frame-experiments.patch`. — see note 2026-11-21 Frame time

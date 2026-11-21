@@ -1,0 +1,513 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 3574f3f..1c3eca4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -74,6 +74,10 @@ features = [
+     "Win32_Graphics_Direct2D_Common",
+     "Win32_Graphics_DirectWrite",
+     "Win32_Graphics_Dxgi_Common",
++    "Win32_Graphics_Dxgi",
++    "Win32_Graphics_Direct3D",
++    "Win32_Graphics_Direct3D11",
++    "Win32_System_Performance",
+     "Win32_Graphics_Gdi",
+     "Win32_Graphics_Imaging",
+     "Win32_System_Com",
+@@ -101,3 +105,8 @@ codegen-units = 1
+ lto = "fat"
+ strip = true
+ debug = false
++
++# Scratch (frame experiments): a release build beside target/release.
++[profile.perf]
++inherits = "release"
++
+diff --git a/src/ui/platform/mod.rs b/src/ui/platform/mod.rs
+index ef4f7ea..27883c8 100644
+--- a/src/ui/platform/mod.rs
++++ b/src/ui/platform/mod.rs
+@@ -1,6 +1,7 @@
+ //! A small UI platform on Win32, Direct2D, and DirectWrite.
+ 
+ pub mod app;
++pub mod frame_experiment;
+ pub mod geometry;
+ pub mod gfx;
+ pub mod headless;
+diff --git a/src/ui/platform/window.rs b/src/ui/platform/window.rs
+index 11dfa7a..322aa6d 100644
+--- a/src/ui/platform/window.rs
++++ b/src/ui/platform/window.rs
+@@ -37,6 +37,7 @@ struct Tooltip {
+ pub struct WindowState<H> {
+     pub(crate) hwnd: Option<HWND>,
+     target: Option<ID2D1HwndRenderTarget>,
++    flip: Option<super::frame_experiment::Flip>,
+     brushes: Brushes,
+     pub(crate) hits: Vec<HitRegion<H>>,
+     /// Client size in DIPs, for headless windows.
+@@ -187,6 +188,7 @@ pub(crate) fn new_slot<V: View>(
+         state: RefCell::new(WindowState {
+             hwnd,
+             target: None,
++            flip: None,
+             brushes: Brushes::default(),
+             hits: Vec::new(),
+             size,
+@@ -264,6 +266,11 @@ fn render<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>) {
+             }
+             return;
+         }
++        if let Some(mode) = super::frame_experiment::flip_mode() {
++            drop(state);
++            render_flip(runtime, slot, hwnd, &mode);
++            return;
++        }
+         if state.target.is_none() {
+             state.target = create_target(hwnd);
+             state.brushes.clear();
+@@ -275,12 +282,23 @@ fn render<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>) {
+         (hwnd, target, brushes, state.scale)
+     };
+     let dpi = scale * 96.0;
++    let wait = super::frame_experiment::qpc();
++    let frame = super::frame_experiment::begin_frame();
+     unsafe {
+         target.SetDpi(dpi, dpi);
+         target.BeginDraw();
+     }
++    let begin = super::frame_experiment::qpc();
+     let painted = paint_into(runtime, slot, &target, &mut brushes);
++    if let Some((number, _)) = frame {
++        super::frame_experiment::draw_marker(&target, number, scale);
++    }
++    let drawn = super::frame_experiment::qpc();
+     let result = unsafe { target.EndDraw(None, None) };
++    let ended = super::frame_experiment::qpc();
++    if let Some((number, inputs)) = frame {
++        super::frame_experiment::frame(number, inputs, [wait, begin, drawn, ended, ended]);
++    }
+     let mut state = slot.state.borrow_mut();
+     state.brushes = brushes;
+     if result.is_err() {
+@@ -297,6 +315,74 @@ fn render<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>) {
+     }
+ }
+ 
++fn render_flip<V: View>(runtime: &Runtime<V>, slot: &WindowSlot<V>, hwnd: HWND, mode: &str) {
++    use super::frame_experiment as fx;
++    let (mut flip, mut brushes, scale) = {
++        let mut state = slot.state.borrow_mut();
++        if state.flip.is_none() {
++            match fx::Flip::new(hwnd, &d2d_factory(), mode) {
++                Ok(flip) => state.flip = Some(flip),
++                Err(error) => {
++                    eprintln!("flip swap chain: {error}");
++                    return;
++                }
++            }
++            state.brushes.clear();
++        }
++        if fx::looping() && !fx::take_ready() {
++            // The swap chain still holds a frame; the message loop paints
++            // once its waitable signals.
++            slot.dirty.set(true);
++            unsafe {
++                let _ = ValidateRect(Some(hwnd), None);
++            }
++            return;
++        }
++        (state.flip.take().unwrap(), std::mem::take(&mut state.brushes), state.scale)
++    };
++    let dpi = scale * 96.0;
++    let wait = fx::qpc();
++    flip.wait();
++    let frame = fx::begin_frame();
++    let begin = fx::qpc();
++    let ok = flip.prepare(dpi).is_ok();
++    let target: &ID2D1RenderTarget = &flip.context;
++    let mut painted = false;
++    let (mut drawn, mut ended) = (begin, begin);
++    let mut result = Ok(());
++    if ok {
++        unsafe {
++            target.SetDpi(dpi, dpi);
++            target.BeginDraw();
++        }
++        painted = paint_into(runtime, slot, target, &mut brushes);
++        if let Some((number, _)) = frame {
++            fx::draw_marker(target, number, scale);
++        }
++        drawn = fx::qpc();
++        result = unsafe { target.EndDraw(None, None) };
++        ended = fx::qpc();
++        if result.is_ok() {
++            result = flip.present();
++        }
++    }
++    let presented = fx::qpc();
++    if let Some((number, inputs)) = frame {
++        fx::frame(number, inputs, [wait, begin, drawn, ended, presented]);
++    }
++    let mut state = slot.state.borrow_mut();
++    state.brushes = brushes;
++    state.flip = Some(flip);
++    if let Err(error) = result {
++        eprintln!("flip present: {error}");
++    }
++    if painted && !slot.dirty.get() {
++        unsafe {
++            let _ = ValidateRect(Some(hwnd), None);
++        }
++    }
++}
++
+ thread_local! {
+     // Never dropped, like the text system's factory.
+     static D2D: std::mem::ManuallyDrop<RefCell<Option<ID2D1Factory>>> =
+@@ -328,7 +414,7 @@ fn create_target(hwnd: HWND) -> Option<ID2D1HwndRenderTarget> {
+             width: (client.right - client.left).max(1) as u32,
+             height: (client.bottom - client.top).max(1) as u32,
+         },
+-        presentOptions: D2D1_PRESENT_OPTIONS_NONE,
++        presentOptions: super::frame_experiment::present_options(),
+     };
+     unsafe {
+         d2d_factory()
+@@ -624,8 +710,11 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
+                     .min(u32::MAX as u128 - 1) as u32
+             })
+             .unwrap_or(windows::Win32::System::Threading::INFINITE);
+-        unsafe {
+-            MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
++        let frame_wait = super::frame_experiment::loop_handle();
++        let handles: Vec<HANDLE> = frame_wait.into_iter().collect();
++        let woke = unsafe { MsgWaitForMultipleObjectsEx(Some(&handles), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
++        if frame_wait.is_some() && woke == WAIT_OBJECT_0 {
++            super::frame_experiment::set_ready();
+         }
+         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+             if message.message == WM_QUIT {
+@@ -633,6 +722,7 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
+                 for id in ids {
+                     close_window(runtime, id);
+                 }
++                super::frame_experiment::flush();
+                 return;
+             }
+             unsafe {
+@@ -643,6 +733,7 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
+         drain(runtime);
+         show_due_tooltips(runtime);
+         if runtime.windows.borrow().is_empty() {
++            super::frame_experiment::flush();
+             return;
+         }
+     }
+@@ -653,7 +744,7 @@ fn drain<V: View>(runtime: &Runtime<V>) {
+     // Frames `render` skipped while their view was busy.
+     let windows = runtime.windows.borrow().clone();
+     for slot in windows {
+-        if slot.dirty.get() && slot.view.try_borrow_mut().is_ok() {
++        if slot.dirty.get() && slot.view.try_borrow_mut().is_ok() && !super::frame_experiment::blocked() {
+             slot.invalidate();
+         }
+     }
+@@ -872,6 +963,9 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
+                     });
+                 }
+             }
++            if let Some(flip) = &mut slot.state.borrow_mut().flip {
++                flip.resize(width, height);
++            }
+             slot.invalidate();
+             dispatch(runtime, &slot, Event::Moved);
+             LRESULT(0)
+@@ -912,6 +1006,7 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
+             default()
+         }
+         WM_KEYDOWN | WM_SYSKEYDOWN => {
++            super::frame_experiment::input();
+             let vk = (wparam.0 & 0xffff) as u16;
+             let scan = ((lparam.0 >> 16) & 0xff) as u32;
+             let extended = (lparam.0 >> 24) & 1 == 1;
+@@ -1107,6 +1202,7 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
+             LRESULT(0)
+         }
+         WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
++            super::frame_experiment::input();
+             let mut screen = POINT {
+                 x: (lparam.0 & 0xffff) as i16 as i32,
+                 y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+diff --git a/src/ui/platform/frame_experiment.rs b/src/ui/platform/frame_experiment.rs
+new file mode 100644
+index 0000000..85f59b2
+--- /dev/null
++++ b/src/ui/platform/frame_experiment.rs
+@@ -0,0 +1,266 @@
++//! Scratch frame-timing switches for the 2026-11 frame/render session in
++//! PERFORMANCE.md. Not for merging; kept as performance/frame-experiments.patch.
++//!
++//! - `DD_FRAME_TRACE=<path>`: per-frame QPC timestamps and input counts, written
++//!   on exit, plus a frame-number marker drawn in the client's top-left corner
++//!   for `benches/frame_probe` to read off the screen.
++//! - `DD_PRESENT=immediately`: `D2D1_PRESENT_OPTIONS_IMMEDIATELY`.
++//! - `DD_FLIP=1|0|wait|loop|loop0`: a flip-model swap chain instead of the HWND
++//!   target. `0` presents with sync interval 0. `wait` blocks on a
++//!   frame-latency waitable (max latency 1) at the start of each paint;
++//!   `loop` waits on it in the message loop instead and paints only once it
++//!   signals (`loop0`: the same with sync interval 0).
++//! - The `perf` Cargo profile builds into target/perf, beside a running
++//!   target/release exe.
++
++use std::cell::RefCell;
++use std::io::Write;
++use std::mem::ManuallyDrop;
++
++use windows::Win32::Foundation::{HANDLE, HMODULE, HWND};
++use windows::Win32::Graphics::Direct2D::Common::*;
++use windows::Win32::Graphics::Direct2D::*;
++use windows::Win32::Graphics::Direct3D::*;
++use windows::Win32::Graphics::Direct3D11::*;
++use windows::Win32::Graphics::Dxgi::Common::*;
++use windows::Win32::Graphics::Dxgi::*;
++use windows::Win32::System::Performance::QueryPerformanceCounter;
++use windows::Win32::System::Threading::WaitForSingleObjectEx;
++use windows::core::Interface;
++
++pub(crate) fn qpc() -> i64 {
++    let mut value = 0;
++    unsafe {
++        let _ = QueryPerformanceCounter(&mut value);
++    }
++    value
++}
++
++struct Trace {
++    path: String,
++    lines: Vec<String>,
++    frame: u32,
++    inputs: u32,
++}
++
++thread_local! {
++    static TRACE: RefCell<Option<Trace>> = RefCell::new(std::env::var("DD_FRAME_TRACE").ok().map(|path| Trace {
++        path,
++        lines: Vec::with_capacity(100_000),
++        frame: 0,
++        inputs: 0,
++    }));
++}
++
++pub(crate) fn input() {
++    TRACE.with(|t| {
++        if let Some(trace) = t.borrow_mut().as_mut() {
++            trace.inputs += 1;
++            let line = format!("I,{},{}", trace.inputs, qpc());
++            trace.lines.push(line);
++        }
++    });
++}
++
++/// The next frame's number and the inputs dispatched before it.
++pub(crate) fn begin_frame() -> Option<(u32, u32)> {
++    TRACE.with(|t| {
++        t.borrow_mut().as_mut().map(|trace| {
++            trace.frame += 1;
++            (trace.frame, trace.inputs)
++        })
++    })
++}
++
++pub(crate) fn frame(number: u32, inputs: u32, times: [i64; 5]) {
++    TRACE.with(|t| {
++        if let Some(trace) = t.borrow_mut().as_mut() {
++            let [wait, begin, painted, ended, presented] = times;
++            trace.lines.push(format!("F,{number},{inputs},{wait},{begin},{painted},{ended},{presented}"));
++        }
++    });
++}
++
++pub(crate) fn flush() {
++    TRACE.with(|t| {
++        if let Some(trace) = t.borrow_mut().as_mut()
++            && let Ok(mut file) = std::fs::File::create(&trace.path)
++        {
++            let _ = writeln!(file, "{}", trace.lines.join("\n"));
++            trace.lines.clear();
++        }
++    });
++}
++
++const CELL: f32 = 6.0;
++
++/// 18 cells, `CELL` physical pixels square: a white guard, 16 bits of the
++/// frame number (most significant first), a black guard.
++pub(crate) fn draw_marker(target: &ID2D1RenderTarget, number: u32, scale: f32) {
++    let color = |v: f32| D2D1_COLOR_F { r: v, g: v, b: v, a: 1.0 };
++    unsafe {
++        let (Ok(white), Ok(black)) = (target.CreateSolidColorBrush(&color(1.0), None), target.CreateSolidColorBrush(&color(0.0), None)) else {
++            return;
++        };
++        target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
++        let size = CELL / scale;
++        for i in 0..18u32 {
++            let on = match i {
++                0 => true,
++                17 => false,
++                _ => (number >> (16 - i)) & 1 == 1,
++            };
++            let x = i as f32 * size;
++            let r = D2D_RECT_F { left: x, top: 0.0, right: x + size, bottom: size };
++            target.FillRectangle(&r, if on { &white } else { &black });
++        }
++        target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
++    }
++}
++
++pub(crate) fn present_options() -> D2D1_PRESENT_OPTIONS {
++    match std::env::var("DD_PRESENT").as_deref() {
++        Ok("immediately") => D2D1_PRESENT_OPTIONS_IMMEDIATELY,
++        _ => D2D1_PRESENT_OPTIONS_NONE,
++    }
++}
++
++pub(crate) fn flip_mode() -> Option<String> {
++    std::env::var("DD_FLIP").ok()
++}
++
++thread_local! {
++    // DD_FLIP=loop: the frame-latency waitable, waited on in the message loop.
++    static LOOP_WAIT: std::cell::Cell<Option<HANDLE>> = const { std::cell::Cell::new(None) };
++    static READY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
++}
++
++/// The handle the message loop should also wait on, if a frame is waiting
++/// for the swap chain.
++pub(crate) fn loop_handle() -> Option<HANDLE> {
++    if READY.get() { None } else { LOOP_WAIT.get() }
++}
++
++pub(crate) fn set_ready() {
++    READY.set(true);
++}
++
++pub(crate) fn looping() -> bool {
++    LOOP_WAIT.get().is_some()
++}
++
++/// Whether painting must wait for the swap chain.
++pub(crate) fn blocked() -> bool {
++    looping() && !READY.get()
++}
++
++pub(crate) fn take_ready() -> bool {
++    READY.replace(false)
++}
++
++pub(crate) struct Flip {
++    pub context: ID2D1DeviceContext,
++    swap: IDXGISwapChain1,
++    blocking: bool,
++    waitable: Option<HANDLE>,
++    bitmap: Option<ID2D1Bitmap1>,
++    interval: u32,
++    flags: u32,
++}
++
++impl Flip {
++    pub(crate) fn new(hwnd: HWND, factory: &ID2D1Factory, mode: &str) -> windows::core::Result<Self> {
++        let blocking = mode == "wait";
++        let waitable = blocking || mode.starts_with("loop");
++        let interval = if mode.ends_with('0') { 0 } else { 1 };
++        unsafe {
++            let mut device = None;
++            D3D11CreateDevice(
++                None,
++                D3D_DRIVER_TYPE_HARDWARE,
++                HMODULE::default(),
++                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
++                Some(&[D3D_FEATURE_LEVEL_11_0]),
++                D3D11_SDK_VERSION,
++                Some(&mut device),
++                None,
++                None,
++            )?;
++            let device = device.unwrap();
++            let dxgi_device: IDXGIDevice = device.cast()?;
++            let factory1: ID2D1Factory1 = factory.cast()?;
++            let d2d_device = factory1.CreateDevice(&dxgi_device)?;
++            let context = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
++            let adapter = dxgi_device.GetAdapter()?;
++            let dxgi_factory: IDXGIFactory2 = adapter.GetParent()?;
++            let flags = if waitable { DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 } else { 0 };
++            let desc = DXGI_SWAP_CHAIN_DESC1 {
++                Width: 0,
++                Height: 0,
++                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
++                Stereo: false.into(),
++                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
++                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
++                BufferCount: 2,
++                Scaling: DXGI_SCALING_NONE,
++                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
++                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
++                Flags: flags,
++            };
++            let swap = dxgi_factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
++            let waitable = if waitable {
++                let swap2: IDXGISwapChain2 = swap.cast()?;
++                swap2.SetMaximumFrameLatency(1)?;
++                let handle = swap2.GetFrameLatencyWaitableObject();
++                if !blocking {
++                    // The object starts signaled; the first frame waits too.
++                    WaitForSingleObjectEx(handle, 1000, true);
++                    LOOP_WAIT.set(Some(handle));
++                }
++                Some(handle)
++            } else {
++                None
++            };
++            Ok(Self { context, swap, blocking, waitable, bitmap: None, interval, flags })
++        }
++    }
++
++    pub(crate) fn wait(&self) {
++        if let Some(handle) = self.waitable.filter(|_| self.blocking) {
++            unsafe {
++                WaitForSingleObjectEx(handle, 1000, true);
++            }
++        }
++    }
++
++    pub(crate) fn prepare(&mut self, dpi: f32) -> windows::core::Result<()> {
++        unsafe {
++            if self.bitmap.is_none() {
++                let surface: IDXGISurface = self.swap.GetBuffer(0)?;
++                let props = D2D1_BITMAP_PROPERTIES1 {
++                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
++                    dpiX: dpi,
++                    dpiY: dpi,
++                    bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
++                    colorContext: ManuallyDrop::new(None),
++                };
++                let bitmap = self.context.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
++                self.context.SetTarget(&bitmap);
++                self.bitmap = Some(bitmap);
++            }
++        }
++        Ok(())
++    }
++
++    pub(crate) fn present(&self) -> windows::core::Result<()> {
++        unsafe { self.swap.Present(self.interval, DXGI_PRESENT(0)).ok() }
++    }
++
++    pub(crate) fn resize(&mut self, width: u32, height: u32) {
++        unsafe {
++            self.context.SetTarget(None);
++            self.bitmap = None;
++            let _ = self.swap.ResizeBuffers(0, width.max(1), height.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(self.flags as i32));
++        }
++    }
++}
