@@ -543,11 +543,46 @@ fn check(arguments: &Arguments) -> Result<i32, String> {
         options.width = width.parse().map_err(|_| "--size needs WxH, such as 1400x900")?;
         options.height = height.parse().map_err(|_| "--size needs WxH, such as 1400x900")?;
     }
+    remove_stale_check_storage();
     crate::ui::platform::window::run::<crate::DataFrameView>(move |runtime| {
         crate::DataFrameView::open_another(runtime, options);
     });
+    // Edge's processes hold the folder's files for about a second after the
+    // window closes; waiting for them would slow every check, so a folder
+    // this can't delete yet goes with the next check's sweep.
+    let _ = std::fs::remove_dir_all(crate::ui::dataframe_view::dashboard::check_storage());
     crate::infrastructure::source_database::SourceDatabase::checkpoint_profiles()?;
     Ok(crate::ui::dataframe_view::dashboard::CHECK_EXIT.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Deletes the WebView2 folders of earlier checks whose process has ended,
+/// leaving those of checks still running beside this one.
+fn remove_stale_check_storage() {
+    let prefix = crate::ui::dataframe_view::dashboard::CHECK_STORAGE_PREFIX;
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = name.to_string_lossy().strip_prefix(prefix).and_then(|pid| pid.parse::<u32>().ok());
+        if let Some(pid) = pid
+            && !process_running(pid)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+fn process_running(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return false;
+    };
+    let mut code = 0u32;
+    let running = unsafe { GetExitCodeProcess(process, &mut code) }.is_ok() && code == STILL_ACTIVE.0 as u32;
+    let _ = unsafe { CloseHandle(process) };
+    running
 }
 
 #[cfg(test)]
@@ -567,6 +602,12 @@ mod tests {
         assert_eq!(super::table(&result), "name     total\n-------  -----\na\\tb\\nc    1.5\nNULL        12");
         assert_eq!(super::shorten(&json!("x".repeat(200)), 5), json!("xxxxx… (200 characters)"));
         assert_eq!(super::shorten(&json!(7), 5), json!(7));
+    }
+
+    #[test]
+    fn stale_check_folders_are_those_of_ended_processes() {
+        assert!(super::process_running(std::process::id()));
+        assert!(!super::process_running(u32::MAX - 3));
     }
 
     #[test]

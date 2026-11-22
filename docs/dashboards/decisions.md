@@ -457,6 +457,23 @@ steps on:
 
 ---
 
+## 29. What the second agent test changed
+
+*From the budget dashboard session*, where an agent built an hours tracker
+with only the exe to go on.
+
+- **A check used the user's saved page state.** It ran in the profile's
+  WebView2 folder, so it read the slicer picks the user had saved, and its
+  `--run` clicks saved over them. Each check now gets an empty folder of its
+  own in the temp folder, named for its process. It starts as a first-time
+  viewer would and repeats the same way every time. Edge holds the folder for
+  about a second after the window closes, so instead of waiting, each check
+  deletes the folders of checks whose process has ended.
+
+**Your notes:**
+
+---
+
 ## Not in this first version
 
 - **Remote sources and caching** (network drives, URLs, freshness checks).

@@ -279,6 +279,16 @@ struct CheckProgress {
     resized: bool,
 }
 
+/// The WebView2 folder of this process's `dashboard check`. A check gets an
+/// empty one of its own, so it starts as a first-time viewer would, repeats
+/// the same way every time, and its `--run` clicks never change what the
+/// user's DataDiver saved for the page.
+pub(crate) fn check_storage() -> PathBuf {
+    std::env::temp_dir().join(format!("{CHECK_STORAGE_PREFIX}{}", std::process::id()))
+}
+
+pub(crate) const CHECK_STORAGE_PREFIX: &str = "datadiver-check-";
+
 /// Runs `script` in the page and reports its value as JSON, or the error it
 /// threw: WebView2 itself would give `null` for both.
 fn reported_script(script: &str) -> String {
@@ -488,7 +498,7 @@ impl DataFrameView {
         let document = dashboard.document.clone();
         let background = colors::BACKGROUND;
         let options = WebViewOptions {
-            user_data: self.repository.paths.data.join("webview2"),
+            user_data: if self.dashboard_checking { check_storage() } else { self.repository.paths.data.join("webview2") },
             url: dashboard.page_url(),
             script: BRIDGE.into(),
             background: ((background.r * 255.0) as u32) << 16 | ((background.g * 255.0) as u32) << 8 | (background.b * 255.0) as u32,
