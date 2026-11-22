@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bce224b3beca247636041a974e4c4092f74c221ba83945b16076209581f9b0b7 # shrinks to initial = "\"q\"select a, b\ne\u{301}\r\n日本    four\n    four\n🙂    four\n", ops = [Select([(12045685323407586748, 14654084984081543260)]), Cut, DeleteLines]
+cc d8da38d2f9ac72e22f46326f4f8d4ede55b459dd9cb3d29505562547af18885a # shrinks to initial = "select a, b\n", ops = [Select([(3067481179466528054, 130766270980195729), (12368097448227371806, 10161078224750531027)]), Insert("日本    four\n-- comment\n"), Select([(8442691905395055613, 15583314729353414255), (142971, 0)]), Move(7, false), DeleteLines, Cut]
+cc c8a54aaa1988f1bca08a09874a3804a388dc02067b02f17a3221927f10468b67 # shrinks to initial = "-- comment\n\tindented\n", ops = [Insert("\r\n"), SelectLine, Select([(15535389857514129261, 5895706234689982368), (8637811768624864211, 1447442231068928097)]), Type('日'), Paste("\r\n", true)]

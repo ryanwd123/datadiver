@@ -37,6 +37,23 @@ the relevant code before reading broadly, since several source files run past
 - Do not claim something works unless it has been tested when testing is
   reasonably possible.
 
+## Stress tests
+
+Fuzzers, a differential test of the DuckDB and Polars engines, and a chaos
+monkey that drives the whole UI live in `src/stress` and
+`src/ui/dataframe_view/chaos_tests.rs`. They are `#[ignore]`d, so
+`cargo test` skips them. Run them before a release, or after a change to
+the engines, the search language, saved files, or input handling:
+
+```powershell
+.\scripts\stress.ps1              # about 15 minutes
+.\scripts\stress.ps1 -Minutes 60  # a longer chaos run
+```
+
+A chaos failure prints its seed, the shortest steps that still fail, and
+the command that replays it. Fix the bug, add a regular test for it, and
+commit any new file under `proptest-regressions/`.
+
 ## Seeing the UI
 
 The binary can open any UI surface and screenshot itself, so a change to the
@@ -65,7 +82,7 @@ cargo run --features snapshots -- --rows 60 --show info `
 Releases are tag-driven. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds the wheel with maturin using the `dist` profile, creates the GitHub release with the wheel and a zipped exe, and publishes to PyPI through trusted publishing. Only release when I ask.
 
 1. Make sure `main` is clean, pushed, and the latest CI run passed (`gh run list --limit 1`).
-2. Run the full test suite, both `cargo test` and `cargo test --features snapshots`.
+2. Run the full test suite, both `cargo test` and `cargo test --features snapshots`, then the stress tests with `.\scripts\stress.ps1`.
 3. Run `.\scripts\release.ps1 X.Y.Z`. It bumps the version in `Cargo.toml`, runs `cargo test`, commits "Release vX.Y.Z", tags, and pushes `main` and the tag to the remote `main` tracks, which must be `github`. Use semver: patch for fixes, minor for new features. Ask me if the version isn't clear.
 4. Follow the build with `gh run watch` (about 30 minutes, mostly compiling DuckDB).
 5. Check that the release has both assets (`gh release view vX.Y.Z`) and that the wheel is on PyPI. Use `https://pypi.org/simple/datadiver/`, since the JSON API can return a cached 404 for a while.

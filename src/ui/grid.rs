@@ -376,6 +376,35 @@ pub struct GridView {
 }
 
 impl GridView {
+    /// What must hold between any two inputs, for the chaos tests.
+    #[cfg(test)]
+    pub(crate) fn check_invariants(&self) -> Result<(), String> {
+        let (rows, columns) = (self.result.row_count(), self.result.column_count());
+        if let Some(selection) = self.selection {
+            for cell in [selection.anchor, selection.active] {
+                if cell.row >= rows || cell.column >= columns {
+                    return Err(format!("selected cell {cell:?} is outside the {rows} × {columns} result"));
+                }
+            }
+        }
+        if self.widths.len() != columns {
+            return Err(format!("{} widths for {columns} columns", self.widths.len()));
+        }
+        if !self.formats.is_empty() && self.formats.len() != columns {
+            return Err(format!("{} numeric formats for {columns} columns", self.formats.len()));
+        }
+        if self.frozen_count > columns {
+            return Err(format!("{} frozen columns of {columns}", self.frozen_count));
+        }
+        if !self.scroll_x.is_finite() || self.scroll_x < 0.0 {
+            return Err(format!("horizontal scroll is {}", self.scroll_x));
+        }
+        if let Some(width) = self.widths.iter().find(|width| !width.is_finite() || **width < 0.0) {
+            return Err(format!("a column is {width} wide"));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn numeric_format(&self, name: &str) -> Option<NumericFormat> {
         self.result

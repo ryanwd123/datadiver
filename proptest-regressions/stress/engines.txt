@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5c777638e9520573cff3ede1f3c29dfb94f4127d12df07d44a127298fa3a4bc6 # shrinks to rows = [Row { name: None, amount: Some(9223372036854775807), price: None, day: None, flag: None }, Row { name: None, amount: Some(9223372036854775807), price: None, day: None, flag: None }], queries = [Query { search: "", filters: [], value_filters: [], sort: [], hidden: [] }], group_by = "name"
+cc 9eb0cc7568428622e1b4a03631889de846dc714bcb76394f14fd5a35eed54cc9 # shrinks to rows = [Row { name: None, amount: Some(0), price: None, day: None, flag: Some(false) }], queries = [Query { search: "flag>nor", filters: [], value_filters: [], sort: [], hidden: [] }], group_by = "name"
+cc 58cd7a9484dca6ec0cf919fdb6ed14c13916504c072caad4b2afa51a99545f5f # shrinks to rows = [Row { name: None, amount: Some(-1000000000000), price: Some("-0.0"), day: None, flag: None }, Row { name: None, amount: Some(0), price: None, day: None, flag: None }], queries = [Query { search: "", filters: [ColumnFilter { column: "", values: [], condition: Some("amount between 1 and 5 or flag"), sql: true }], value_filters: [], sort: [], hidden: [] }], group_by = "name"
+cc ed773d4d3cbd06f0a52f1aba484f67536c698f7f0e496e2ee680634f6655a1cc # shrinks to rows = [Row { name: Some("0x1"), amount: Some(0), price: None, day: None, flag: None }], queries = [Query { search: "", filters: [], value_filters: [], sort: [], hidden: [] }], group_by = "name"
+cc 000d1b6e258c14551360adee63828d7de965d966ccc67da2fec390e7dbd34212 # shrinks to rows = [Row { name: None, amount: Some(0), price: Some("123456.789"), day: Some("2024-01-15"), flag: Some(false) }], queries = [Query { search: "day<\"price\"", filters: [], value_filters: [], sort: [], hidden: [] }], group_by = "name"

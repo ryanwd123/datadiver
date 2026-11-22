@@ -44,6 +44,8 @@ use crate::ui::widgets::{Fonts, WidgetId};
 
 #[cfg(test)]
 mod action_tests;
+#[cfg(test)]
+mod chaos_tests;
 mod auto_save;
 mod commands;
 mod database_tree;

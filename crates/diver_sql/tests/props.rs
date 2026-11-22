@@ -56,7 +56,11 @@ fn floor_char(text: &str, i: usize) -> usize {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+    // `DATADIVER_STRESS_CASES` raises the count for the release stress run.
+    #![proptest_config(ProptestConfig {
+        cases: std::env::var("DATADIVER_STRESS_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(512),
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn any_string(text in any::<String>()) {

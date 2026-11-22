@@ -2,6 +2,10 @@ use std::process::{Command, Stdio};
 
 /// Start `program` with `args` without waiting for it to finish.
 pub fn spawn_program(program: &str, args: &[String]) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::BLOCKED.with(std::cell::Cell::get) {
+        return Err(format!("{program} was not started: programs are blocked in this test"));
+    }
     let mut command = Command::new(program);
     command
         .args(args)
@@ -25,8 +29,13 @@ pub fn spawn_program(program: &str, args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    thread_local! {
+        /// Set by tests that press keys at random, which must not start programs.
+        pub(crate) static BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
 
     #[test]
     fn missing_programs_report_an_error() {
