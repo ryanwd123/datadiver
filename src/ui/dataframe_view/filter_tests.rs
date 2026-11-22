@@ -1155,6 +1155,12 @@ fn aggregation_columns_filter_groups_after_grouping_on_both_engines() {
         press_on_cell(&viewer, 2, 1, "-");
         viewer.settle();
         assert_eq!(filters(), [format!("{} !=100", names[1])]);
+        // A second - joins the first, as excluded values join one value filter.
+        press_on_cell(&viewer, 0, 1, "-");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} not in (100, 30)", names[1])]);
+        assert_eq!(viewer.read(|view| view.session.result_filters()[0].condition.clone()), "!=100 !=30");
+        assert_eq!(column_values(&viewer), [Some("South".into())], "{engine:?}");
         command(&viewer, CommandId::ClearFilters);
         assert!(filters().is_empty());
         assert_eq!(column_values(&viewer).len(), 4, "{engine:?}");

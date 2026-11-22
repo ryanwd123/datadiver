@@ -562,7 +562,8 @@ impl DataFrameView {
         cx.notify();
     }
 
-    /// `=` and `-` on an aggregation cell: keep or drop the groups with its value.
+    /// `=` and `-` on an aggregation cell: keep or drop the groups with its
+    /// value, adding to the column's condition rather than replacing it.
     fn filter_active_result_value(&mut self, column: usize, name: &str, exclude: bool, cx: &mut Cx<Self>) {
         let result = &self.session.result;
         let value = self
@@ -576,7 +577,11 @@ impl DataFrameView {
             Some(value) if value.contains('"') => Err("Press W to type a condition for this value".to_owned()),
             Some(value) => {
                 let value = if value.chars().any(char::is_whitespace) { format!("\"{value}\"") } else { value };
-                self.set_result_filter(name, &format!("{}{value}", if exclude { "!=" } else { "=" }), cx)
+                let term = format!("{}{value}", if exclude { "!=" } else { "=" });
+                match self.session.result_condition_with(name, &term) {
+                    Some(condition) => self.set_result_filter(name, &condition, cx),
+                    None => Ok(()),
+                }
             }
         };
         if let Err(error) = outcome {

@@ -151,6 +151,11 @@ fn words(search: &str) -> Vec<String> {
     split_words(search, false)
 }
 
+/// A condition card's text split into its terms, quotes kept.
+pub fn condition_words(text: &str) -> Vec<String> {
+    words(text)
+}
+
 /// Split on whitespace outside double quotes. Quotes stay in the word so
 /// operators inside them can be told apart from real ones. With `split_bars`,
 /// each `|` outside quotes is a word of its own.

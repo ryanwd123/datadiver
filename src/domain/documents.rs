@@ -454,8 +454,36 @@ pub struct ResultFilter {
 }
 
 impl ResultFilter {
+    /// A condition of several `!=` terms reads as the values it leaves out,
+    /// like a value filter's: `total not in (5, 7)`.
     pub fn label(&self) -> String {
-        format!("{} {}", self.column, self.condition.trim())
+        match self.excluded_values() {
+            Some(values) if values.len() > 1 => {
+                let mut listed: Vec<String> = values
+                    .iter()
+                    .take(ValueFilter::LABEL_VALUES)
+                    .map(|value| crate::domain::formatting::truncate(value, 40))
+                    .collect();
+                if values.len() > ValueFilter::LABEL_VALUES {
+                    listed.push(format!("+{} more", values.len() - ValueFilter::LABEL_VALUES));
+                }
+                format!("{} not in ({})", self.column, listed.join(", "))
+            }
+            _ => format!("{} {}", self.column, self.condition.trim()),
+        }
+    }
+
+    /// The values a condition made only of `!=` terms leaves out, or `None`
+    /// when it has any other term.
+    fn excluded_values(&self) -> Option<Vec<String>> {
+        crate::domain::query::condition_words(&self.condition)
+            .iter()
+            .map(|word| {
+                word.strip_prefix("!=")
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.replace('"', ""))
+            })
+            .collect()
     }
 }
 

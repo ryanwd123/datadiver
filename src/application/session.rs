@@ -626,6 +626,18 @@ impl WindowSession {
         Ok(true)
     }
 
+    /// `column`'s condition with `term`, such as `!=5`, added to it, or
+    /// `None` when it has that term already. Pressing `-` on several groups
+    /// so builds one condition that leaves them all out, as excluded values
+    /// join one value filter, and `=` narrows the groups further.
+    pub fn result_condition_with(&self, column: &str, term: &str) -> Option<String> {
+        match self.result_filters().iter().find(|filter| filter.column == column) {
+            Some(filter) if crate::domain::query::condition_words(&filter.condition).iter().any(|word| word == term) => None,
+            Some(filter) if !filter.condition.trim().is_empty() => Some(format!("{} {term}", filter.condition.trim())),
+            _ => Some(term.to_owned()),
+        }
+    }
+
     pub fn remove_result_filter(&mut self, index: usize) -> bool {
         if index >= self.result_filters().len() {
             return false;
@@ -1360,6 +1372,30 @@ mod tests {
             filter(&[Some("a"), Some("b"), None, Some("c")], false).label(),
             format!("{column} in (a, b, NULL, +1 more)")
         );
+    }
+
+    #[test]
+    fn result_conditions_gain_terms_and_list_excluded_values() {
+        let source = FrameSnapshot::new(DuckDbStore::synthetic(3).unwrap(), 1);
+        let mut session = WindowSession::raw(source, Some("data.csv".into()));
+        session.start_query_draft("Query".into()).unwrap();
+        assert_eq!(session.result_condition_with("total", "!=5").as_deref(), Some("!=5"));
+        session.set_result_filter("total", "!=5").unwrap();
+        assert_eq!(session.result_condition_with("total", "!=5"), None);
+        assert_eq!(session.result_condition_with("total", "!=\"a b\"").as_deref(), Some("!=5 !=\"a b\""));
+        assert_eq!(session.result_condition_with("total", "=7").as_deref(), Some("!=5 =7"));
+        assert_eq!(session.result_condition_with("other", "=7").as_deref(), Some("=7"));
+        let label = |condition: &str| {
+            ResultFilter {
+                column: "total".into(),
+                condition: condition.into(),
+            }
+            .label()
+        };
+        assert_eq!(label("!=5"), "total !=5");
+        assert_eq!(label("!=5 !=\"a b\""), "total not in (5, a b)");
+        assert_eq!(label("!=1 !=2 !=3 !=4"), "total not in (1, 2, 3, +1 more)");
+        assert_eq!(label("!=5 >1"), "total !=5 >1");
     }
 
     #[test]
