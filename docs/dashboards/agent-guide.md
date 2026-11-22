@@ -67,7 +67,7 @@ Put it in the page as a JSON script with the id `datadiver`:
     "targets": { "file": "~/Documents/targets.xlsx" }
   },
   "commands": [
-    { "id": "reset", "title": "Reset all filters", "key": "ctrl+shift+r" },
+    { "id": "reset", "title": "Reset all filters", "key": "ctrl+shift+x" },
     { "id": "next-region", "title": "Next region", "key": "j" }
   ]
 }
@@ -87,8 +87,9 @@ Put it in the page as a JSON script with the id `datadiver`:
   (Ctrl+Shift+P) under the dashboard's title. `key` is optional, written like
   `ctrl+shift+r`, `alt+1`, `f5` or a single key like `j`. A single key does
   nothing while a text box has the keyboard. Keys DataDiver uses for its own
-  commands (Ctrl+P, Ctrl+Shift+P, Ctrl+B, Ctrl+O, Ctrl+N, Ctrl+R, F1 and
-  others) stay DataDiver's; `check` reports a command whose key is taken.
+  commands (Ctrl+P, Ctrl+Shift+P, Ctrl+B, Ctrl+O, Ctrl+N, Ctrl+R,
+  Ctrl+Shift+R, F1 and others) stay DataDiver's; `check` reports a command
+  whose key is taken.
 - **title** (optional): the window's title. Without it, the page's `<title>`.
 - Unknown fields are errors, except ones starting with `_` (for notes).
 
@@ -111,6 +112,8 @@ const result = await datadiver.query(
 - `datadiver.query(sql, params?, options?)` returns a promise.
   - One statement per call, and it must read: SELECT, WITH, FROM, VALUES,
     TABLE, PIVOT, UNPIVOT, SUMMARIZE or DESCRIBE. Anything that writes fails.
+  - Write `as` before every column alias. DuckDB rejects a bare alias that is
+    a keyword, such as `any_value(employee_name) name` or `count(*) weeks`.
   - `params` binds `$name` placeholders from an object, or `?` / `$1` from
     an array. Always bind values from controls instead of building SQL from
     strings. A list binds as a DuckDB list, for multi-selects:
@@ -152,6 +155,12 @@ const result = await datadiver.query(
   when `truncated` is true, so the user can trust what is on screen.
 - Run independent queries in parallel (`Promise.all`); re-run only the
   queries a control affects when it changes.
+- To remember choices between sessions, such as filters or a split
+  position, use `localStorage`. Every dashboard shares one storage, so start
+  each key with a name of the dashboard's own (`hours.range`), and treat a
+  missing or unreadable value as the default. `check` starts each run with
+  empty storage, so it shows what a first-time viewer sees and its `--run`
+  steps never change what the user saved.
 
 ## A complete example
 

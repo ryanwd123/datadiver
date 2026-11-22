@@ -328,6 +328,15 @@ pub(crate) enum DashboardPaletteEntry {
     Page(String),
 }
 
+/// The DataDiver command a dashboard's `key` (as `dashboard_keystroke`
+/// writes it) would never reach the page past, if any.
+fn key_taken_by(keymap: &crate::application::keymap::KeymapFile, key: &str) -> Option<&'static str> {
+    let action = keymap.binding_for(key, KeyContext::Application).or_else(|| keymap.binding_for(key, KeyContext::Window))?;
+    let spec = crate::application::keymap::ACTIONS.iter().find(|spec| spec.id == action)?;
+    spec.command.filter(|command| dashboard_allows(*command))?;
+    Some(spec.name)
+}
+
 /// Commands that make sense while a dashboard shows; the rest act on the grid.
 pub(crate) fn dashboard_allows(command: CommandId) -> bool {
     matches!(
@@ -997,13 +1006,8 @@ impl DataFrameView {
             .iter()
             .filter_map(|command| {
                 let key = command.key.as_ref()?;
-                let action = self
-                    .keymap
-                    .binding_for(key, KeyContext::Application)
-                    .or_else(|| self.keymap.binding_for(key, KeyContext::Window))?;
-                let spec = crate::application::keymap::ACTIONS.iter().find(|spec| spec.id == action)?;
-                spec.command.filter(|command| dashboard_allows(*command))?;
-                Some(json!({"command": command.id, "key": key, "takenBy": spec.name}))
+                let taken_by = key_taken_by(&self.keymap, key)?;
+                Some(json!({"command": command.id, "key": key, "takenBy": taken_by}))
             })
             .collect::<Vec<_>>();
         let failed_sources = sources.iter().any(|source| source.error.is_some());
@@ -1348,6 +1352,19 @@ mod tests {
     fn reports_show_working_queries_on_one_short_line() {
         assert_eq!(one_line("select a,\n  b\nfrom   t", 160), "select a, b from t");
         assert_eq!(one_line(&format!("select {}", "x".repeat(300)), 10), "select xxx… (307 characters)");
+    }
+
+    #[test]
+    fn the_guide_shows_only_keys_the_page_gets() {
+        // Agents copy the guide's examples, keys and all.
+        let keymap = crate::application::keymap::KeymapFile::default();
+        let keys = crate::cli::AGENT_GUIDE.split("\"key\": \"").skip(1).map(|rest| rest.split('"').next().unwrap()).collect::<Vec<_>>();
+        assert!(keys.len() >= 2, "{keys:?}");
+        for key in keys {
+            let stroke = crate::infrastructure::dashboard::dashboard_keystroke(key).unwrap();
+            assert_eq!(key_taken_by(&keymap, &stroke), None, "the guide's {key} is DataDiver's");
+        }
+        assert_eq!(key_taken_by(&keymap, "ctrl-shift-r"), Some("Reload and reset"));
     }
 
     #[test]

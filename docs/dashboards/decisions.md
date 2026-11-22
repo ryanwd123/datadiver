@@ -469,6 +469,14 @@ with only the exe to go on.
   viewer would and repeats the same way every time. Edge holds the folder for
   about a second after the window closes, so instead of waiting, each check
   deletes the folders of checks whose process has ended.
+- **It copied the guide's example key, `ctrl+shift+r`**, which is
+  DataDiver's Reload and reset, so its first check failed. The example uses
+  a free key now, and a test fails if any key in the guide is DataDiver's.
+- **It saved slicer picks in `localStorage` with its own key prefix**, by
+  luck: every dashboard shares the one origin of decision 12, so two
+  dashboards' `range` keys would collide. The guide now says to prefix keys.
+  A storage per dashboard (an origin per file) was turned down for now: it
+  would tie saved state to the file's path, and a prefix is enough.
 
 **Your notes:**
 
