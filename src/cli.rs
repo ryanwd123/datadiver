@@ -28,6 +28,58 @@ datadiver dashboard <command>
 
 Every command takes --home DIR to use another profile folder.";
 
+/// What `datadiver --help` prints. It starts with where agents go next, since
+/// `--help` is the first thing an agent tries on an unknown program.
+pub fn help_text() -> String {
+    format!(
+        "\
+DataDiver {version}: fast data exploration with DuckDB and Polars, in a desktop window.
+
+Agents and scripts: DataDiver can show dashboards, HTML pages whose charts and
+controls query data through DataDiver. To build one, start with
+    datadiver dashboard guide        the full guide: file format, data sources, window.datadiver
+    datadiver dashboard help         every dashboard command (sources, schema, query, check)
+Commands under `datadiver dashboard` print JSON and never open a visible window.
+
+Usage:
+  datadiver [PATH]                 open a data file (CSV, TSV, Parquet, XLSX), or a .ddash dashboard
+  datadiver dashboard <command>    dashboard tools; see `datadiver dashboard help`
+  datadiver --help | --version
+
+Options:
+  --file PATH       open a CSV (including .csv.gz), TSV, XLSX, or Parquet source
+  --view PATH       open a saved JSON view
+  --search TEXT     filter displayed rows
+  --slicer COLUMN   add a source-column slicer
+  --rows N          open synthetic data
+  --window WxH      set window size
+  --home DIR        use another profile folder
+  --ephemeral       use a throwaway profile
+  --no-restore      don't reopen the last session
+  --exit-after MS   close on a timer
+  --capture PATH    save a PNG of the window",
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// Answers `--help`, `--version` and their usual spellings, if `argument` is
+/// one; returns whether it was.
+pub fn run_help(argument: &str) -> bool {
+    match argument {
+        "--help" | "-h" | "-?" | "/?" | "help" => {
+            attach_console();
+            println!("{}", help_text());
+            true
+        }
+        "--version" | "-V" | "version" => {
+            attach_console();
+            println!("datadiver {}", env!("CARGO_PKG_VERSION"));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Lets output reach the console of a shell that started DataDiver, which as
 /// a windows program gets none of its own.
 fn attach_console() {
@@ -145,7 +197,7 @@ pub fn run_dashboard(arguments: &[String]) -> i32 {
             println!(".ddash files no longer open with DataDiver");
             0
         }),
-        "help" | "--help" | "-h" => {
+        "help" | "--help" | "-h" | "-?" | "/?" => {
             println!("{USAGE}");
             Ok(0)
         }
@@ -337,4 +389,15 @@ fn check(arguments: &Arguments) -> Result<i32, String> {
     });
     crate::infrastructure::source_database::SourceDatabase::checkpoint_profiles()?;
     Ok(crate::ui::dataframe_view::dashboard::CHECK_EXIT.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn help_sends_agents_to_the_dashboard_guide() {
+        let help = super::help_text();
+        assert!(help.contains("datadiver dashboard guide"));
+        assert!(help.contains(env!("CARGO_PKG_VERSION")));
+        assert!(super::AGENT_GUIDE.starts_with("# Building a DataDiver dashboard"));
+    }
 }

@@ -203,17 +203,12 @@ fn main() {
                 no_restore = true;
                 viewer_options.restore_window = false;
             }
-            "--help" | "-h" => {
-                println!(
-                    "DataDiver\n  --rows N       open synthetic data\n  --file PATH    open a CSV (including .csv.gz), TSV, XLSX, or Parquet source\n  --view PATH    open a saved JSON view\n  --search TEXT  filter displayed rows\n  --slicer COLUMN  add a source-column slicer\n  --window WxH   set window size\n  --exit-after MS  close on a timer\n  --capture PATH  save a PNG of the window\n  PATH.ddash     open a dashboard\n  dashboard ...  dashboard tools; see `datadiver dashboard help`"
-                );
-                return;
-            }
+            _ if datadiver::cli::run_help(&argument) => return,
             _ if !argument.starts_with('-') && source_path.is_none() => {
                 source_path = Some(PathBuf::from(argument))
             }
             _ => {
-                eprintln!("unsupported argument: {argument}");
+                eprintln!("unsupported argument: {argument}\nRun `datadiver --help` for the options, or `datadiver dashboard guide` to build a dashboard.");
                 std::process::exit(2);
             }
         }
