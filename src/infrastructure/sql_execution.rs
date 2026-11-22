@@ -1140,10 +1140,14 @@ const GRAMMAR_FUNCTIONS: &[(&str, &str, &str)] = &[
     ("localtimestamp", "localtimestamp", "The local date and time at the start of the transaction. Written without parentheses."),
 ];
 
-/// Adds [`GRAMMAR_FUNCTIONS`] that the catalog did not list.
+/// Adds [`GRAMMAR_FUNCTIONS`] that the catalog did not list. The ones
+/// written without parentheses replace the catalog's: ICU lists
+/// `current_date()` and its like as functions, but they read best bare.
 fn add_grammar_functions(functions: &mut Vec<diver_sql::FunctionInfo>) {
     for (name, signature, description) in GRAMMAR_FUNCTIONS {
-        if functions.iter().any(|f| f.name == *name && f.kind != diver_sql::FunctionKind::Table) {
+        if !signature.contains('(') {
+            functions.retain(|f| f.name != *name || f.kind == diver_sql::FunctionKind::Table);
+        } else if functions.iter().any(|f| f.name == *name && f.kind != diver_sql::FunctionKind::Table) {
             continue;
         }
         functions.push(diver_sql::FunctionInfo {
