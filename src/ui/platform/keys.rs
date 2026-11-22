@@ -124,6 +124,7 @@ mod tests {
         assert_eq!(parse_keystroke("Ctrl-Enter").unwrap().1, "enter");
         assert!(parse_keystroke("hyper-x").is_err());
         assert!(parse_keystroke("ctrl-").is_err());
+        assert!(parse_keystroke("--!").is_err());
         assert!(parse_keystroke("").is_err());
     }
 

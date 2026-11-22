@@ -92,6 +92,10 @@ pub fn parse_keystroke(source: &str) -> Result<(Modifiers, String), String> {
     if rest.is_empty() {
         return Err(format!("missing key in {source}"));
     }
+    // Only the minus key itself may hold a `-`: `--!` names no key.
+    if rest != "-" && rest.contains('-') {
+        return Err(format!("invalid keystroke {source}"));
+    }
     let key = match rest.to_ascii_lowercase().as_str() {
         " " => "space".to_owned(),
         "esc" => "escape".to_owned(),
