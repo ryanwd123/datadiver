@@ -111,17 +111,18 @@ pub fn paste(buf: &Buffer, sels: &Selections, text: &str, whole_lines: bool) -> 
         });
     }
     if whole_lines && text.ends_with('\n') && sels.iter().all(|s| s.is_empty()) {
-        return per_selection(sels, |s| {
-            let start = buf.line_start(buf.line_of(s.head));
-            let at = s.head - start + text.len();
-            Replace {
-                start,
-                end: start,
-                text: text.to_string(),
-                anchor: at,
-                head: at,
-            }
-        });
+        // Each cursor pastes above its line. Cursors sharing a line all paste
+        // at its start, so each moves down by every paste at or before it.
+        let starts: Vec<usize> = sels.iter().map(|s| buf.line_start(buf.line_of(s.head))).collect();
+        let edits = starts.iter().map(|&start| Edit::insert(start, text.to_string())).collect();
+        let out = sels
+            .iter()
+            .map(|s| Selection::cursor(s.head + starts.iter().filter(|&&start| start <= s.head).count() * text.len()))
+            .collect();
+        return Outcome {
+            tx: Transaction { edits },
+            sels: Selections::new(out, sels.primary_index()),
+        };
     }
     insert(sels, &text)
 }
@@ -339,7 +340,7 @@ pub fn cut(buf: &Buffer, sels: &Selections) -> (String, bool, Outcome) {
             .or_else(|| (0..p.line).rev().find(stays));
         match to {
             Some(n) => Selection::cursor(
-                tx.map(buf.line_start(n), false) + p.col.min(buf.line_len(n)),
+                tx.map(buf.line_start(n), false) + same_column(&buf.line(p.line), p.col, &buf.line(n)),
             ),
             None => Selection::cursor(0),
         }
@@ -644,6 +645,14 @@ pub fn copy_lines(buf: &Buffer, sels: &Selections, down: bool) -> Outcome {
     Outcome { tx, sels }
 }
 
+/// The byte column in `to` as many characters in as byte column `col` is in
+/// `from`, or `to`'s end: a caret moved to another line never lands inside a
+/// character.
+fn same_column(from: &str, col: usize, to: &str) -> usize {
+    let chars = from[..crate::text::floor_boundary(from, col)].chars().count();
+    to.char_indices().nth(chars).map_or(to.len(), |(i, _)| i)
+}
+
 /// Ctrl+Shift+K: deletes the selected lines.
 pub fn delete_lines(buf: &Buffer, sels: &Selections) -> Outcome {
     let blocks = line_blocks(buf, sels);
@@ -668,7 +677,7 @@ pub fn delete_lines(buf: &Buffer, sels: &Selections) -> Outcome {
         let p = buf.pos(s.head);
         let off = tx.map(buf.line_start(p.line), false);
         let line = after.line_of(off);
-        Selection::cursor(after.line_start(line) + p.col.min(after.line_len(line)))
+        Selection::cursor(after.line_start(line) + same_column(&buf.line(p.line), p.col, &after.line(line)))
     });
     Outcome { tx, sels }
 }
@@ -805,6 +814,8 @@ pub(crate) mod tests {
         assert_eq!(run("|a\n|b", |b, s| paste(b, s, "1\n2\n3", false)), "1\n2\n3|a\n1\n2\n3|b");
         assert_eq!(run("a|b\nc", |b, s| paste(b, s, "line\n", true)), "line\na|b\nc");
         assert_eq!(run("a[b]c", |b, s| paste(b, s, "line\n", true)), "aline\n|c");
+        // Cursors on one line each paste above it and keep their places.
+        assert_eq!(run("日|本|\nz", |b, s| paste(b, s, "x\n", true)), "x\nx\n日|本|\nz");
     }
 
     #[test]
@@ -946,6 +957,10 @@ pub(crate) mod tests {
         assert_eq!(run("a\nb|c\nd", delete_lines), "a\nd|");
         assert_eq!(run("a\nbc|", delete_lines), "a|");
         assert_eq!(run("a|\nb|\nc", delete_lines), "c|");
+        // The column counts characters, so the caret never lands inside one.
+        assert_eq!(run("a|b\n🙂x", delete_lines), "🙂|x");
+        assert_eq!(run("abc|d\n日本", delete_lines), "日本|");
+        assert_eq!(run("a|b\n日本", |b, s| cut(b, s).2), "日|本");
     }
 
     #[test]
