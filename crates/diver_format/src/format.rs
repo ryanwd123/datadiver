@@ -328,6 +328,11 @@ fn number_format(pieces: &[Piece]) -> Option<NumberFormat> {
 
 fn format_number(format: &NumberFormat, n: f64, signed: bool) -> String {
     let mut n = n * 100f64.powi(format.percent as i32) / 1000f64.powi(format.scale as i32);
+    // NaN and infinities, including numbers scaled past the largest float,
+    // have no digits to place.
+    if !n.is_finite() {
+        return crate::value::format_number(n);
+    }
     let negative = n < 0.0;
     n = n.abs();
     let mut exponent = 0i32;
@@ -661,6 +666,15 @@ mod tests {
         assert_eq!(num("0.00E+00", 0.000123), "1.23E-04");
         assert_eq!(num("0.00E+00", 9.996), "1.00E+01");
         assert_eq!(num("0.0E-0", 1234.0), "1.2E3");
+    }
+
+    #[test]
+    fn numbers_without_digits_show_as_they_are() {
+        assert_eq!(num(".0%", f64::NAN), "NaN");
+        assert_eq!(num("#,##0.00", f64::INFINITY), "inf");
+        assert_eq!(num("0.00E+00", f64::NEG_INFINITY), "-inf");
+        // Scaling past the largest float.
+        assert_eq!(num("0.0%", f64::MAX), "inf");
     }
 
     #[test]
