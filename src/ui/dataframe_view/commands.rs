@@ -10,6 +10,35 @@ use crate::ui::platform::KeyEvent;
 use crate::ui::platform::system;
 use crate::ui::slicer_sidebar::{SlicerChoice, SlicerEvent, SlicerKind};
 
+/// Value filters, and by result column name, the condition groups to add.
+type SelectedFilters = (Vec<ValueFilter>, Vec<(String, Vec<Vec<String>>)>);
+
+/// The condition groups for `=` or `-` on a result column's `values`:
+/// `[["!=5", "!=7"]]` leaves them all out, and `[["=5"], ["=7"]]` keeps
+/// either.
+fn condition_terms(values: &[Option<String>], exclude: bool) -> Result<Vec<Vec<String>>, String> {
+    let terms = values
+        .iter()
+        .map(|value| {
+            let value = value
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or("An empty cell has no value to filter by; press W to type a condition")?;
+            if value.contains('"') {
+                return Err("Press W to type a condition for this value".to_owned());
+            }
+            // Quotes keep spaces, `|` and `..` part of the value.
+            let value = if value.chars().any(char::is_whitespace) || value.contains('|') || value.contains("..") {
+                format!("\"{value}\"")
+            } else {
+                value.to_owned()
+            };
+            Ok(format!("{}{value}", if exclude { "!=" } else { "=" }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(if exclude { vec![terms] } else { terms.into_iter().map(|term| vec![term]).collect() })
+}
+
 impl DataFrameView {
     /// Why slicers and value filters are off for this SQL result, if they are.
     pub(crate) fn sql_filters_unavailable(&self) -> Option<&'static str> {
@@ -509,20 +538,21 @@ impl DataFrameView {
         }
     }
 
-    /// Filters to, or with `exclude` filters out, the values of the selected
-    /// cells: one filter for each selected column.
     /// The result column under the cursor when it is one a query computes:
     /// an aggregation, or a pivot's value column.
     pub(crate) fn active_result_column(&self) -> Option<(usize, String)> {
-        let Some(ViewKind::Query(config)) = self.session.working.as_ref().map(|view| &view.view) else {
-            return None;
-        };
-        if config.group_by.is_empty() && config.aggregations.is_empty() {
-            return None;
-        }
         let column = self.grid.selection()?.active.column;
         let name = self.session.result.columns.get(column)?.0.clone();
-        (column >= config.key_columns()).then_some((column, name))
+        self.is_result_column(column).then_some((column, name))
+    }
+
+    /// Whether the result's `column` is one a query computes rather than a
+    /// group-by key.
+    fn is_result_column(&self, column: usize) -> bool {
+        let Some(ViewKind::Query(config)) = self.session.working.as_ref().map(|view| &view.view) else {
+            return false;
+        };
+        !(config.group_by.is_empty() && config.aggregations.is_empty()) && column >= config.key_columns()
     }
 
     /// Sets the condition on a result column and runs the view again.
@@ -562,56 +592,56 @@ impl DataFrameView {
         cx.notify();
     }
 
-    /// `=` and `-` on an aggregation cell: keep or drop the groups with its
-    /// value, adding to the column's condition rather than replacing it.
-    fn filter_active_result_value(&mut self, column: usize, name: &str, exclude: bool, cx: &mut Cx<Self>) {
-        let result = &self.session.result;
-        let value = self
-            .grid
-            .selection()
-            .and_then(|selection| result.fetch_rows(selection.active.row, 1).ok())
-            .and_then(|rows| rows.into_iter().next())
-            .and_then(|row| row.values.get(result.column_indices[column]).cloned().flatten());
-        let outcome = match value {
-            None => Err("An empty cell has no value to filter by; press W to type a condition".to_owned()),
-            Some(value) if value.contains('"') => Err("Press W to type a condition for this value".to_owned()),
-            Some(value) => {
-                let value = if value.chars().any(char::is_whitespace) { format!("\"{value}\"") } else { value };
-                let term = format!("{}{value}", if exclude { "!=" } else { "=" });
-                match self.session.result_condition_with(name, &term) {
-                    Some(condition) => self.set_result_filter(name, &condition, cx),
-                    None => Ok(()),
+    /// Filters to, or with `exclude` filters out, the values of the selected
+    /// cells: a value filter for each selected group-by column, and on each
+    /// selected aggregation column, terms added to its condition. Nothing
+    /// applies unless every condition reads.
+    pub(crate) fn filter_active_value(&mut self, exclude: bool, cx: &mut Cx<Self>) {
+        let outcome = self.selected_value_filters(exclude).and_then(|(filters, terms)| {
+            let mut conditions = Vec::new();
+            for (column, added) in terms {
+                if let Some(condition) = self.session.result_condition_with(&column, &added) {
+                    self.session
+                        .result
+                        .store
+                        .lock()
+                        .map_err(|_| "store lock poisoned".to_owned())?
+                        .validate_condition(&column, &condition)?;
+                    conditions.push((column, condition));
                 }
             }
-        };
-        if let Err(error) = outcome {
-            self.error = Some(error);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn filter_active_value(&mut self, exclude: bool, cx: &mut Cx<Self>) {
-        if let Some((column, name)) = self.active_result_column() {
-            self.filter_active_result_value(column, &name, exclude, cx);
-            return;
-        }
-        let filters = match self.selected_value_filters(exclude) {
-            Ok(filters) => filters,
+            Ok((filters, conditions))
+        });
+        match outcome {
+            Ok((filters, conditions)) => self.add_filters(filters, conditions, cx),
             Err(error) => {
                 self.error = Some(error);
                 cx.notify();
-                return;
             }
-        };
-        self.add_value_filters(filters, cx);
+        }
     }
 
     /// Applies value filters to the view, starting a table draft if needed.
     pub(crate) fn add_value_filters(&mut self, filters: Vec<ValueFilter>, cx: &mut Cx<Self>) {
+        self.add_filters(filters, Vec::new(), cx);
+    }
+
+    /// Applies value filters and conditions on result columns, then runs
+    /// the view again once.
+    fn add_filters(&mut self, filters: Vec<ValueFilter>, conditions: Vec<(String, String)>, cx: &mut Cx<Self>) {
         self.ensure_working_view();
         let mut changed = false;
         let mut failed = None;
-        for filter in filters {
+        for (column, condition) in conditions {
+            match self.session.set_result_filter(&column, &condition) {
+                Ok(set) => changed |= set,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            }
+        }
+        for filter in filters.into_iter().take_while(|_| failed.is_none()) {
             match self.session.add_value_filter(filter) {
                 Ok(added) => changed |= added,
                 Err(error) => {
@@ -630,10 +660,13 @@ impl DataFrameView {
         cx.notify();
     }
 
-    /// The selected columns' distinct values as value filters. Excluding NULL
-    /// is a filter of its own, "is not null", so later exclusions can join
-    /// the one that excludes values.
-    fn selected_value_filters(&self, exclude: bool) -> Result<Vec<ValueFilter>, String> {
+    /// The selected columns' distinct values: value filters for group-by
+    /// columns, and for result columns such as aggregations, the condition
+    /// groups to add to each column's condition (see
+    /// `WindowSession::result_condition_with`). Excluding NULL is a value
+    /// filter of its own, "is not null", so later exclusions can join the one
+    /// that excludes values.
+    fn selected_value_filters(&self, exclude: bool) -> Result<SelectedFilters, String> {
         /// More rows than this would be read on the UI thread.
         const MAX_ROWS: usize = 100_000;
         /// A filter lists at most this many values.
@@ -653,15 +686,24 @@ impl DataFrameView {
         }
         if let Some(outline) = &result.outline
             && outline.layout == crate::domain::documents::OutlineLayout::Compact
+            && !self.is_result_column(*columns.start())
         {
-            return self.row_label_filters(exclude);
+            return Ok((self.row_label_filters(exclude)?, Vec::new()));
         }
-        let targets = columns.clone().map(|column| self.value_filter_target(column)).collect::<Result<Vec<_>, _>>()?;
+        // `None` for a result column, which takes a condition instead.
+        let targets = columns
+            .clone()
+            .map(|column| match self.is_result_column(column) {
+                true => Ok(None),
+                false => self.value_filter_target(column).map(Some),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let fetched = match result.cached_rows(*rows.start(), row_count) {
             Some(rows) => rows,
             None => result.fetch_rows(*rows.start(), row_count)?,
         };
         let mut filters = Vec::new();
+        let mut conditions = Vec::new();
         for (target, column) in targets.into_iter().zip(columns) {
             let index = result.column_indices[column];
             let mut seen = std::collections::HashSet::new();
@@ -688,6 +730,10 @@ impl DataFrameView {
             if values.len() > MAX_VALUES {
                 return Err(format!("The selection holds more than {MAX_VALUES} values in a column; select fewer to filter by them"));
             }
+            let Some(target) = target else {
+                conditions.push((result.columns[column].0.clone(), condition_terms(&values, exclude)?));
+                continue;
+            };
             let not_null = (exclude && values.len() > 1 && values.contains(&None)).then(|| ValueFilter {
                 target: target.clone(),
                 values: vec![None],
@@ -697,7 +743,7 @@ impl DataFrameView {
             filters.push(ValueFilter { target, values, exclude });
             filters.extend(not_null);
         }
-        Ok(filters)
+        Ok((filters, conditions))
     }
 
     /// Value filters for the row label under the cursor in the compact

@@ -1164,6 +1164,25 @@ fn aggregation_columns_filter_groups_after_grouping_on_both_engines() {
         command(&viewer, CommandId::ClearFilters);
         assert!(filters().is_empty());
         assert_eq!(column_values(&viewer).len(), 4, "{engine:?}");
+
+        // = on several cells keeps the groups with any of their values.
+        press_on_cell(&viewer, 1, 1, "shift-down =");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} in (30, 5)", names[1])]);
+        assert_eq!(column_values(&viewer), [Some("North".into()), Some("South".into())], "{engine:?}");
+        command(&viewer, CommandId::ClearFilters);
+
+        // - across a key and an aggregation filters both at once.
+        press_on_cell(&viewer, 0, 0, "shift-down shift-right -");
+        viewer.settle();
+        assert_eq!(filters(), [format!("{} not in (24, 30)", names[1])]);
+        viewer.read(|view| {
+            let labels: Vec<_> = view.session.value_filters().iter().map(ValueFilter::label).collect();
+            assert_eq!(labels, ["region not in (East, North)"]);
+        });
+        assert_eq!(column_values(&viewer), [Some("South".into()), Some("West".into())], "{engine:?}");
+        command(&viewer, CommandId::ClearFilters);
+        assert_eq!(column_values(&viewer).len(), 4, "{engine:?}");
     }
 }
 

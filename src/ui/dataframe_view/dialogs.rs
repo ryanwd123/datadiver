@@ -115,7 +115,7 @@ pub enum Dialog {
 
 /// What the result filter dialog says under its input.
 const RESULT_FILTER_HINT: &str =
-    "Keeps groups whose value matches, after grouping: >100 · >=10 <100 · 10..20 · =5 · !=0 · Empty removes the filter";
+    "Keeps groups whose value matches, after grouping: >100 · >=10 <100 · 10..20 · =5 | =7 · !=0 · Empty removes the filter";
 
 impl Dialog {
     fn title(&self) -> String {

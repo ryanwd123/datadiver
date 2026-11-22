@@ -626,16 +626,44 @@ impl WindowSession {
         Ok(true)
     }
 
-    /// `column`'s condition with `term`, such as `!=5`, added to it, or
-    /// `None` when it has that term already. Pressing `-` on several groups
-    /// so builds one condition that leaves them all out, as excluded values
-    /// join one value filter, and `=` narrows the groups further.
-    pub fn result_condition_with(&self, column: &str, term: &str) -> Option<String> {
-        match self.result_filters().iter().find(|filter| filter.column == column) {
-            Some(filter) if crate::domain::query::condition_words(&filter.condition).iter().any(|word| word == term) => None,
-            Some(filter) if !filter.condition.trim().is_empty() => Some(format!("{} {term}", filter.condition.trim())),
-            _ => Some(term.to_owned()),
+    /// `column`'s condition that must also match `added`, a condition's
+    /// `|`-separated groups of terms such as `[["!=5", "!=7"]]` or
+    /// `[["=5"], ["=7"]]`, or `None` when that changes nothing. Pressing `-`
+    /// on groups one at a time so builds one condition that leaves them all
+    /// out, as excluded values join one value filter, and `=` narrows the
+    /// groups further.
+    pub fn result_condition_with(&self, column: &str, added: &[Vec<String>]) -> Option<String> {
+        use crate::domain::query::condition_groups;
+        let existing = self
+            .result_filters()
+            .iter()
+            .find(|filter| filter.column == column)
+            .map(|filter| condition_groups(&filter.condition))
+            .filter(|groups| !groups.is_empty());
+        // Both must match: every existing group joins every added one.
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        for old in existing.clone().unwrap_or_else(|| vec![Vec::new()]) {
+            for new in added {
+                let mut group = old.clone();
+                group.extend(new.iter().filter(|term| !old.contains(term)).cloned());
+                groups.push(group);
+            }
         }
+        // A group holding all of another's terms adds no rows: a | a b is a.
+        let holds = |big: &Vec<String>, small: &Vec<String>| small.iter().all(|term| big.contains(term));
+        let mut kept: Vec<Vec<String>> = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            let absorbed = groups.iter().enumerate().any(|(other, smaller)| {
+                other != index && holds(group, smaller) && (!holds(smaller, group) || other < index)
+            });
+            if !absorbed {
+                kept.push(group.clone());
+            }
+        }
+        if kept.is_empty() || existing.as_ref() == Some(&kept) {
+            return None;
+        }
+        Some(kept.iter().map(|group| group.join(" ")).collect::<Vec<_>>().join(" | "))
     }
 
     pub fn remove_result_filter(&mut self, index: usize) -> bool {
@@ -1379,12 +1407,21 @@ mod tests {
         let source = FrameSnapshot::new(DuckDbStore::synthetic(3).unwrap(), 1);
         let mut session = WindowSession::raw(source, Some("data.csv".into()));
         session.start_query_draft("Query".into()).unwrap();
-        assert_eq!(session.result_condition_with("total", "!=5").as_deref(), Some("!=5"));
+        let groups = |text: &str| crate::domain::query::condition_groups(text);
+        let with = |session: &WindowSession, text: &str| session.result_condition_with("total", &groups(text));
+        assert_eq!(with(&session, "!=5").as_deref(), Some("!=5"));
         session.set_result_filter("total", "!=5").unwrap();
-        assert_eq!(session.result_condition_with("total", "!=5"), None);
-        assert_eq!(session.result_condition_with("total", "!=\"a b\"").as_deref(), Some("!=5 !=\"a b\""));
-        assert_eq!(session.result_condition_with("total", "=7").as_deref(), Some("!=5 =7"));
-        assert_eq!(session.result_condition_with("other", "=7").as_deref(), Some("=7"));
+        assert_eq!(with(&session, "!=5"), None);
+        assert_eq!(with(&session, "!=\"a b\" !=5").as_deref(), Some("!=5 !=\"a b\""));
+        assert_eq!(with(&session, "=7").as_deref(), Some("!=5 =7"));
+        assert_eq!(session.result_condition_with("other", &groups("=7 | =8")).as_deref(), Some("=7 | =8"));
+        // Kept values are any of them, and must also match the condition.
+        session.set_result_filter("total", "=7 | =8").unwrap();
+        assert_eq!(with(&session, "=8 | =7"), None);
+        assert_eq!(with(&session, "=7"), Some("=7".into()));
+        assert_eq!(with(&session, "!=7").as_deref(), Some("=7 !=7 | =8 !=7"));
+        session.set_result_filter("total", ">1 | <0").unwrap();
+        assert_eq!(with(&session, "=5 | =7").as_deref(), Some(">1 =5 | >1 =7 | <0 =5 | <0 =7"));
         let label = |condition: &str| {
             ResultFilter {
                 column: "total".into(),
@@ -1396,6 +1433,9 @@ mod tests {
         assert_eq!(label("!=5 !=\"a b\""), "total not in (5, a b)");
         assert_eq!(label("!=1 !=2 !=3 !=4"), "total not in (1, 2, 3, +1 more)");
         assert_eq!(label("!=5 >1"), "total !=5 >1");
+        assert_eq!(label("=5 | =\"a b\""), "total in (5, a b)");
+        assert_eq!(label("=5 | >7"), "total =5 | >7");
+        assert_eq!(label("=5 | =7 !=8"), "total =5 | =7 !=8");
     }
 
     #[test]

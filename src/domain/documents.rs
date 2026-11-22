@@ -454,36 +454,39 @@ pub struct ResultFilter {
 }
 
 impl ResultFilter {
-    /// A condition of several `!=` terms reads as the values it leaves out,
-    /// like a value filter's: `total not in (5, 7)`.
+    /// A condition that lists values reads like a value filter's label:
+    /// `!=5 !=7` as `total not in (5, 7)` and `=5 | =7` as `total in (5, 7)`.
     pub fn label(&self) -> String {
-        match self.excluded_values() {
-            Some(values) if values.len() > 1 => {
-                let mut listed: Vec<String> = values
-                    .iter()
-                    .take(ValueFilter::LABEL_VALUES)
-                    .map(|value| crate::domain::formatting::truncate(value, 40))
-                    .collect();
-                if values.len() > ValueFilter::LABEL_VALUES {
-                    listed.push(format!("+{} more", values.len() - ValueFilter::LABEL_VALUES));
-                }
-                format!("{} not in ({})", self.column, listed.join(", "))
+        let groups = crate::domain::query::condition_groups(&self.condition);
+        let listed = |prefix: &str, words: Vec<&String>| -> Option<Vec<String>> {
+            words
+                .into_iter()
+                .map(|word| {
+                    word.strip_prefix(prefix)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.replace('"', ""))
+                })
+                .collect()
+        };
+        let (operator, values) = match groups.as_slice() {
+            [words] if words.len() > 1 => ("not in", listed("!=", words.iter().collect())),
+            groups if groups.len() > 1 && groups.iter().all(|words| words.len() == 1) => {
+                ("in", listed("=", groups.iter().map(|words| &words[0]).collect()))
             }
-            _ => format!("{} {}", self.column, self.condition.trim()),
-        }
-    }
-
-    /// The values a condition made only of `!=` terms leaves out, or `None`
-    /// when it has any other term.
-    fn excluded_values(&self) -> Option<Vec<String>> {
-        crate::domain::query::condition_words(&self.condition)
+            _ => ("", None),
+        };
+        let Some(values) = values else {
+            return format!("{} {}", self.column, self.condition.trim());
+        };
+        let mut shown: Vec<String> = values
             .iter()
-            .map(|word| {
-                word.strip_prefix("!=")
-                    .filter(|value| !value.is_empty())
-                    .map(|value| value.replace('"', ""))
-            })
-            .collect()
+            .take(ValueFilter::LABEL_VALUES)
+            .map(|value| crate::domain::formatting::truncate(value, 40))
+            .collect();
+        if values.len() > ValueFilter::LABEL_VALUES {
+            shown.push(format!("+{} more", values.len() - ValueFilter::LABEL_VALUES));
+        }
+        format!("{} {operator} ({})", self.column, shown.join(", "))
     }
 }
 

@@ -1887,18 +1887,25 @@ impl DuckDbStore {
         parameters: &mut Vec<Value>,
     ) -> Result<String, String> {
         let today = chrono::Local::now().date_naive();
-        let predicates = parse_condition(text, &column.name, today)?
-            .iter()
-            .map(|term| {
-                let predicate = self.term_predicate(column, term, parameters)?;
-                Ok(if term.negated {
-                    format!("NOT ({predicate})")
-                } else {
-                    predicate
+        let mut groups = Vec::new();
+        for terms in parse_condition(text, &column.name, today)? {
+            let predicates = terms
+                .iter()
+                .map(|term| {
+                    let predicate = self.term_predicate(column, term, parameters)?;
+                    Ok(if term.negated {
+                        format!("NOT ({predicate})")
+                    } else {
+                        predicate
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(format!("({})", predicates.join(" AND ")))
+                .collect::<Result<Vec<_>, String>>()?;
+            groups.push(format!("({})", predicates.join(" AND ")));
+        }
+        Ok(match groups.len() {
+            0 => "TRUE".to_owned(),
+            _ => format!("({})", groups.join(" OR ")),
+        })
     }
 
     /// Checks that a condition card's text parses and binds, without running it.
@@ -3617,6 +3624,11 @@ mod tests {
         assert_eq!(condition("qty", "10..25").unwrap(), [1, 3]);
         assert_eq!(condition("qty", ">5 <25").unwrap(), [1]);
         assert_eq!(condition("qty", "!=15").unwrap(), [0, 2, 3]);
+        assert_eq!(condition("qty", "!=5 !=15").unwrap(), [2, 3]);
+        // `|` separates groups, any one of which may match.
+        assert_eq!(condition("qty", "=5 | =25").unwrap(), [0, 3]);
+        assert_eq!(condition("qty", ">5 <25 | =5").unwrap(), [0, 1]);
+        assert_eq!(condition("qty", "|").unwrap(), [0, 1, 2, 3]);
         assert_eq!(condition("region", "north -west").unwrap(), [0]);
         assert_eq!(condition("region", "=SOUTH").unwrap(), [1]);
         assert_eq!(condition("day", "2024-01-01..2024-02-01").unwrap(), [0]);

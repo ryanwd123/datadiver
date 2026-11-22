@@ -147,13 +147,12 @@ fn split_alternatives(search: &str) -> Vec<Vec<String>> {
     groups
 }
 
-fn words(search: &str) -> Vec<String> {
-    split_words(search, false)
-}
-
-/// A condition card's text split into its terms, quotes kept.
-pub fn condition_words(text: &str) -> Vec<String> {
-    words(text)
+/// A condition card's words, quotes kept, in its `|`-separated groups.
+/// Empty groups, as in `=5 |` while the next term is being typed, are left out.
+pub fn condition_groups(text: &str) -> Vec<Vec<String>> {
+    let mut groups = split_alternatives(text.trim());
+    groups.retain(|group| !group.is_empty());
+    groups
 }
 
 /// Split on whitespace outside double quotes. Quotes stay in the word so
@@ -272,7 +271,9 @@ fn column_term(body: &str, negated: bool) -> Option<ColumnTerm> {
     None
 }
 
-/// Parses a condition card's text for `column` into terms that must all match.
+/// Parses a condition card's text for `column` into groups of terms. Every
+/// term of a group must match, and `|` outside quotes separates groups, any
+/// one of which may match, as in the search box: `=5 | =7`, `>10 <20 | 0`.
 ///
 /// Terms are the column-scoped search operators with the column left out:
 /// `>=10`, `<100`, `=North`, `!=0`, `:smith` (contains), a bare word (contains),
@@ -285,10 +286,22 @@ pub fn parse_condition(
     text: &str,
     column: &str,
     today: chrono::NaiveDate,
+) -> Result<Vec<Vec<ColumnTerm>>, String> {
+    let mut groups = Vec::new();
+    for group in condition_groups(text) {
+        groups.push(condition_terms(&group, column, today)?);
+    }
+    Ok(groups)
+}
+
+/// One `|`-separated group of a condition card's terms, all of which must match.
+fn condition_terms(
+    words: &[String],
+    column: &str,
+    today: chrono::NaiveDate,
 ) -> Result<Vec<ColumnTerm>, String> {
-    let trimmed = text.trim();
     let mut terms = Vec::new();
-    for word in words(trimmed) {
+    for word in words.iter().map(String::as_str) {
         let term = |operator, value: &str, quoted, negated| ColumnTerm {
             column: column.to_owned(),
             operator,
@@ -756,7 +769,7 @@ mod tests {
         assert_eq!(compared("region=\"nowhere\""), None);
         assert_eq!(compared("region:\"region\""), None);
         let today = chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
-        let card = parse_condition(">\"Large Bags\" <=\"today\"", "Small Bags", today).unwrap();
+        let card = parse_condition(">\"Large Bags\" <=\"today\"", "Small Bags", today).unwrap().remove(0);
         assert_eq!(card[0].compared_column(names), Some(1));
         // A quoted value is never read as a relative date.
         assert_eq!(card[1].value, "today");
@@ -833,6 +846,7 @@ mod tests {
             parse_condition(text, "col", today)
                 .unwrap()
                 .into_iter()
+                .flatten()
                 .map(|term| (term.operator, term.value, term.negated))
                 .collect::<Vec<_>>()
         };
@@ -870,9 +884,22 @@ mod tests {
             ]
         );
         assert_eq!(terms("  "), []);
-        for bad in ["..", ">=", "!="] {
+        for bad in ["..", ">=", "!=", "=5 | >="] {
             assert!(parse_condition(bad, "col", today).is_err(), "{bad}");
         }
+        // `|` outside quotes separates groups of terms, any one of which may
+        // match; an empty group is still being typed.
+        let groups = |text: &str| {
+            parse_condition(text, "col", today)
+                .unwrap()
+                .iter()
+                .map(|group| group.iter().map(|term| term.value.clone()).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(groups(">1 <5 | =9"), [vec!["1", "5"], vec!["9"]]);
+        assert_eq!(groups("=5|=7 |"), [vec!["5"], vec!["7"]]);
+        assert_eq!(groups("=\"a | b\""), [vec!["a | b"]]);
+        assert_eq!(groups("|"), Vec::<Vec<String>>::new());
     }
 
     #[test]
