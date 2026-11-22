@@ -82,8 +82,12 @@ pub(crate) struct DashboardState {
     pub queries: Vec<QueryRecord>,
     pub console: Vec<ConsoleRecord>,
     pub loaded: bool,
-    /// Bumped on reload, so answers for the old page are dropped.
+    /// Bumped each time a page loads, so answers for the old page are dropped.
     generation: u64,
+    /// Bumped each time the manifest is read again, so sources opened for an
+    /// older manifest are dropped. Separate from `generation`: the page
+    /// often loads before its sources are open, and they must still arrive.
+    sources_generation: u64,
     /// The file's modified time when read, to reload after it changes.
     modified: Option<SystemTime>,
     pub opened_at: Instant,
@@ -335,6 +339,7 @@ impl DataFrameView {
             console: Vec::new(),
             loaded: false,
             generation: 0,
+            sources_generation: 0,
             opened_at: Instant::now(),
             quiet_since: None,
         }));
@@ -378,14 +383,14 @@ impl DataFrameView {
         let repository = self.repository.clone();
         let manifest = dashboard.manifest.clone();
         let path = dashboard.path.clone();
-        let generation = dashboard.generation;
+        let generation = dashboard.sources_generation;
         cx.spawn(
             move || {
                 crate::infrastructure::dashboard::prepare_profile(&database, &repository)?;
                 DashboardEngine::open(database, &manifest, &path).map(Arc::new)
             },
             move |view: &mut Self, cx, engine: Result<Arc<DashboardEngine>, String>| {
-                let Some(dashboard) = view.dashboard.as_mut().filter(|dashboard| dashboard.generation == generation) else {
+                let Some(dashboard) = view.dashboard.as_mut().filter(|dashboard| dashboard.sources_generation == generation) else {
                     return;
                 };
                 match engine {
@@ -742,6 +747,7 @@ impl DataFrameView {
                 dashboard.manifest = manifest;
                 dashboard.modified = modified_time(&path);
                 dashboard.generation += 1;
+                dashboard.sources_generation += 1;
                 dashboard.running = 0;
                 dashboard.loaded = false;
                 dashboard.error = None;
@@ -1168,6 +1174,32 @@ mod tests {
         assert_eq!(served("http://localhost:8080/"), "blocked");
         assert_eq!(served("https://cdn.jsdelivr.net.evil.com/x.js"), "blocked");
         assert_eq!(served("data:image/png;base64,AAAA"), "pass");
+    }
+
+    #[test]
+    fn sources_that_open_after_the_page_loads_still_arrive() {
+        use super::super::test_support::{Viewer, empty_frame, repository};
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("sales.csv"), "region,amount\nnorth,1\nsouth,2\n").unwrap();
+        let board = home.path().join("board.ddash");
+        std::fs::write(&board, r#"<script type="application/json" id="datadiver">{"sources": {"sales": "sales.csv"}}</script>"#).unwrap();
+        let viewer = Viewer::open(empty_frame(), None, None, repository(home.path()));
+        viewer.update(|view, cx| {
+            view.navigate_to_file(FileEntry::Source(board.clone()), false, false, false, cx);
+            // With a real profile, syncing the watched files' views takes a
+            // while: the page loads and asks before its sources are open.
+            view.dashboard_message(r#"{"type":"hello","version":1}"#, cx);
+            view.dashboard_message(r#"{"type":"query","id":1,"sql":"select count(*) as n from sales"}"#, cx);
+        });
+        viewer.settle();
+        viewer.read(|view| {
+            let dashboard = view.dashboard.as_ref().expect("the dashboard is open");
+            assert!(dashboard.engine.is_some(), "the sources were dropped: {:?}", dashboard.error);
+            assert_eq!(dashboard.queries.len(), 1);
+            assert_eq!(dashboard.queries[0].error, None);
+            assert_eq!(dashboard.queries[0].rows, 1);
+            assert_eq!(dashboard.running, 0);
+        });
     }
 
     #[test]
