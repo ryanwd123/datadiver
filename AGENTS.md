@@ -42,8 +42,9 @@ the relevant code before reading broadly, since several source files run past
 Fuzzers, a differential test of the DuckDB and Polars engines, and a chaos
 monkey that drives the whole UI live in `src/stress` and
 `src/ui/dataframe_view/chaos_tests.rs`. They are `#[ignore]`d, so
-`cargo test` skips them. Run them before a release, or after a change to
-the engines, the search language, saved files, or input handling:
+`cargo test` skips them. Run them only before a release (step 2 of
+Releasing), not after everyday changes, even ones to the engines or the
+search language:
 
 ```powershell
 .\scripts\stress.ps1              # about 15 minutes
