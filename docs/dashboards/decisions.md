@@ -477,6 +477,13 @@ with only the exe to go on.
   dashboards' `range` keys would collide. The guide now says to prefix keys.
   A storage per dashboard (an origin per file) was turned down for now: it
   would tie saved state to the file's path, and a prefix is enough.
+- **Bare aliases such as `any_value(x) name` and `count(*) weeks` failed**,
+  three times. DuckDB takes a keyword as an alias only after AS, and its error
+  quoted the `DESCRIBE SELECT * FROM (` DataDiver wraps around the page's
+  SQL. A query that fails to prepare is now prepared again on its own, so
+  the error quotes the page's SQL, and when the word sits where an alias
+  would and DuckDB confirms it needs AS, the error ends with a hint. This
+  only runs once a query has failed, so working queries cost nothing more.
 
 **Your notes:**
 

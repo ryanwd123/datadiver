@@ -622,7 +622,10 @@ fn run_query(connection: &Connection, sql: &str, binds: &[Bind], limit: usize) -
     let result = (|| {
         let params = duckdb::params_from_iter(binds.iter());
         // DESCRIBE names the columns and their DuckDB types without running the query.
-        let mut describe = connection.prepare(&format!("DESCRIBE SELECT * FROM ({sql}\n)")).map_err(error)?;
+        let mut describe = match connection.prepare(&format!("DESCRIBE SELECT * FROM ({sql}\n)")) {
+            Ok(describe) => describe,
+            Err(wrapped) => return Err(own_error(connection, sql).unwrap_or_else(|| wrapped.to_string())),
+        };
         let columns = describe
             .query_map(params, |row| {
                 Ok(ResultColumn {
@@ -680,6 +683,51 @@ fn run_query(connection: &Connection, sql: &str, binds: &[Bind], limit: usize) -
     })();
     let _ = connection.execute_batch("ROLLBACK");
     result
+}
+
+/// The error of `sql` prepared on its own, so the line DuckDB quotes is the
+/// page's SQL rather than the DESCRIBE around it, with a hint when the cause
+/// looks like a bare alias. `None` if it prepares on its own.
+fn own_error(connection: &Connection, sql: &str) -> Option<String> {
+    let message = connection.prepare(sql).err()?.to_string();
+    // DuckDB says whether the word is one it takes as an alias only after AS.
+    let needs_as = |word: &str| connection.prepare(&format!("select 1 {word}")).is_err() && connection.prepare(&format!("select 1 as {word}")).is_ok();
+    Some(match bare_alias_hint(sql, &message).filter(|(word, _)| needs_as(word)) {
+        Some((_, hint)) => format!("{message}\n\n{hint}"),
+        None => message,
+    })
+}
+
+/// A hint for `syntax error at or near "name"` where `name` follows an
+/// expression and ends a select item, as in `any_value(x) name, …`: DuckDB
+/// takes a keyword as an alias only after AS. Returns the word and the hint.
+fn bare_alias_hint<'a>(sql: &str, message: &'a str) -> Option<(&'a str, String)> {
+    use diver_sql::SyntaxKind as K;
+    let near = message.split("syntax error at or near \"").nth(1)?.split('"').next()?;
+    let mut at = 0usize;
+    let tokens = diver_sql::tokenize(sql)
+        .into_iter()
+        .filter_map(|token| {
+            let range = at..at + usize::from(token.len);
+            at = range.end;
+            (!matches!(token.kind, K::WHITESPACE | K::LINE_COMMENT | K::BLOCK_COMMENT)).then(|| (token.kind, &sql[range]))
+        })
+        .collect::<Vec<_>>();
+    const NOT_AN_EXPRESSION: &[&str] = &["select", "distinct", "as", "by", "on", "and", "or", "not", "where", "when", "then", "else", "case", "in", "is", "from", "join", "having", "all"];
+    let alias = tokens.iter().enumerate().any(|(index, &(kind, text))| {
+        let before = index.checked_sub(1).map(|index| tokens[index]);
+        let after = tokens.get(index + 1).copied();
+        kind == K::IDENT
+            && text.eq_ignore_ascii_case(near)
+            && !near.eq_ignore_ascii_case("from")
+            && before.is_some_and(|(kind, text)| match kind {
+                K::IDENT => !NOT_AN_EXPRESSION.iter().any(|word| text.eq_ignore_ascii_case(word)),
+                K::QUOTED_IDENT | K::R_PAREN | K::R_BRACK | K::STRING | K::INT_NUMBER | K::FLOAT_NUMBER => true,
+                _ => false,
+            })
+            && after.is_none_or(|(kind, text)| matches!(kind, K::COMMA | K::R_PAREN | K::SEMICOLON) || text.eq_ignore_ascii_case("from"))
+    });
+    alias.then(|| (near, format!("Hint: to name a column {near}, write `AS {near}`. DuckDB takes a keyword as an alias only after AS.")))
 }
 
 enum ValueKind {
@@ -804,6 +852,32 @@ mod tests {
         );
         assert_eq!(manifest.commands[0].key.as_deref(), Some("ctrl-shift-r"));
         assert_eq!(Manifest::from_html("<html></html>").unwrap().sources, Vec::new());
+    }
+
+    #[test]
+    fn syntax_errors_quote_the_page_sql_and_hint_at_bare_aliases() {
+        let home = tempfile::tempdir().unwrap();
+        let engine = engine(home.path(), "{}");
+        let error = engine.query(&QueryRequest::new("select 1 as a, 2 name, count(*) weeks from range(3)")).unwrap_err();
+        assert!(error.contains("syntax error at or near \"name\""), "{error}");
+        assert!(!error.contains("DESCRIBE"), "the error quotes DataDiver's wrapper: {error}");
+        assert!(error.contains("Hint: to name a column name, write `AS name`."), "{error}");
+        // Other syntax errors get no hint.
+        for sql in ["select 1 from range(3) where", "select 1 a b"] {
+            let error = engine.query(&QueryRequest::new(sql)).unwrap_err();
+            assert!(!error.contains("Hint"), "{sql}: {error}");
+        }
+        // The hint looks only at where an alias would be.
+        for (sql, near, hint) in [
+            ("select x role from t", "role", true),
+            ("select f(x) sets", "sets", true),
+            ("select 'a' name, 2", "name", true),
+            ("select name from t", "name", false),
+            ("select a from t where x and name", "name", false),
+        ] {
+            let message = format!("Parser Error: syntax error at or near \"{near}\"");
+            assert_eq!(bare_alias_hint(sql, &message).is_some(), hint, "{sql}");
+        }
     }
 
     #[test]
