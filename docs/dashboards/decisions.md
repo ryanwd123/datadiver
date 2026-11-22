@@ -484,6 +484,16 @@ with only the exe to go on.
   the error quotes the page's SQL, and when the word sits where an alias
   would and DuckDB confirms it needs AS, the error ends with a hint. This
   only runs once a query has failed, so working queries cost nothing more.
+- **`--run` could not `await`**: the agent wrote
+  `await new Promise((r) => setTimeout(r, 900))` to let a scroll finish and
+  got a SyntaxError, since WebView2's `ExecuteScript` runs a classic script.
+  Scripts now go through the DevTools protocol's `Runtime.evaluate` with
+  `replMode`, which runs them as the console does: top-level `await`, the
+  last expression's value, page globals, and `const` names a later step may
+  declare again. A script that is still waiting when the check's `--timeout`
+  runs out is reported as such, and the capture still happens. Wrapping the
+  script in an async function was turned down: it would lose the last
+  expression's value, which is how agents read state back.
 
 **Your notes:**
 

@@ -289,15 +289,32 @@ pub(crate) fn check_storage() -> PathBuf {
 
 pub(crate) const CHECK_STORAGE_PREFIX: &str = "datadiver-check-";
 
-/// Runs `script` in the page and reports its value as JSON, or the error it
-/// threw: WebView2 itself would give `null` for both.
-fn reported_script(script: &str) -> String {
-    let source = serde_json::to_string(script).unwrap_or_default();
-    format!(
-        "(() => {{ try {{ const value = (0, eval)({source}); \
-         return {{ ok: true, value: value instanceof Promise ? '(a promise; the check waits for its queries)' : value }}; }} \
-         catch (error) {{ return {{ ok: false, error: String(error && error.stack || error) }}; }} }})()"
-    )
+/// The DevTools `Runtime.evaluate` parameters that run a `--run` script as
+/// the console would: `await` works at the top, the last expression's value
+/// is the answer, a promise is waited for, and `const` names may be declared
+/// again by a later step.
+fn evaluate_params(script: &str) -> String {
+    json!({"expression": script, "replMode": true, "awaitPromise": true, "returnByValue": true, "userGesture": true}).to_string()
+}
+
+/// How a `--run` script went, from `Runtime.evaluate`'s answer: `{ok, value}`
+/// or `{ok, error}`.
+fn script_outcome(answer: Result<String, String>) -> Value {
+    let answer = match answer.and_then(|json| serde_json::from_str::<Value>(&json).map_err(|error| error.to_string())) {
+        Ok(answer) => answer,
+        // DevTools fails the call itself for a value it cannot send as JSON, such as a DOM element.
+        Err(error) => return json!({"ok": false, "error": format!("{error}; return a value JSON can hold, such as text or a number")}),
+    };
+    if let Some(details) = answer.get("exceptionDetails") {
+        let error = details
+            .pointer("/exception/description")
+            .or_else(|| details.pointer("/exception/value"))
+            .or_else(|| details.get("text"))
+            .map(|error| error.as_str().map(str::to_owned).unwrap_or_else(|| error.to_string()))
+            .unwrap_or_default();
+        return json!({"ok": false, "error": error});
+    }
+    json!({"ok": true, "value": answer.pointer("/result/value").cloned().unwrap_or(Value::Null)})
 }
 
 /// The most characters of a query's SQL a check report shows when the
@@ -893,15 +910,29 @@ impl DataFrameView {
         let window = cx.window_id();
         if settled && let Some(web) = web {
             if let Some(script) = check.scripts.get(progress.scripts.len()) {
+                // The answer and the time limit race; the first one counts.
+                let answered = std::rc::Rc::new(std::cell::Cell::new(false));
+                let (late_answered, late_check, late_progress, late_script) = (answered.clone(), check.clone(), progress.clone(), script.clone());
+                let limit = check.timeout.saturating_sub(elapsed);
                 let script = script.clone();
-                web.execute_script(
-                    &reported_script(&script),
+                web.call_dev_tools(
+                    "Runtime.evaluate",
+                    &evaluate_params(&script),
                     Box::new(move |result| {
                         crate::ui::platform::window::post::<Self>(window, move |view, cx| {
-                            view.check_script_ran(check, progress, script, result, cx);
+                            if !answered.replace(true) {
+                                view.check_script_ran(check, progress, script, script_outcome(result), cx);
+                            }
                         });
                     }),
                 );
+                cx.timer(limit, move |view, cx| {
+                    if !late_answered.replace(true) {
+                        let error = json!({"ok": false, "error": "the script was still running when the check's --timeout ran out"});
+                        view.check_script_ran(late_check, late_progress, late_script, error, cx);
+                    }
+                })
+                .detach();
                 return;
             }
             if check.full_page && check.capture.is_some() && !progress.resized {
@@ -939,16 +970,9 @@ impl DataFrameView {
     }
 
     /// A `--run` script finished: note how, and wait for its queries.
-    fn check_script_ran(&mut self, check: DashboardCheck, mut progress: CheckProgress, script: String, result: Result<String, String>, cx: &mut Cx<Self>) {
-        let outcome = result.and_then(|json| serde_json::from_str::<Value>(&json).map_err(|error| error.to_string()));
-        progress.scripts.push(match outcome {
-            Ok(Value::Object(mut reported)) => {
-                reported.insert("script".into(), json!(script));
-                Value::Object(reported)
-            }
-            Ok(other) => json!({"script": script, "ok": false, "error": format!("unexpected answer {other}")}),
-            Err(error) => json!({"script": script, "ok": false, "error": error}),
-        });
+    fn check_script_ran(&mut self, check: DashboardCheck, mut progress: CheckProgress, script: String, mut outcome: Value, cx: &mut Cx<Self>) {
+        outcome["script"] = json!(script);
+        progress.scripts.push(outcome);
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.quiet_since = Some(Instant::now());
         }
@@ -1369,9 +1393,18 @@ mod tests {
 
     #[test]
     fn check_scripts_report_their_value_or_error() {
-        let wrapped = reported_script("document.title = \"it's\"");
-        assert!(wrapped.contains(r#"eval)("document.title = \"it's\"")"#), "{wrapped}");
-        assert!(wrapped.contains("ok: false"));
+        let params: Value = serde_json::from_str(&evaluate_params("document.title = \"it's\"")).unwrap();
+        assert_eq!(params["expression"], "document.title = \"it's\"");
+        assert_eq!((params["replMode"].clone(), params["awaitPromise"].clone()), (json!(true), json!(true)));
+        let answer = |json: &str| script_outcome(Ok(json.to_owned()));
+        assert_eq!(answer(r#"{"result":{"type":"number","value":3}}"#), json!({"ok": true, "value": 3}));
+        assert_eq!(answer(r#"{"result":{"type":"undefined"}}"#), json!({"ok": true, "value": null}));
+        assert_eq!(
+            answer(r#"{"result":{"type":"object"},"exceptionDetails":{"text":"Uncaught","exception":{"description":"TypeError: x is null\n    at <anonymous>:1:3"}}}"#),
+            json!({"ok": false, "error": "TypeError: x is null\n    at <anonymous>:1:3"})
+        );
+        assert_eq!(answer(r#"{"result":{},"exceptionDetails":{"text":"Uncaught","exception":{"type":"string","value":"nope"}}}"#), json!({"ok": false, "error": "nope"}));
+        assert_eq!(script_outcome(Err("E_FAIL".into()))["ok"], json!(false));
     }
 
     #[test]

@@ -27,7 +27,9 @@ datadiver dashboard <command>
   check <board.ddash>            Opens the dashboard out of sight, waits for its queries, and reports
         [--capture shot.png] [--full-page] [--size WxH] [--timeout SECONDS]
         [--run \"js\"]...             run JavaScript in the page once it settles, such as clicking a
-                                 control, then wait for its queries; repeat for several steps
+                                 control, then wait for its queries; repeat for several steps.
+                                 Runs like the browser console: await works, and the last
+                                 expression's value is reported
   register | unregister          Opens .ddash files with this DataDiver when double-clicked, or stops
 
 Every command takes --home DIR to use another profile folder.";

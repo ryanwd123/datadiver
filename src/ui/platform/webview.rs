@@ -14,7 +14,7 @@ use std::rc::{Rc, Weak};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler, CoTaskMemPWSTR,
+    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler, CoTaskMemPWSTR,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler,
@@ -226,6 +226,22 @@ impl WebView {
         }));
         if let Err(error) = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) } {
             eprintln!("cannot run a script in the page: {}", error_text(error));
+        }
+    }
+
+    /// Calls the DevTools protocol's `method` with `params` (JSON), then
+    /// calls `done` with its answer as JSON.
+    pub fn call_dev_tools(&self, method: &str, params: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        let Some(webview) = self.inner.borrow().webview.clone() else {
+            done(Err("the page is not open yet".into()));
+            return;
+        };
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, json| {
+            done(result.map_err(error_text).map(|()| json));
+            Ok(())
+        }));
+        if let Err(error) = unsafe { webview.CallDevToolsProtocolMethod(&HSTRING::from(method), &HSTRING::from(params), &handler) } {
+            eprintln!("cannot call {method} in the page: {}", error_text(error));
         }
     }
 

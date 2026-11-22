@@ -31,8 +31,12 @@ JavaScript, and ask `window.datadiver.query` for every number.
      `--run "<javascript>"`: it runs in the page once the page settles, and
      the check waits for the queries it starts before the next `--run` or the
      capture. For example `--run "document.querySelector('#range-90d').click()"`.
-     The report shows each script's value or the error it threw. Use this
-     instead of editing a copy of the dashboard.
+     A script runs like a line typed in the browser's console: it sees the
+     page's own top-level variables, `await` works, and the value of its last
+     expression is reported (return text, numbers or plain objects, not DOM
+     elements), or the error it threw. To wait for something other than
+     queries, such as an animation, `await new Promise((r) => setTimeout(r, 500))`.
+     Use this instead of editing a copy of the dashboard.
 4. Tell the user to open it: double-click the file (after
    `datadiver dashboard register`), drag it onto DataDiver, or
    `datadiver board.ddash`. Editing the file while it is open reloads it when
