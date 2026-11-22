@@ -1973,7 +1973,7 @@ fn command_menu_lists_its_commands_and_runs_only_its_keys() {
     let home = tempfile::tempdir().unwrap();
     let viewer = viewer(&home);
     press_in_grid(&viewer, "ctrl-k");
-    for command in [CommandId::Export, CommandId::RunAction] {
+    for command in [CommandId::Export, CommandId::RunAction, CommandId::ViewOptions] {
         assert!(has_button(&viewer, Button::CommandMenuItem(command)), "{command:?}");
     }
     // Commands with a key of their own in the grid aren't repeated here.
@@ -1996,6 +1996,18 @@ fn command_menu_lists_its_commands_and_runs_only_its_keys() {
     click_button(&viewer, Button::CommandMenuItem(CommandId::Export));
     assert!(!viewer.read(|view| view.command_menu_open));
     assert_eq!(fake::with(|system| system.new_path_prompts), prompts + 2);
+}
+
+#[test]
+fn command_menu_opens_view_options() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(&home);
+    press_in_grid(&viewer, "ctrl-k v");
+    assert!(!viewer.read(|view| view.command_menu_open));
+    assert!(viewer.read(|view| matches!(
+        &view.dialog,
+        Some(super::dialogs::Dialog::Palette(dialog)) if matches!(dialog.kind, super::dialogs::PaletteKind::ViewOptions)
+    )));
 }
 
 #[test]

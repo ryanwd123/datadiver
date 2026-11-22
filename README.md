@@ -153,6 +153,9 @@ These are the defaults. Single-key commands apply when the grid has focus. Chang
 | --- | --- |
 | E | Export result to file |
 | H / Shift+H | Hide selected columns / show or hide columns (tables) |
+| N | Copy column names |
+| O | Turn outline mode on or off (queries) |
+| V | View options |
 | X | Run view action |
 
 Commands with their own grid key (copy, save, sort, and so on) aren't repeated in the Command menu.

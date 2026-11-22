@@ -236,6 +236,7 @@ pub enum ActionId {
     CommandMenuRunAction,
     CommandMenuCopyColumnNames,
     CommandMenuToggleOutline,
+    CommandMenuViewOptions,
     FilterToValue,
     ExcludeValue,
     ResultFilter,
@@ -1685,6 +1686,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         command: Some(CommandId::ToggleOutline),
         default_bindings: &["o"],
     },
+    ActionSpec {
+        id: ActionId::CommandMenuViewOptions,
+        category: ActionCategory::CommandMenu,
+        name: "View options",
+        context: KeyContext::CommandMenu,
+        command: Some(CommandId::ViewOptions),
+        default_bindings: &["v"],
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2033,6 +2042,7 @@ mod tests {
             assert_eq!(map.binding_for("e", context), Some(ActionId::CommandMenuExport));
             assert_eq!(map.binding_for("x", context), Some(ActionId::CommandMenuRunAction));
             assert_eq!(map.binding_for("n", context), Some(ActionId::CommandMenuCopyColumnNames));
+            assert_eq!(map.binding_for("v", context), Some(ActionId::CommandMenuViewOptions));
             for stroke in ["c", "s", "/", "g", "m", "f", "r"] {
                 assert_eq!(map.binding_for(stroke, context), None, "{stroke}");
             }
