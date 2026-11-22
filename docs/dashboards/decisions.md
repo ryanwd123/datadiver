@@ -494,6 +494,15 @@ with only the exe to go on.
   runs out is reported as such, and the capture still happens. Wrapping the
   script in an async function was turned down: it would lose the last
   expression's value, which is how agents read state back.
+- **It filtered every check report** through `grep -v '"sql"'` and the like,
+  and the full list hid a real waste: the page ran its biggest query twice
+  with the same parameters on every change. `queries` is now a summary: the
+  count, total time, the three slowest, every failure in full, and
+  `duplicates`, a query run more than once with the same parameters within
+  one step (the load, or one `--run`). The same query after a click is not
+  a duplicate. `--queries` adds the full list, whose parameters show how the
+  controls drive the SQL. Duplicates warn but don't fail the check, since
+  the page still shows the right numbers.
 
 **Your notes:**
 

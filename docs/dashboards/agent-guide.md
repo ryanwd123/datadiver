@@ -23,10 +23,13 @@ JavaScript, and ask `window.datadiver.query` for every number.
 2. Write the `.ddash` file: a manifest naming the sources, and the page.
 3. Check it: `datadiver dashboard check board.ddash --capture board.png --full-page`
    opens the page out of sight, waits until its queries finish, and prints
-   JSON with every query (time, rows, error; the SQL in full when it failed),
-   every `console.error` or uncaught error of the page, and source problems.
-   `"ok": true` means nothing failed. `--full-page` captures the whole page,
-   not just one screen. Look at the PNG to judge the layout. Fix and check again.
+   JSON: how many queries ran, the slowest, every failed one with its SQL in
+   full, every `console.error` or uncaught error of the page, and source
+   problems. `"ok": true` means nothing failed. `duplicates` lists queries the
+   page ran more than once with the same parameters in one step, which is
+   time wasted; fix those too. `--queries` lists every query with its
+   parameters. `--full-page` captures the whole page, not just one screen.
+   Look at the PNG to judge the layout. Fix and check again.
    - To check another state, such as a filter or a date range, add
      `--run "<javascript>"`: it runs in the page once the page settles, and
      the check waits for the queries it starts before the next `--run` or the

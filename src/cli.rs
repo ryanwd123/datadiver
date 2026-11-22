@@ -26,6 +26,8 @@ datadiver dashboard <command>
         [--format json | tsv | table]   table is easiest to read; tsv to pipe on
   check <board.ddash>            Opens the dashboard out of sight, waits for its queries, and reports
         [--capture shot.png] [--full-page] [--size WxH] [--timeout SECONDS]
+        [--queries]                 list every query; without it, the report counts them and shows
+                                 the slowest, every failure, and repeats with the same parameters
         [--run \"js\"]...             run JavaScript in the page once it settles, such as clicking a
                                  control, then wait for its queries; repeat for several steps.
                                  Runs like the browser console: await works, and the last
@@ -127,7 +129,7 @@ pub fn agent_json(value: &Value) -> String {
 }
 
 /// Options that take no value.
-const FLAGS: &[&str] = &["full-page"];
+const FLAGS: &[&str] = &["full-page", "queries"];
 
 struct Arguments {
     positional: Vec<String>,
@@ -511,7 +513,7 @@ fn query(arguments: &Arguments) -> Result<i32, String> {
 }
 
 fn check(arguments: &Arguments) -> Result<i32, String> {
-    arguments.check_options(&["capture", "timeout", "size", "quiet", "run", "full-page"])?;
+    arguments.check_options(&["capture", "timeout", "size", "quiet", "run", "full-page", "queries"])?;
     let [dashboard] = arguments.positional.as_slice() else {
         return Err("check needs one .ddash file".into());
     };
@@ -537,6 +539,7 @@ fn check(arguments: &Arguments) -> Result<i32, String> {
             quiet: seconds("quiet", 1.0)?,
             scripts: arguments.all("run").map(str::to_owned).collect(),
             full_page,
+            list_queries: arguments.flag("queries"),
         }),
         ..Default::default()
     };

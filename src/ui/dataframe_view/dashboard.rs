@@ -44,6 +44,9 @@ pub(crate) struct QueryRecord {
     pub rows: usize,
     pub truncated: bool,
     pub error: Option<String>,
+    /// The `dashboard check` step that sent it: 0 while the page loads, then
+    /// one per `--run` script.
+    pub step: usize,
 }
 
 /// A message the page logged with `console.error` or `console.warn`, or an uncaught error.
@@ -93,6 +96,8 @@ pub(crate) struct DashboardState {
     pub opened_at: Instant,
     /// When the page last had no query running, for `dashboard check`.
     pub quiet_since: Option<Instant>,
+    /// The `dashboard check` step running, which each query records.
+    check_step: std::cell::Cell<usize>,
     /// The page's height in the window, in DIPs, as last drawn.
     page_height: f32,
 }
@@ -268,6 +273,8 @@ pub struct DashboardCheck {
     pub scripts: Vec<String>,
     /// Grows the window to the page's full height before the capture.
     pub full_page: bool,
+    /// Lists every query in the report, not just a summary.
+    pub list_queries: bool,
 }
 
 /// What a check has done so far, carried from one poll to the next.
@@ -328,6 +335,56 @@ fn one_line(sql: &str, limit: usize) -> String {
         return line;
     }
     format!("{}… ({} characters)", line.chars().take(limit).collect::<String>(), line.chars().count())
+}
+
+/// How many of the slowest queries a check report shows.
+const REPORT_SLOWEST: usize = 3;
+
+/// One query as a check report shows it.
+fn query_entry(query: &QueryRecord) -> Value {
+    json!({
+        "sql": if query.error.is_some() { query.sql.clone() } else { one_line(&query.sql, REPORT_SQL) },
+        "params": query.params,
+        "elapsedMs": query.elapsed_ms,
+        "rows": query.rows,
+        "truncated": query.truncated,
+        "error": query.error,
+    })
+}
+
+/// The `queries` part of a check report: how many ran, the slowest, every
+/// failure in full, and any a step ran more than once with the same
+/// parameters, which is time the page wastes. `all` adds every query.
+fn query_summary(queries: &[QueryRecord], all: bool) -> Value {
+    let mut slowest = queries.iter().filter(|query| query.error.is_none()).collect::<Vec<_>>();
+    slowest.sort_by(|a, b| b.elapsed_ms.total_cmp(&a.elapsed_ms));
+    let mut repeated: Vec<(&QueryRecord, usize)> = Vec::new();
+    for query in queries.iter().filter(|query| query.error.is_none()) {
+        match repeated.iter_mut().find(|(seen, _)| seen.step == query.step && seen.sql == query.sql && seen.params == query.params) {
+            Some((_, times)) => *times += 1,
+            None => repeated.push((query, 1)),
+        }
+    }
+    let duplicates = repeated
+        .into_iter()
+        .filter(|(_, times)| *times > 1)
+        .map(|(query, times)| {
+            let step = if query.step == 0 { "while loading".to_owned() } else { format!("after --run {}", query.step) };
+            json!({"sql": one_line(&query.sql, REPORT_SQL), "params": query.params, "times": times, "step": step})
+        })
+        .collect::<Vec<_>>();
+    let mut summary = json!({
+        "count": queries.len(),
+        "failed": queries.iter().filter(|query| query.error.is_some()).count(),
+        "elapsedMs": (queries.iter().map(|query| query.elapsed_ms).sum::<f64>() * 10.0).round() / 10.0,
+        "slowest": slowest.into_iter().take(REPORT_SLOWEST).map(query_entry).collect::<Vec<_>>(),
+        "failures": queries.iter().filter(|query| query.error.is_some()).map(query_entry).collect::<Vec<_>>(),
+        "duplicates": duplicates,
+    });
+    if all {
+        summary["all"] = json!(queries.iter().map(query_entry).collect::<Vec<_>>());
+    }
+    summary
 }
 
 /// Measures the page: its full width and height in CSS pixels.
@@ -425,6 +482,7 @@ impl DataFrameView {
             sources_generation: 0,
             opened_at: Instant::now(),
             quiet_since: None,
+            check_step: std::cell::Cell::new(0),
             page_height: 0.0,
         }));
         self.focus = None;
@@ -659,6 +717,7 @@ impl DataFrameView {
         dashboard.running += 1;
         dashboard.quiet_since = None;
         let generation = dashboard.generation;
+        let step = dashboard.check_step.get();
         let asked = request.clone();
         cx.spawn(
             move || engine.query(&request),
@@ -680,6 +739,7 @@ impl DataFrameView {
                     rows: result.as_ref().map(|result| result.rows.len()).unwrap_or(0),
                     truncated: result.as_ref().is_ok_and(|result| result.truncated),
                     error: result.as_ref().err().cloned(),
+                    step,
                 };
                 if dashboard.queries.len() == QUERY_LOG {
                     dashboard.queries.remove(0);
@@ -915,6 +975,7 @@ impl DataFrameView {
                 let (late_answered, late_check, late_progress, late_script) = (answered.clone(), check.clone(), progress.clone(), script.clone());
                 let limit = check.timeout.saturating_sub(elapsed);
                 let script = script.clone();
+                dashboard.check_step.set(progress.scripts.len() + 1);
                 web.call_dev_tools(
                     "Runtime.evaluate",
                     &evaluate_params(&script),
@@ -946,6 +1007,7 @@ impl DataFrameView {
             }
         }
         let scripts = progress.scripts;
+        let all = check.list_queries;
         match (&check.capture, web) {
             (Some(path), Some(web)) => {
                 let path_shown = path.clone();
@@ -955,17 +1017,17 @@ impl DataFrameView {
                     path.clone(),
                     Box::new(move |result| {
                         crate::ui::platform::window::post::<Self>(window, move |view, cx| {
-                            view.finish_dashboard_check(timed_out, Some((path_shown, result)), scripts, cx);
+                            view.finish_dashboard_check(timed_out, Some((path_shown, result)), scripts, all, cx);
                         });
                     }),
                 );
                 // A capture that never answers must not keep the check running.
                 cx.timer(std::time::Duration::from_secs(10), move |view, cx| {
-                    view.finish_dashboard_check(timed_out, Some((late, Err("the capture did not finish in 10 seconds".into()))), late_scripts, cx);
+                    view.finish_dashboard_check(timed_out, Some((late, Err("the capture did not finish in 10 seconds".into()))), late_scripts, all, cx);
                 })
                 .detach();
             }
-            _ => self.finish_dashboard_check(timed_out, None, scripts, cx),
+            _ => self.finish_dashboard_check(timed_out, None, scripts, all, cx),
         }
     }
 
@@ -994,7 +1056,7 @@ impl DataFrameView {
         self.poll_dashboard_check(check, progress, cx);
     }
 
-    fn finish_dashboard_check(&mut self, timed_out: bool, capture: Option<(PathBuf, Result<(), String>)>, scripts: Vec<Value>, cx: &mut Cx<Self>) {
+    fn finish_dashboard_check(&mut self, timed_out: bool, capture: Option<(PathBuf, Result<(), String>)>, scripts: Vec<Value>, list_queries: bool, cx: &mut Cx<Self>) {
         // The capture's answer and its time limit both end up here; the first reports.
         if !std::mem::take(&mut self.dashboard_checking) {
             return;
@@ -1004,20 +1066,7 @@ impl DataFrameView {
             return;
         };
         let sources = dashboard.engine.as_ref().map(|engine| engine.sources.clone()).unwrap_or_default();
-        let queries = dashboard
-            .queries
-            .iter()
-            .map(|query| {
-                json!({
-                    "sql": if query.error.is_some() { query.sql.clone() } else { one_line(&query.sql, REPORT_SQL) },
-                    "params": query.params,
-                    "elapsedMs": query.elapsed_ms,
-                    "rows": query.rows,
-                    "truncated": query.truncated,
-                    "error": query.error,
-                })
-            })
-            .collect::<Vec<_>>();
+        let queries = query_summary(&dashboard.queries, list_queries);
         let messages = dashboard
             .console
             .iter()
@@ -1376,6 +1425,36 @@ mod tests {
     fn reports_show_working_queries_on_one_short_line() {
         assert_eq!(one_line("select a,\n  b\nfrom   t", 160), "select a, b from t");
         assert_eq!(one_line(&format!("select {}", "x".repeat(300)), 10), "select xxx… (307 characters)");
+    }
+
+    #[test]
+    fn reports_summarize_queries_and_flag_repeats_within_a_step() {
+        let query = |sql: &str, step: usize, elapsed_ms: f64, error: Option<&str>| QueryRecord {
+            sql: sql.into(),
+            params: Some(json!({"p": [1]})),
+            elapsed_ms,
+            rows: 1,
+            truncated: false,
+            error: error.map(str::to_owned),
+            step,
+        };
+        let queries = [
+            query("select a", 0, 5.0, None),
+            query("select a", 0, 6.0, None),
+            query("select b", 0, 50.0, None),
+            // The same query after a click is not a repeat.
+            query("select b", 1, 40.0, None),
+            query("select c", 1, 1.0, None),
+            query("select oops", 1, 0.0, Some("Parser Error")),
+        ];
+        let summary = query_summary(&queries, false);
+        assert_eq!((summary["count"].clone(), summary["failed"].clone(), summary["elapsedMs"].clone()), (json!(6), json!(1), json!(102.0)));
+        let slowest = summary["slowest"].as_array().unwrap().iter().map(|entry| entry["elapsedMs"].as_f64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(slowest, [50.0, 40.0, 6.0]);
+        assert_eq!(summary["failures"][0]["sql"], "select oops");
+        assert_eq!(summary["duplicates"], json!([{"sql": "select a", "params": {"p": [1]}, "times": 2, "step": "while loading"}]));
+        assert!(summary.get("all").is_none());
+        assert_eq!(query_summary(&queries, true)["all"].as_array().unwrap().len(), 6);
     }
 
     #[test]
