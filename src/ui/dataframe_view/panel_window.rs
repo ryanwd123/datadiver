@@ -66,6 +66,7 @@ impl DataFrameView {
             height: DEFAULT_HEIGHT,
             placement: self.panel_window_placement(&cx.for_window(owner)),
             visible: true,
+            offscreen: false,
         };
         let id = cx.for_window(owner).open_owned_window(options, |view, cx| {
             // The manager's editor paints into its window, which exists now.

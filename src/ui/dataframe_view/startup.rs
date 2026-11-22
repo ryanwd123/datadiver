@@ -29,6 +29,9 @@ pub struct ViewerOptions {
     pub about: bool,
     /// A location for a new window to open, such as a drill-down.
     pub(crate) open_entry: Option<(FileEntry, Option<DrillDown>)>,
+    /// Runs the dashboard at `load_path` in a hidden window, prints what
+    /// happened, and quits; for `datadiver dashboard check`.
+    pub dashboard_check: Option<super::dashboard::DashboardCheck>,
 }
 
 impl Default for ViewerOptions {
@@ -49,6 +52,7 @@ impl Default for ViewerOptions {
             show: Vec::new(),
             about: false,
             open_entry: None,
+            dashboard_check: None,
         }
     }
 }
@@ -167,6 +171,20 @@ impl DataFrameView {
         runtime.open_window(window, build);
     }
 
+    /// Opens a window that is not the app's first, such as for a dashboard
+    /// another DataDiver process handed this one.
+    pub fn open_another(runtime: &Runtime<Self>, options: ViewerOptions) {
+        let store = match crate::infrastructure::duckdb_store::DuckDbStore::empty() {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("cannot open a window: {error}");
+                return;
+            }
+        };
+        let (window, build) = Self::window(false, FrameSnapshot::new(store, 1), None, options);
+        runtime.open_window(window, build);
+    }
+
     /// Opens another window from a window's work.
     pub(crate) fn open_in(cx: &mut Cx<Self>, frame: FrameSnapshot, source_path: Option<String>, options: ViewerOptions) {
         let primary = cx.window_count() == 0;
@@ -182,8 +200,11 @@ impl DataFrameView {
             height: options.height,
             placement: None,
             visible: true,
+            // A dashboard check runs out of sight; hidden, the page would
+            // not paint, and a capture of it would never finish.
+            offscreen: options.dashboard_check.is_some(),
         };
-        if primary && options.restore_window && options.capture.is_none() {
+        if primary && options.restore_window && options.capture.is_none() && options.dashboard_check.is_none() {
             match options.repository.load_history() {
                 Ok(history) => {
                     let displays = crate::ui::platform::window::displays();
@@ -212,9 +233,18 @@ impl DataFrameView {
 
     /// What a new window does once it exists.
     fn start(&mut self, primary: bool, options: ViewerOptions, cx: &mut Cx<Self>) {
-        let remember = primary && options.capture.is_none();
+        let remember = primary && options.capture.is_none() && options.dashboard_check.is_none();
         if remember {
             cx.defer(|view, cx| view.remember_window(cx));
+        }
+        if let Some(check) = options.dashboard_check.clone() {
+            let Some(path) = options.load_path.clone() else {
+                eprintln!("a dashboard check needs a dashboard");
+                cx.quit();
+                return;
+            };
+            self.start_dashboard_check(path, check, cx);
+            return;
         }
         for column in &options.slicers {
             self.add_slicer(column.clone(), cx);
@@ -231,6 +261,7 @@ impl DataFrameView {
                 FileEntry::Source(path)
             };
             match entry {
+                FileEntry::Source(path) if crate::infrastructure::dashboard::is_dashboard(&path) => self.open_dashboard(path, cx),
                 FileEntry::Source(path) => self.load_source(path, false, LoadMode::Check, cx),
                 entry => self.navigate_to_location(entry, false, false, true, None, None, cx),
             }
@@ -276,6 +307,9 @@ impl DataFrameView {
     }
 
     fn ready(&self) -> bool {
+        if let Some(dashboard) = &self.dashboard {
+            return dashboard.settled();
+        }
         !self.loading && !self.busy && !self.sql_running && self.grid.widths_ready()
     }
 

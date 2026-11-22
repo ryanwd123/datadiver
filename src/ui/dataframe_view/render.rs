@@ -21,6 +21,13 @@ impl DataFrameView {
             self.focus_grid(cx);
         }
         canvas.clear(colors::BACKGROUND);
+        if self.dashboard.is_some() {
+            self.sync_dashboard_cover(cx);
+            if self.keymap_editor.is_none() {
+                self.render_dashboard(canvas, cx);
+                return;
+            }
+        }
         if self.keymap_editor.is_some() {
             let fonts = self.fonts.clone();
             let focus = self.focus;
@@ -194,7 +201,7 @@ impl DataFrameView {
 
     /// Pops up the messages that changed since the last frame, and redraws
     /// when the toast's time is up.
-    fn sync_notices(&mut self, cx: &mut Cx<Self>) {
+    pub(crate) fn sync_notices(&mut self, cx: &mut Cx<Self>) {
         use crate::ui::notices::NoticeSource;
         let now = cx.now();
         let statistics = self.statistics_error.as_ref().map(|error| format!("Statistics failed: {error}"));

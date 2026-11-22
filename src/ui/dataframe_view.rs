@@ -48,6 +48,7 @@ mod action_tests;
 mod chaos_tests;
 mod auto_save;
 mod commands;
+pub(crate) mod dashboard;
 mod database_tree;
 mod dialogs;
 mod editor_settings;
@@ -346,6 +347,10 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::RunAction,
     CommandId::EditActions,
     CommandId::AiProviders,
+    CommandId::DashboardDevTools,
+    CommandId::DashboardQueries,
+    CommandId::RegisterDashboards,
+    CommandId::UnregisterDashboards,
     CommandId::AskSql,
 ];
 
@@ -723,6 +728,10 @@ pub struct DataFrameView {
     pub(crate) benchmark: bool,
     /// Frames painted, for scripts that wait for one.
     pub(crate) frames: std::rc::Rc<std::cell::Cell<u64>>,
+    /// The dashboard this window shows in place of the grid.
+    pub(crate) dashboard: Option<Box<dashboard::DashboardState>>,
+    /// The window runs `datadiver dashboard check` and quits after.
+    pub(crate) dashboard_checking: bool,
 }
 
 impl GridHost for DataFrameView {
@@ -1011,6 +1020,8 @@ impl DataFrameView {
             split_drag: None,
             benchmark: false,
             frames: Default::default(),
+            dashboard: None,
+            dashboard_checking: false,
         };
         view.sync_grid_formats();
         if view.database_tree_open {
@@ -1563,6 +1574,12 @@ impl DataFrameView {
     }
 
     pub(crate) fn focus_grid(&mut self, cx: &mut Cx<Self>) {
+        // A dashboard stands where the grid is: its page takes the keys.
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.request_focus();
+            self.set_focus(None, cx);
+            return;
+        }
         let id = self.grid.id;
         self.set_focus(Some(id), cx);
     }

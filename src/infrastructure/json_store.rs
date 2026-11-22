@@ -249,6 +249,8 @@ pub struct ApplicationHistory {
     pub sql_window: Option<WindowGeometry>,
     /// The About page has opened once, on the first start.
     pub about_shown: bool,
+    /// Dashboards opened lately, newest first, for the file picker.
+    pub dashboards: Vec<String>,
 }
 
 impl Default for ApplicationHistory {
@@ -264,6 +266,7 @@ impl Default for ApplicationHistory {
             panel_window: None,
             sql_window: None,
             about_shown: false,
+            dashboards: Vec::new(),
         }
     }
 }

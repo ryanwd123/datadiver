@@ -377,6 +377,97 @@ fn runtime<'a, V: View>() -> Option<&'a Runtime<V>> {
     }
 }
 
+/// Runs `run` with window `window`'s view once the message being handled
+/// returns. For code the runtime did not call, such as a WebView's
+/// callbacks, which have no [`Cx`]. Does nothing without a running app.
+pub fn post<V: View>(window: WindowId, run: impl FnOnce(&mut V, &mut Cx<V>) + 'static) {
+    if let Some(runtime) = runtime::<V>() {
+        runtime.queue(Action::Update(window, Box::new(run)));
+    }
+}
+
+/// Runs `run` with window `window`'s view now, if the view is free, for a
+/// callback that must answer at once, such as whether a key was used.
+pub fn with_view<V: View, R>(window: WindowId, run: impl FnOnce(&mut V, &mut Cx<V>) -> R) -> Option<R> {
+    let runtime = runtime::<V>()?;
+    let slot = runtime.window(window)?;
+    let mut view = slot.view.try_borrow_mut().ok()?;
+    let mut cx = Cx { runtime, window };
+    Some(run(&mut view, &mut cx))
+}
+
+/// Whether a child of `hwnd`, such as a WebView, has the keyboard.
+pub(crate) fn child_has_focus(hwnd: HWND) -> bool {
+    let focus = unsafe { GetFocus() };
+    !focus.is_invalid() && focus != hwnd && unsafe { IsChild(hwnd, focus) }.as_bool()
+}
+
+/// Gives `hwnd` the keyboard, from a child window that had it.
+pub(crate) fn take_focus(hwnd: HWND) {
+    unsafe {
+        if GetFocus() != hwnd {
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+}
+
+pub(crate) fn set_title(hwnd: HWND, title: &str) {
+    unsafe {
+        let _ = SetWindowTextW(hwnd, &HSTRING::from(title));
+    }
+}
+
+type InstanceHandler<V> = Box<dyn Fn(&Runtime<V>, String)>;
+
+thread_local! {
+    /// The name other processes find this one by, and what to do with
+    /// their messages; see [`serve_instance`].
+    static INSTANCE: RefCell<Option<(String, Box<dyn std::any::Any>)>> = const { RefCell::new(None) };
+}
+
+/// Lets later processes hand this one messages, such as a file to open,
+/// with [`send_to_instance`] and the same `name`. Call before [`run`].
+pub fn serve_instance<V: View>(name: &str, handle: impl Fn(&Runtime<V>, String) + 'static) {
+    let handler: InstanceHandler<V> = Box::new(handle);
+    INSTANCE.with(|instance| *instance.borrow_mut() = Some((name.to_owned(), Box::new(handler))));
+}
+
+/// Sends `message` to the process serving `name`, if one is running, and lets
+/// it bring a window to the front. Returns whether it took the message.
+pub fn send_to_instance(name: &str, message: &str) -> bool {
+    use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+    unsafe {
+        let Ok(target) = FindWindowExW(Some(HWND_MESSAGE), None, w!("DataDiverWake"), &HSTRING::from(name)) else {
+            return false;
+        };
+        let mut process = 0u32;
+        GetWindowThreadProcessId(target, Some(&mut process));
+        // The process the user started may bring a window forward; this one
+        // passes that on, or the new window would open behind the others.
+        let _ = AllowSetForegroundWindow(process);
+        let bytes = message.as_bytes();
+        let data = COPYDATASTRUCT {
+            dwData: COPY_DATA_MESSAGE,
+            cbData: bytes.len() as u32,
+            lpData: bytes.as_ptr() as *mut _,
+        };
+        let mut result = 0usize;
+        let sent = SendMessageTimeoutW(
+            target,
+            WM_COPYDATA,
+            WPARAM(0),
+            LPARAM(&data as *const _ as isize),
+            SMTO_ABORTIFHUNG,
+            5000,
+            Some(&mut result),
+        );
+        sent.0 != 0 && result == 1
+    }
+}
+
+/// Marks a `WM_COPYDATA` as a message from [`send_to_instance`].
+const COPY_DATA_MESSAGE: usize = 0x4444_4956;
+
 fn slot_for<V: View>(runtime: &Runtime<V>, hwnd: HWND) -> Option<Rc<WindowSlot<V>>> {
     runtime
         .windows
@@ -429,7 +520,13 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
     };
     let parent = owner.as_ref().and_then(|slot| slot.hwnd());
     // Owned windows get no taskbar button of their own.
-    let ex_style = if owner.is_some() { WINDOW_EX_STYLE::default() } else { WS_EX_APPWINDOW };
+    let ex_style = if options.offscreen {
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+    } else if owner.is_some() {
+        WINDOW_EX_STYLE::default()
+    } else {
+        WS_EX_APPWINDOW
+    };
     let hwnd = unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
         let dpi = 96.0_f32.max(dpi_for_point(options.placement.map(|p| (p.x as i32, p.y as i32))) as f32);
@@ -481,7 +578,22 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
             length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
             ..Default::default()
         };
-        if let Some(saved) = options.placement {
+        if options.offscreen {
+            // Past the left edge of every screen, so it renders unseen.
+            let left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let mut outer = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut outer);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                left - (outer.right - outer.left) - 200,
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        } else if let Some(saved) = options.placement {
             let _ = GetWindowPlacement(hwnd, &mut placement);
             placement.rcNormalPosition = RECT {
                 left: saved.x as i32,
@@ -505,7 +617,7 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
                 let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
             }
         }
-        if options.visible {
+        if options.visible && !options.offscreen {
             let _ = SetForegroundWindow(hwnd);
         }
     }
@@ -617,12 +729,14 @@ pub fn run<V: View>(init: impl FnOnce(&Runtime<V>)) {
     register_class::<V>();
     let runtime: &'static Runtime<V> = Box::leak(Box::new(Runtime::new()));
     RUNTIME.with(|cell| cell.set(runtime as *const Runtime<V> as *const ()));
+    // Other processes find the wake window by its title; see `serve_instance`.
+    let instance_name = INSTANCE.with(|instance| instance.borrow().as_ref().map(|(name, _)| name.clone()));
     let wake = unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("DataDiverWake"),
-            w!(""),
+            &HSTRING::from(instance_name.as_deref().unwrap_or("")),
             WINDOW_STYLE::default(),
             0,
             0,
@@ -771,10 +885,36 @@ unsafe extern "system" fn wake_proc<V: View>(hwnd: HWND, message: u32, wparam: W
         }
         return LRESULT(0);
     }
+    if message == WM_COPYDATA {
+        use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+        let data = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+        if data.dwData != COPY_DATA_MESSAGE || data.lpData.is_null() {
+            return LRESULT(0);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data.lpData as *const u8, data.cbData as usize) };
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        let Some(runtime) = runtime::<V>() else {
+            return LRESULT(0);
+        };
+        // The sender waits on this message, so the work runs after it returns.
+        runtime.queue(Action::Runtime(Box::new(move |runtime| {
+            INSTANCE.with(|instance| {
+                if let Some(handler) = instance
+                    .borrow()
+                    .as_ref()
+                    .and_then(|(_, handler)| handler.downcast_ref::<InstanceHandler<V>>())
+                {
+                    handler(runtime, text);
+                }
+            });
+        })));
+        let _ = unsafe { PostMessageW(Some(hwnd), WAKE_MESSAGE, WPARAM(0), LPARAM(0)) };
+        return LRESULT(1);
+    }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
-fn modifiers() -> Modifiers {
+pub(crate) fn modifiers() -> Modifiers {
     let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(key.0 as i32) } < 0;
     Modifiers {
         control: down(VK_CONTROL),
@@ -785,7 +925,7 @@ fn modifiers() -> Modifiers {
 }
 
 /// The key name of virtual key `vk`, as the keymap writes it.
-fn key_name(vk: u16, extended: bool) -> Option<String> {
+pub(crate) fn key_name(vk: u16, extended: bool) -> Option<String> {
     let named = match VIRTUAL_KEY(vk) {
         VK_RETURN => "enter",
         VK_ESCAPE => "escape",
@@ -838,7 +978,7 @@ fn key_name(vk: u16, extended: bool) -> Option<String> {
 }
 
 /// The text the key press types, without disturbing dead-key state.
-fn typed_text(vk: u16, scan: u32) -> Option<String> {
+pub(crate) fn typed_text(vk: u16, scan: u32) -> Option<String> {
     let mut state = [0u8; 256];
     unsafe {
         GetKeyboardState(&mut state).ok()?;
@@ -1073,6 +1213,11 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
                 clicks
             };
             unsafe {
+                // A click on the window's own controls takes the keyboard
+                // back from a child window, such as a dashboard's WebView.
+                if GetFocus() != hwnd {
+                    let _ = SetFocus(Some(hwnd));
+                }
                 SetCapture(hwnd);
             }
             let hit = slot.hit_at(pos);

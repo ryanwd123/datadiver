@@ -8,8 +8,43 @@ use datadiver::infrastructure::json_store::{StorePaths, ViewRepository};
 use datadiver::ui::dataframe_view::ViewerOptions;
 use datadiver::{DataFrameView, FrameSnapshot};
 
+/// What a DataDiver answers to, so a dashboard opened while it runs with
+/// the same profile opens in it: one process per profile database.
+fn instance_name(paths: &StorePaths) -> String {
+    format!("DataDiver profile {}", paths.config.to_string_lossy().to_lowercase())
+}
+
+/// The dashboard and profile of `datadiver [--home DIR] board.ddash`, which
+/// a running DataDiver can open instead.
+fn dashboard_to_hand_off(arguments: &[String]) -> Option<(PathBuf, StorePaths)> {
+    let (path, home) = match arguments {
+        [path] => (path, None),
+        [flag, home, path] | [path, flag, home] if flag == "--home" => (path, Some(home)),
+        _ => return None,
+    };
+    let path = PathBuf::from(path);
+    if !datadiver::infrastructure::dashboard::is_dashboard(&path) {
+        return None;
+    }
+    let paths = match home {
+        Some(home) => StorePaths::for_home(std::path::Path::new(home)),
+        None => StorePaths::operating_system(),
+    };
+    Some((path.canonicalize().unwrap_or(path), paths))
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments.first().map(String::as_str) == Some("dashboard") {
+        std::process::exit(datadiver::cli::run_dashboard(&arguments[1..]));
+    }
+    if let Some((path, paths)) = dashboard_to_hand_off(&arguments) {
+        let message = serde_json::json!({ "open": path }).to_string();
+        if datadiver::ui::platform::window::send_to_instance(&instance_name(&paths), &message) {
+            return;
+        }
+    }
+    let mut args = arguments.into_iter();
     let mut rows = None;
     let mut source_path = None;
     let mut view_path = None;
@@ -170,7 +205,7 @@ fn main() {
             }
             "--help" | "-h" => {
                 println!(
-                    "DataDiver\n  --rows N       open synthetic data\n  --file PATH    open a CSV (including .csv.gz), TSV, XLSX, or Parquet source\n  --view PATH    open a saved JSON view\n  --search TEXT  filter displayed rows\n  --slicer COLUMN  add a source-column slicer\n  --window WxH   set window size\n  --exit-after MS  close on a timer\n  --capture PATH  save a PNG of the window"
+                    "DataDiver\n  --rows N       open synthetic data\n  --file PATH    open a CSV (including .csv.gz), TSV, XLSX, or Parquet source\n  --view PATH    open a saved JSON view\n  --search TEXT  filter displayed rows\n  --slicer COLUMN  add a source-column slicer\n  --window WxH   set window size\n  --exit-after MS  close on a timer\n  --capture PATH  save a PNG of the window\n  PATH.ddash     open a dashboard\n  dashboard ...  dashboard tools; see `datadiver dashboard help`"
                 );
                 return;
             }
@@ -291,6 +326,31 @@ fn main() {
     viewer_options.load_path = source_path.clone();
     let snapshot = FrameSnapshot::new(store, 1);
     let source_path = source_path.map(|path| path.to_string_lossy().into_owned());
+    let scripted = viewer_options.capture.is_some() || !viewer_options.show.is_empty() || viewer_options.benchmark_ui;
+    if !ephemeral && !scripted {
+        let repository = viewer_options.repository.clone();
+        let name = instance_name(&repository.paths);
+        datadiver::ui::platform::window::serve_instance::<DataFrameView>(&name, move |runtime, message| {
+            let path = serde_json::from_str::<serde_json::Value>(&message)
+                .ok()
+                .and_then(|message| message.get("open")?.as_str().map(PathBuf::from));
+            if let Some(path) = path {
+                let mut options = ViewerOptions::default();
+                options.repository = repository.clone();
+                options.restore_window = false;
+                options.load_path = Some(path);
+                DataFrameView::open_another(runtime, options);
+            }
+        });
+    }
+    if !ephemeral && !scripted && home_path.is_none() {
+        // A moved exe would leave double-clicked dashboards opening nothing.
+        if let Ok(exe) = datadiver::infrastructure::file_association::current_exe()
+            && let Err(error) = datadiver::infrastructure::file_association::follow_moved_exe(&exe)
+        {
+            eprintln!("cannot update the .ddash file association: {error}");
+        }
+    }
     datadiver::ui::platform::window::run::<DataFrameView>(move |runtime| {
         DataFrameView::open(runtime, snapshot, source_path, viewer_options);
     });

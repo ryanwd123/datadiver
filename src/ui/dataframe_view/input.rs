@@ -90,10 +90,12 @@ impl View for DataFrameView {
                 if *active {
                     self.check_source(cx);
                     self.check_database_tree(cx);
+                    self.check_dashboard_file(cx);
                 }
                 false
             }
             Event::Moved => {
+                self.dashboard_window_moved();
                 self.window_moved(cx);
                 false
             }
@@ -131,6 +133,7 @@ impl View for DataFrameView {
         self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
+        self.close_dashboard();
     }
 
     fn caret(&self, window: crate::ui::platform::WindowId) -> Option<crate::ui::platform::Rect> {

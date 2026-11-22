@@ -172,6 +172,9 @@ pub struct WindowOptions {
     /// A saved position in screen pixels.
     pub placement: Option<Placement>,
     pub visible: bool,
+    /// Shown where no screen is, without a taskbar button or the keyboard,
+    /// for a window that must render but not be seen.
+    pub offscreen: bool,
 }
 
 impl Default for WindowOptions {
@@ -182,6 +185,7 @@ impl Default for WindowOptions {
             height: 900.0,
             placement: None,
             visible: true,
+            offscreen: false,
         }
     }
 }
@@ -689,6 +693,13 @@ impl<'a, V: View> Cx<'a, V> {
         self.runtime
             .window(self.window)
             .and_then(|slot| slot.outer_rect())
+    }
+
+    /// The window's title, as the taskbar shows it.
+    pub fn set_title(&mut self, title: &str) {
+        if let Some(hwnd) = self.hwnd() {
+            super::window::set_title(hwnd, title);
+        }
     }
 
     pub fn activate(&mut self) {

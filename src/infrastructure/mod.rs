@@ -1,7 +1,9 @@
 pub mod ai_client;
 pub mod cancellation;
 pub mod catalog;
+pub mod dashboard;
 pub mod duckdb_store;
+pub mod file_association;
 pub mod file_schemas;
 pub mod json_store;
 pub mod launcher;

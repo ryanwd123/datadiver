@@ -73,6 +73,7 @@ impl DataFrameView {
             height: DEFAULT_HEIGHT,
             placement: self.sql_window_placement(cx),
             visible: true,
+            offscreen: false,
         };
         // Focus stays where it is: the editor, or the grid when a SQL source
         // opens showing its rows, whose window then comes back forward.

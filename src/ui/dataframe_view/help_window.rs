@@ -52,6 +52,7 @@ impl DataFrameView {
             height: DEFAULT_HEIGHT,
             placement: None,
             visible: true,
+            offscreen: false,
         };
         let owner = cx.window_id();
         let id = cx.open_owned_window(options, |_, cx| cx.notify());

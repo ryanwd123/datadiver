@@ -81,6 +81,10 @@ pub enum PaletteKind {
     OutlineLayouts,
     /// Columns to group by next, and the one item to open into them.
     ExpandInto(Vec<String>, Option<crate::domain::documents::OutlinePath>),
+    /// The command palette while a dashboard shows.
+    DashboardCommands(Vec<super::dashboard::DashboardPaletteEntry>),
+    /// The text each row of the dashboard's query log copies.
+    DashboardQueries(Vec<String>),
 }
 
 pub struct PaletteDialog {
@@ -713,6 +717,10 @@ impl DataFrameView {
     }
 
     pub(crate) fn open_command_palette(&mut self, cx: &mut Cx<Self>) {
+        if self.dashboard.is_some() {
+            self.open_dashboard_command_palette(cx);
+            return;
+        }
         let commands = active_commands()
             .into_iter()
             .filter(|c| {
@@ -852,6 +860,7 @@ impl DataFrameView {
                 let mut sources = scan_sources(&folders);
                 sources.extend(state.settings.watched_files.iter().map(PathBuf::from));
                 sources.extend(state.history.recent_sources.into_iter().map(PathBuf::from));
+                sources.extend(state.history.dashboards.into_iter().map(PathBuf::from).filter(|path| path.exists()));
                 let mut seen = std::collections::HashSet::new();
                 sources.retain(|path| seen.insert(path.to_string_lossy().to_lowercase()));
                 sources.sort_by_key(|path| path.to_string_lossy().to_lowercase());
@@ -1292,6 +1301,23 @@ impl DataFrameView {
                 if let Some(command) = listed.get(index).copied() {
                     self.close_dialog(cx);
                     self.dispatch_command(command.id, cx);
+                }
+            }
+            PaletteKind::DashboardCommands(entries) => {
+                let entry = entries.get(index).cloned();
+                self.close_dialog(cx);
+                match entry {
+                    Some(super::dashboard::DashboardPaletteEntry::App(command)) => self.dispatch_command(command, cx),
+                    Some(super::dashboard::DashboardPaletteEntry::Page(id)) => self.run_dashboard_command(&id),
+                    None => {}
+                }
+            }
+            PaletteKind::DashboardQueries(copies) => {
+                if let Some(text) = copies.get(index).cloned() {
+                    self.close_dialog(cx);
+                    crate::ui::platform::system::write_clipboard(&text);
+                    self.copy_status = Some("Copied the query".into());
+                    cx.notify();
                 }
             }
             PaletteKind::Files(sections) => {

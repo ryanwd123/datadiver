@@ -89,6 +89,18 @@ impl DataFrameView {
         drill: Option<DrillDown>,
         cx: &mut Cx<Self>,
     ) {
+        if let FileEntry::Source(path) = &entry
+            && crate::infrastructure::dashboard::is_dashboard(path)
+        {
+            self.open_dashboard(path.clone(), cx);
+            return;
+        }
+        if self.dashboard.is_some() {
+            // Anything else opens in the grid, in place of the dashboard.
+            self.close_dashboard();
+            self.set_window_title(cx);
+            self.focus_grid(cx);
+        }
         self.rollback_navigation(cx);
         self.flush_auto_save();
         self.autosave_table_preferences(cx);

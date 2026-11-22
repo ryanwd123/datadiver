@@ -5,13 +5,7 @@ use crate::ui::hit::Button;
 use crate::ui::platform::{Align, Canvas, rect, system, text};
 use crate::ui::widgets::{ButtonStyle, Row, button, button_height, button_width, colors};
 
-/// The watched files and the files in watched folders.
-fn watched_sources(settings: &crate::infrastructure::json_store::Settings) -> Vec<PathBuf> {
-    let folders = settings.watched_folders.iter().map(PathBuf::from).collect::<Vec<_>>();
-    let mut files = crate::infrastructure::catalog::scan_sources(&folders);
-    files.extend(settings.watched_files.iter().map(PathBuf::from));
-    files
-}
+use crate::infrastructure::dashboard::watched_files as watched_sources;
 
 /// Why `path` cannot be a watched file, if it cannot.
 fn cache_rejection(path: &std::path::Path) -> Option<String> {

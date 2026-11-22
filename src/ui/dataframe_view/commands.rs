@@ -78,6 +78,18 @@ impl DataFrameView {
     }
 
     pub(crate) fn dispatch_command(&mut self, id: CommandId, cx: &mut Cx<Self>) {
+        if self.dashboard.is_some() {
+            if !super::dashboard::dashboard_allows(id) {
+                let label = COMMANDS.iter().find(|command| command.id == id).map_or("That command", |command| command.label);
+                self.copy_status = Some(format!("{label} works on data in the grid; open a file to use it"));
+                cx.notify();
+                return;
+            }
+            if matches!(id, CommandId::Reload | CommandId::ReloadReset) {
+                self.reload_dashboard(cx);
+                return;
+            }
+        }
         if self.session.is_sql()
             && matches!(
                 id,
@@ -134,6 +146,10 @@ impl DataFrameView {
             }
             CommandId::Files => self.open_file_palette(cx),
             CommandId::DatabaseTree => self.toggle_database_tree(cx),
+            CommandId::DashboardDevTools => self.open_dashboard_dev_tools(),
+            CommandId::DashboardQueries => self.open_dashboard_queries(cx),
+            CommandId::RegisterDashboards => self.register_dashboards(true, cx),
+            CommandId::UnregisterDashboards => self.register_dashboards(false, cx),
             CommandId::Commands => self.open_command_palette(cx),
             CommandId::Keymap => self.open_keymap_editor(cx),
             CommandId::Theme => self.open_theme_editor(cx),
@@ -317,6 +333,10 @@ impl DataFrameView {
             .and_then(|spec| spec.command)
         {
             self.dispatch_command(command, cx);
+            return;
+        }
+        // The rest move or change the grid, which a dashboard hides.
+        if self.dashboard.is_some() {
             return;
         }
         let height = cx.viewport().1;

@@ -28,6 +28,7 @@ pub const PAGES: &[HelpPage] = &[
     HelpPage { id: "sql", title: "SQL editor", markdown: include_str!("../../help/sql.md") },
     HelpPage { id: "ask-ai", title: "Ask AI", markdown: include_str!("../../help/ask-ai.md") },
     HelpPage { id: "views", title: "Views & actions", markdown: include_str!("../../help/views.md") },
+    HelpPage { id: "dashboards", title: "Dashboards", markdown: include_str!("../../help/dashboards.md") },
     HelpPage { id: "settings", title: "Settings", markdown: include_str!("../../help/settings.md") },
 ];
 

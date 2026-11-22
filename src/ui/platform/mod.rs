@@ -7,6 +7,7 @@ pub mod headless;
 pub mod keys;
 pub mod system;
 pub mod text;
+pub mod webview;
 pub mod window;
 
 pub use app::{Cx, Event, MouseButton, Placement, Runtime, Task, View, WindowId, WindowOptions};
