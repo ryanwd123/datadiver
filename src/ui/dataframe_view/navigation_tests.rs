@@ -1747,3 +1747,37 @@ fn database_views_take_slicers() {
         });
     }
 }
+
+#[test]
+fn about_opens_a_formatted_page_without_entering_the_history() {
+    use crate::application::state::ApplicationState;
+    let home = tempfile::tempdir().unwrap();
+    let repository = repository(home.path());
+    let a = home.path().join("a.csv");
+    std::fs::write(&a, "word\nur\n").unwrap();
+    let viewer = viewer(repository.clone());
+    open(&viewer, FileEntry::Source(a.clone()));
+    viewer.update(|view, cx| view.dispatch_command(CommandId::About, cx));
+    viewer.run_until_parked();
+    viewer.read(|view| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(!view.session.dirty);
+        assert_eq!(view.session.working.as_ref().map(|view| view.name.as_str()), Some("About DataDiver"));
+        assert_eq!(view.session.result.row_count(), 24);
+        let shown: Vec<&str> = view.session.result.columns.iter().map(|column| column.0.as_str()).collect();
+        assert_eq!(shown.first(), Some(&"A"));
+        assert!(shown.contains(&"DataDiver") && !shown.contains(&"tip"));
+        // The mascot's columns keep their narrow width.
+        assert_eq!(view.grid.column_width("A"), 26.0);
+        let formatting = view.grid.formatting().expect("the page is formatted");
+        assert!(formatting.formats(0));
+    });
+    let page = std::fs::read_to_string(home.path().join(crate::domain::about::FILE_NAME)).unwrap();
+    assert!(page.contains(&format!("Version {}", env!("CARGO_PKG_VERSION"))));
+    crate::application::history::HistoryWriter::flush_profiles();
+    let state = ApplicationState::load(repository).unwrap();
+    assert!(state.history.recent_sources.iter().all(|path| !path.ends_with(crate::domain::about::FILE_NAME)));
+    // Back returns to the file that was open.
+    travel(&viewer, false);
+    assert_eq!(viewer.read(|view| view.session.source_path.clone()).as_deref(), Some(a.to_str().unwrap()));
+}

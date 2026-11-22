@@ -108,7 +108,7 @@ impl TablePreferences {
             return Err("unsupported table preferences version".into());
         }
         if self.widths.values().any(|width| !valid_width(*width)) {
-            return Err("table width must be finite and between 40 and 1200".into());
+            return Err(format!("table width must be finite and between {MIN_COLUMN_WIDTH} and {MAX_COLUMN_WIDTH}"));
         }
         for names in [
             &self.column_order,
@@ -203,8 +203,13 @@ impl TablePreferences {
     }
 }
 
+/// The narrowest and widest a column can be. Narrow columns suit icons,
+/// flags and the About page's pixels.
+pub const MIN_COLUMN_WIDTH: f32 = 20.0;
+pub const MAX_COLUMN_WIDTH: f32 = 1200.0;
+
 pub fn valid_width(width: f32) -> bool {
-    width.is_finite() && (40.0..=1200.0).contains(&width)
+    width.is_finite() && (MIN_COLUMN_WIDTH..=MAX_COLUMN_WIDTH).contains(&width)
 }
 
 #[derive(Clone, Debug, Default)]

@@ -1,3 +1,4 @@
+pub mod about;
 pub mod actions;
 pub mod ai;
 pub mod aggregation_sql;

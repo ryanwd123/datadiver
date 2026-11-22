@@ -247,6 +247,8 @@ pub struct ApplicationHistory {
     pub panel_window: Option<WindowGeometry>,
     /// The SQL editor's window: its offset from its grid's window, and its size.
     pub sql_window: Option<WindowGeometry>,
+    /// The About page has opened once, on the first start.
+    pub about_shown: bool,
 }
 
 impl Default for ApplicationHistory {
@@ -261,6 +263,7 @@ impl Default for ApplicationHistory {
             format_colors_open: false,
             panel_window: None,
             sql_window: None,
+            about_shown: false,
         }
     }
 }

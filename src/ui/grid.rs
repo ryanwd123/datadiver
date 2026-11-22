@@ -27,6 +27,17 @@ const CELL_PREVIEW_LIMIT: usize = 200;
 const SEARCH_HIGHLIGHT: Color = Color::rgba(0xffd84d99);
 const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 
+/// How a header of a column `width` wide lays out its name and type. One
+/// narrower than 40 keeps them on one line, cut off, rather than stacking
+/// them a letter per line.
+fn header_text(width: f32) -> TextOptions {
+    if width < 40.0 {
+        TextOptions::default()
+    } else {
+        TextOptions::wrapped((width - 17.0).max(1.0))
+    }
+}
+
 /// What an outline row shows in the key column at store index `index`, or
 /// `None` where the cell shows its value as usual. A row shows the key of
 /// its own level, with ▸ on a collapsed item and ▾ on an expanded one; the
@@ -796,7 +807,8 @@ impl GridView {
         };
         let mut changed = false;
         for column in selection.rectangle().1 {
-            let width = (self.widths[column] + if increase { 10.0 } else { -10.0 }).clamp(40.0, 1200.0);
+            let width = (self.widths[column] + if increase { 10.0 } else { -10.0 })
+                .clamp(crate::domain::table_preferences::MIN_COLUMN_WIDTH, crate::domain::table_preferences::MAX_COLUMN_WIDTH);
             if width == self.widths[column] {
                 continue;
             }
@@ -1640,10 +1652,10 @@ impl GridView {
         }
         let height = (0..self.result.columns.len())
             .map(|column| {
-                let width = (self.widths[column] - 17.0).max(1.0);
+                let options = header_text(self.widths[column]);
                 let dtype = type_label(&self.result.dtypes[column]);
-                let label_lines = text::layout(&labels[column], font, TextOptions::wrapped(width)).line_count.max(1);
-                let dtype_lines = text::layout(&dtype, &dtype_font, TextOptions::wrapped(width)).line_count.max(1);
+                let label_lines = text::layout(&labels[column], font, options).line_count.max(1);
+                let dtype_lines = text::layout(&dtype, &dtype_font, options).line_count.max(1);
                 9.0 + label_lines as f32 * line_height + dtype_lines as f32 * dtype_line_height
             })
             .fold(48.0_f32, f32::max)
@@ -1769,11 +1781,12 @@ impl GridView {
                 canvas.fill(rect(cell.right() - 1.0, cell.y, 1.0, cell.h), grid_border);
                 let inner = rect(cell.x + 8.0, cell.y + 4.0, (cell.w - 17.0).max(1.0), cell.h - 8.0);
                 let label = labels.get(column).cloned().unwrap_or_default();
-                let label_layout = text::layout(&label, font, TextOptions::wrapped(inner.w));
+                let options = header_text(cell.w);
+                let label_layout = text::layout(&label, font, options);
                 canvas.push_clip(cell);
                 canvas.draw_layout(&label_layout, inner.origin(), foreground);
                 let dtype = type_label(&self.result.dtypes[column]);
-                let dtype_layout = text::layout(&dtype, &dtype_font, TextOptions::wrapped(inner.w));
+                let dtype_layout = text::layout(&dtype, &dtype_font, options);
                 canvas.draw_layout(&dtype_layout, point(inner.x, inner.y + label_layout.height), foreground);
                 canvas.pop_clip();
                 canvas.hit_cursor(cell, Hit::Grid(GridHit::Header(column)), Cursor::Hand);
@@ -2458,9 +2471,9 @@ mod tests {
         });
         app.press(id, ")");
         assert_eq!(app.read(id, |host| host.grid.column_width("c0")), 1200.0);
-        app.update(id, |host, _| host.grid.widths[0] = 45.0);
+        app.update(id, |host, _| host.grid.widths[0] = 25.0);
         app.press(id, "(");
-        assert_eq!(app.read(id, |host| host.grid.column_width("c0")), 40.0);
+        assert_eq!(app.read(id, |host| host.grid.column_width("c0")), 20.0);
     }
 
     #[test]

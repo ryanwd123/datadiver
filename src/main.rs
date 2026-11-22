@@ -89,6 +89,7 @@ fn main() {
                     if !target.starts_with("help:") && !matches!(
                         target,
                         "info"
+                            | "about"
                             | "editor:sql"
                             | "editor:startup-sql"
                             | "editor:sql-results"
@@ -230,6 +231,15 @@ fn main() {
                     viewer_options.load_view = Some(view);
                 } else if let Some(path) = state.history.last_raw_source {
                     source_path = Some(PathBuf::from(path));
+                } else if !state.history.about_shown {
+                    // The first start, with nothing to reopen, shows the About page once.
+                    viewer_options.about = true;
+                    if let Err(error) = viewer_options
+                        .repository
+                        .update_history(|history| history.about_shown = true)
+                    {
+                        eprintln!("cannot save that the About page was shown: {error}");
+                    }
                 }
             }
             Err(error) => eprintln!("cannot restore previous session: {error}"),

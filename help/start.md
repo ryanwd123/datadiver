@@ -32,6 +32,8 @@ Every command is in the **command palette**: press **Ctrl+Shift+P** and type par
 
 The **Helper menu** opens with **Space** in the grid. It lists the grid's keys; press one to run it, or click it. **Ctrl+K** opens the **Command menu**, with keys for commands used less often. In the SQL editor, **Ctrl+K** opens the **SQL Helper** menu instead, with commands that work on the query at the caret.
 
+**About DataDiver** in the palette shows the version and a page that is itself a grid: the mascot is drawn with cells and one formatting rule. It also opens the first time DataDiver starts.
+
 The [Shortcuts](shortcuts) tab lists every key as it is bound now, including your own changes from the Keymap Editor.
 
 ## Windows

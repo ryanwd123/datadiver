@@ -25,6 +25,8 @@ pub struct ViewerOptions {
     pub load_view: Option<DocumentDefinition>,
     pub repository: ViewRepository,
     pub show: Vec<String>,
+    /// Opens the About page, as on the first start.
+    pub about: bool,
     /// A location for a new window to open, such as a drill-down.
     pub(crate) open_entry: Option<(FileEntry, Option<DrillDown>)>,
 }
@@ -45,6 +47,7 @@ impl Default for ViewerOptions {
             load_view: None,
             repository: ViewRepository::new(StorePaths::operating_system()),
             show: Vec::new(),
+            about: false,
             open_entry: None,
         }
     }
@@ -231,6 +234,8 @@ impl DataFrameView {
                 FileEntry::Source(path) => self.load_source(path, false, LoadMode::Check, cx),
                 entry => self.navigate_to_location(entry, false, false, true, None, None, cx),
             }
+        } else if options.about {
+            self.open_about(cx);
         } else if !options.search_text.is_empty() {
             self.schedule_search(options.search_text.clone(), cx);
         }
@@ -345,6 +350,7 @@ impl DataFrameView {
             "editor:sql" | "editor:sql-results" | "editor:sql-completion" | "editor:sql-hints" | "editor:sql-hover" | "editor:sql-error" | "editor:sql-helper" | "editor:sql-ask"
             | "editor:sql-ask-log" | "editor:sql-ask-mention" => self.capture_sql_editor(target, cx),
             "info" => self.open_information(cx),
+            "about" => self.open_about(cx),
             "help" => self.open_help(cx),
             topic if topic.starts_with("help:") => self.open_help_topic(&topic["help:".len()..], cx),
             "keymap" => self.open_keymap_editor(cx),

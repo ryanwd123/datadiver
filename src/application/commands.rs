@@ -47,6 +47,7 @@ pub enum CommandId {
     FindNext,
     FindPrevious,
     Help,
+    About,
     Info,
     Space,
     CommandMenu,
@@ -433,6 +434,12 @@ pub const COMMANDS: &[Command] = &[
         key: "help",
         label: "Help",
         default_binding: Some("f1"),
+    },
+    Command {
+        id: CommandId::About,
+        key: "about",
+        label: "About DataDiver",
+        default_binding: None,
     },
     Command {
         id: CommandId::Info,

@@ -166,6 +166,7 @@ impl DataFrameView {
             CommandId::FindNext => self.find_step(true, cx),
             CommandId::FindPrevious => self.find_step(false, cx),
             CommandId::Help => self.open_help(cx),
+            CommandId::About => self.open_about(cx),
             CommandId::Info => self.open_information(cx),
             CommandId::Group => self.open_pivot_panel(PivotFieldKind::GroupBy, cx),
             CommandId::Aggregation => self.open_aggregation_panel(cx),

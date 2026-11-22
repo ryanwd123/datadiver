@@ -307,6 +307,7 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::FindNext,
     CommandId::FindPrevious,
     CommandId::Help,
+    CommandId::About,
     CommandId::Info,
     CommandId::Group,
     CommandId::Aggregation,

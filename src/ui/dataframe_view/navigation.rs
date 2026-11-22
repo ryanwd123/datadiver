@@ -448,6 +448,11 @@ impl DataFrameView {
         if matches!(self.session.identity, SessionIdentity::StartupSql) {
             return Ok(());
         }
+        // The About page is not something to reopen at the next start, or to
+        // list among recent files, where it would open without its formatting.
+        if self.session.source_path.as_deref().is_some_and(|path| std::path::Path::new(path) == self.about_path()) {
+            return Ok(());
+        }
         self.history_writer.opened(
             self.session.working.clone(),
             self.session.source_path.clone().or_else(|| self.query_file()),
@@ -637,6 +642,32 @@ impl DataFrameView {
             },
         )
         .detach();
+    }
+
+    /// The file the About page reads, under the profile's data folder.
+    pub(crate) fn about_path(&self) -> PathBuf {
+        self.repository.paths.data.join(crate::domain::about::FILE_NAME)
+    }
+
+    /// Opens the About page: writes its rows for this version, then opens
+    /// them as an unsaved table view. The file is small, so it is written
+    /// here and loading starts at once.
+    pub(crate) fn open_about(&mut self, cx: &mut Cx<Self>) {
+        let path = self.about_path();
+        let rows = crate::domain::about::csv(env!("CARGO_PKG_VERSION"));
+        // Rewriting the same rows would only make the source reload.
+        let written = if std::fs::read_to_string(&path).is_ok_and(|existing| existing == rows) {
+            Ok(())
+        } else {
+            std::fs::create_dir_all(&self.repository.paths.data).and_then(|()| std::fs::write(&path, rows))
+        };
+        if let Err(error) = written {
+            self.error = Some(format!("Cannot write the About page to {}: {error}", path.display()));
+            cx.notify();
+            return;
+        }
+        let definition = crate::domain::about::view(&path.to_string_lossy());
+        self.navigate_to_file(FileEntry::View(definition), false, false, true, cx);
     }
 
     pub(crate) fn favorite(&mut self, slot: usize, assign: bool, cx: &mut Cx<Self>) {
