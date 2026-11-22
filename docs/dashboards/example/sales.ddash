@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sales overview</title>
+<script type="application/json" id="datadiver">
+{
+  "version": 1,
+  "title": "Sales overview",
+  "sources": { "sales": "sales.csv" },
+  "commands": [
+    { "id": "clear", "title": "Clear all filters", "key": "ctrl+shift+x" },
+    { "id": "next-product", "title": "Next product", "key": "j" },
+    { "id": "previous-product", "title": "Previous product", "key": "k" }
+  ]
+}
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --text: #1f2328; --muted: #6b7280; --line: #dfe1e5;
+    --accent: #3b6ef5; --accent-soft: #dbe5ff; --danger: #b33c3c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17191c; --panel: #202328; --text: #e6e8eb; --muted: #9aa1ab; --line: #30343a; --accent: #7a9cff; --accent-soft: #263255; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 24px; background: var(--bg); color: var(--text); font: 14px "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-bottom: 18px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 12px; cursor: pointer; font: inherit; }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); }
+  select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .value { font-size: 26px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  .error { color: var(--danger); white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.n, th.n { text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <div class="chips" id="regions"></div>
+  <label>Product <select id="product"><option value="">All products</option></select></label>
+  <span class="hint">J / K: next or previous product · Ctrl+Shift+X: clear filters</span>
+</header>
+<section class="kpis">
+  <div class="kpi"><div class="label">Revenue</div><div class="value" id="revenue">…</div></div>
+  <div class="kpi"><div class="label">Units</div><div class="value" id="units">…</div></div>
+  <div class="kpi"><div class="label">Orders</div><div class="value" id="orders">…</div></div>
+  <div class="kpi"><div class="label">Revenue per unit</div><div class="value" id="per-unit">…</div></div>
+</section>
+<section class="grid">
+  <div class="panel"><h2>Revenue by month</h2><div id="trend"></div></div>
+  <div class="panel"><h2>Revenue by product</h2><div id="products"></div></div>
+  <div class="panel" style="grid-column: 1 / -1"><h2>Best days</h2><div id="days"></div></div>
+</section>
+<script>
+const state = { regions: new Set(), product: "" };
+const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const count = new Intl.NumberFormat();
+const $ = (id) => document.getElementById(id);
+
+// Every query filters the same way, with bound parameters.
+const filter = "where (len($regions) = 0 or region in (select unnest($regions::VARCHAR[]))) and ($product = '' or product = $product)";
+const params = () => ({ regions: [...state.regions], product: state.product });
+
+function showError(id, error) {
+  $(id).innerHTML = `<p class="error">${error.message.replace(/</g, "&lt;")}</p>`;
+}
+
+async function loadChoices() {
+  const [regions, products] = await Promise.all([
+    datadiver.query("select distinct region from sales order by 1"),
+    datadiver.query("select distinct product from sales order by 1"),
+  ]);
+  for (const { region } of regions.rows) {
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.textContent = region;
+    chip.onclick = () => {
+      state.regions.has(region) ? state.regions.delete(region) : state.regions.add(region);
+      chip.classList.toggle("on", state.regions.has(region));
+      render();
+    };
+    $("regions").append(chip);
+  }
+  for (const { product } of products.rows) $("product").add(new Option(product, product));
+}
+
+async function renderKpis() {
+  try {
+    const { rows: [row] } = await datadiver.query(
+      `select sum(amount) as revenue, sum(units) as units, count(*) as orders from sales ${filter}`, params());
+    $("revenue").textContent = money.format(row.revenue ?? 0);
+    $("units").textContent = count.format(row.units ?? 0);
+    $("orders").textContent = count.format(row.orders);
+    $("per-unit").textContent = row.units ? money.format(row.revenue / row.units) : "–";
+  } catch (error) { for (const id of ["revenue", "units", "orders", "per-unit"]) $(id).textContent = "error"; console.error(error); }
+}
+
+async function renderTrend() {
+  try {
+    const { rows } = await datadiver.query(
+      `select strftime(day::date, '%Y-%m') as month, sum(amount) as revenue from sales ${filter} group by 1 order by 1`, params());
+    const width = Math.max($("trend").clientWidth, 320), height = 220, pad = { l: 56, r: 12, t: 10, b: 26 };
+    const max = Math.max(...rows.map((row) => row.revenue), 1);
+    const x = (i) => pad.l + (rows.length < 2 ? 0 : (i / (rows.length - 1)) * (width - pad.l - pad.r));
+    const y = (v) => pad.t + (1 - v / max) * (height - pad.t - pad.b);
+    const path = rows.map((row, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(row.revenue).toFixed(1)}`).join("");
+    const ticks = [0, 0.5, 1].map((f) => `<text x="${pad.l - 6}" y="${y(max * f) + 4}" text-anchor="end">${money.format(max * f)}</text>
+        <line x1="${pad.l}" x2="${width - pad.r}" y1="${y(max * f)}" y2="${y(max * f)}" stroke="var(--line)"/>`).join("");
+    const labels = rows.map((row, i) => i % 2 ? "" : `<text x="${x(i)}" y="${height - 6}" text-anchor="middle">${row.month.slice(5)}</text>`).join("");
+    const dots = rows.map((row, i) => `<circle cx="${x(i)}" cy="${y(row.revenue)}" r="3" fill="var(--accent)"><title>${row.month}: ${money.format(row.revenue)}</title></circle>`).join("");
+    $("trend").innerHTML = `<svg width="${width}" height="${height}">${ticks}${labels}<path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>${dots}</svg>`;
+  } catch (error) { showError("trend", error); }
+}
+
+async function renderProducts() {
+  try {
+    const { rows } = await datadiver.query(
+      `select product, sum(amount) as revenue from sales ${filter} group by 1 order by 2 desc`, params());
+    const max = Math.max(...rows.map((row) => row.revenue), 1);
+    $("products").innerHTML = rows.map((row) => `
+      <div style="margin:8px 0">
+        <div style="display:flex;justify-content:space-between"><span>${row.product}</span><span>${money.format(row.revenue)}</span></div>
+        <div style="height:8px;background:var(--line);border-radius:4px;margin-top:4px">
+          <div style="height:8px;width:${(row.revenue / max) * 100}%;background:var(--accent);border-radius:4px"></div></div>
+      </div>`).join("") || "<p>No sales match.</p>";
+  } catch (error) { showError("products", error); }
+}
+
+async function renderDays() {
+  try {
+    const result = await datadiver.query(
+      `select day, region, product, units, amount from sales ${filter} order by amount desc`, params(), { limit: 8 });
+    $("days").innerHTML = `<table><tr><th>Day</th><th>Region</th><th>Product</th><th class="n">Units</th><th class="n">Revenue</th></tr>
+      ${result.rows.map((row) => `<tr><td>${row.day}</td><td>${row.region}</td><td>${row.product}</td>
+        <td class="n">${count.format(row.units)}</td><td class="n">${money.format(row.amount)}</td></tr>`).join("")}</table>
+      ${result.truncated ? '<p class="hint">Showing the top 8.</p>' : ""}`;
+  } catch (error) { showError("days", error); }
+}
+
+function render() {
+  return Promise.all([renderKpis(), renderTrend(), renderProducts(), renderDays()]);
+}
+
+function stepProduct(by) {
+  const select = $("product");
+  select.selectedIndex = (select.selectedIndex + by + select.options.length) % select.options.length;
+  state.product = select.value;
+  render();
+}
+
+$("product").addEventListener("change", (event) => { state.product = event.target.value; render(); });
+datadiver.onCommand("next-product", () => stepProduct(1));
+datadiver.onCommand("previous-product", () => stepProduct(-1));
+datadiver.onCommand("clear", () => {
+  state.regions.clear();
+  state.product = "";
+  $("product").value = "";
+  document.querySelectorAll(".chip").forEach((chip) => chip.classList.remove("on"));
+  render();
+});
+window.addEventListener("resize", () => renderTrend());
+loadChoices().then(render).catch((error) => console.error(error));
+</script>
+</body>
+</html>
