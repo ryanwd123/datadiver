@@ -241,9 +241,13 @@ proptest! {
         if let Ok(history) = repository.load_history() {
             repository.save_history(&history).unwrap();
         }
+        // Saving checks more than loading, such as that a view has a source,
+        // so a damaged view may load and then refuse to save; it must not panic.
         for mut view in repository.load_views().0 {
-            repository.save_view(&mut view).unwrap();
+            let _ = repository.save_view(&mut view);
         }
+        // A damaged history is set aside, so the history always loads.
+        prop_assert!(repository.load_history().is_ok());
         load_everything(&repository, home.path());
     }
 }

@@ -33,29 +33,12 @@ impl ApplicationState {
     }
 
     pub fn record_source(&mut self, path: &Path) -> io::Result<()> {
-        let path = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
-        self.history = self.repository.update_history(|history| {
-            history.last_raw_source = Some(path.clone());
-            history.last_view_id = None;
-            push_recent(history, path);
-        })?;
+        self.history = record_source(&self.repository, path)?;
         Ok(())
     }
 
     pub fn record_view(&mut self, view: &DocumentDefinition) -> io::Result<()> {
-        self.history = self.repository.update_history(|history| {
-            history.last_view_id = Some(view.id.clone());
-            history.last_raw_source = None;
-            let file = view
-                .database_view
-                .as_ref()
-                .and_then(|relation| relation.file_path());
-            push_recent(history, file.unwrap_or(&view.source_path).to_owned());
-        })?;
+        self.history = record_view(&self.repository, view)?;
         Ok(())
     }
 
@@ -224,6 +207,35 @@ fn watched_in(settings: &Settings, path: &Path) -> bool {
             .watched_folders
             .iter()
             .any(|folder| key.starts_with(normalized_path(Path::new(folder))))
+}
+
+/// Records `path` as the last source opened and the newest recent one. Only
+/// the history is read, so damaged settings do not stop it.
+pub fn record_source(repository: &ViewRepository, path: &Path) -> io::Result<ApplicationHistory> {
+    let path = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    repository.update_history(|history| {
+        history.last_raw_source = Some(path.clone());
+        history.last_view_id = None;
+        push_recent(history, path);
+    })
+}
+
+/// Records `view` as the view to restore and its file as the newest recent
+/// source.
+pub fn record_view(repository: &ViewRepository, view: &DocumentDefinition) -> io::Result<ApplicationHistory> {
+    repository.update_history(|history| {
+        history.last_view_id = Some(view.id.clone());
+        history.last_raw_source = None;
+        let file = view
+            .database_view
+            .as_ref()
+            .and_then(|relation| relation.file_path());
+        push_recent(history, file.unwrap_or(&view.source_path).to_owned());
+    })
 }
 
 fn push_recent(history: &mut ApplicationHistory, path: String) {

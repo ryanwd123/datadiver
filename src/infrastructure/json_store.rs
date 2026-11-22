@@ -485,9 +485,30 @@ impl ViewRepository {
         atomic_json(&self.paths.data.join("sql_history.json"), &history)
     }
 
+    /// The history, or an empty one when there is none yet. A file that
+    /// cannot be read as history, such as one cut short by a crash, is kept
+    /// as `state.json.damaged` and replaced by an empty history; otherwise
+    /// every later update would fail on it and nothing would be remembered.
     pub fn load_history(&self) -> io::Result<ApplicationHistory> {
-        let mut history: ApplicationHistory =
-            read_json_or_default(&self.paths.data.join("state.json"))?;
+        let path = self.paths.data.join("state.json");
+        let parsed = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<ApplicationHistory>(&bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ApplicationHistory::default()),
+            Err(error) => return Err(error),
+        };
+        let mut history = match parsed {
+            Ok(history) => history,
+            Err(error) => {
+                let backup = self.paths.data.join("state.json.damaged");
+                // Another reader may have moved it already.
+                match fs::rename(&path, &backup) {
+                    Ok(()) => eprintln!("history was damaged ({error}); kept it as {}", backup.display()),
+                    Err(rename) if rename.kind() == io::ErrorKind::NotFound => {}
+                    Err(rename) => return Err(rename),
+                }
+                ApplicationHistory::default()
+            }
+        };
         history
             .recent_sources
             .retain(|path| !path.trim().is_empty());
@@ -1179,6 +1200,24 @@ mod tests {
         let old: WindowGeometry =
             serde_json::from_str(r#"{"x":100,"y":100,"width":900,"height":600}"#).unwrap();
         assert!(!old.maximized);
+    }
+
+    /// Found by the chaos tests: a damaged state.json failed every update, so
+    /// the app stopped remembering its last view and recent files.
+    #[test]
+    fn damaged_history_is_kept_aside_and_history_saves_again() {
+        let home = tempfile::tempdir().unwrap();
+        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        for damaged in [&b"{\"recent_sources\": [\"a.cs"[..], b"", b"[1, 2]", b"\xff\xfe"] {
+            fs::write(home.path().join("state.json"), damaged).unwrap();
+            assert!(crate::application::state::ApplicationState::load(repository.clone()).is_ok());
+            assert_eq!(fs::read(home.path().join("state.json.damaged")).unwrap(), damaged);
+            let history = repository
+                .update_history(|history| history.last_raw_source = Some("data.csv".into()))
+                .unwrap();
+            assert_eq!(history.last_raw_source.as_deref(), Some("data.csv"));
+            assert_eq!(repository.load_history().unwrap().last_raw_source.as_deref(), Some("data.csv"));
+        }
     }
 
     #[test]

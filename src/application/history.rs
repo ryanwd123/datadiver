@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use crate::domain::documents::DocumentDefinition;
 use crate::infrastructure::json_store::ViewRepository;
 
-use super::state::ApplicationState;
+use super::state;
 
 static WRITERS: OnceLock<Mutex<HashMap<PathBuf, Arc<HistoryWriter>>>> = OnceLock::new();
 
@@ -44,15 +44,17 @@ impl HistoryWriter {
                     Message::Opened { definition, source } => {
                         let _span =
                             crate::infrastructure::performance::Span::new("history_persistence");
+                        // Only the views and the history are read, so a
+                        // damaged settings file does not stop the history.
                         let result = (|| {
-                            let mut state = ApplicationState::load(repository.clone())?;
+                            let (views, _) = repository.load_views();
                             if let Some(view) = definition.as_ref().filter(|view| {
                                 !view.id.is_empty()
-                                    && state.views.iter().any(|saved| saved.id == view.id)
+                                    && views.iter().any(|saved| saved.id == view.id)
                             }) {
-                                state.record_view(view)
+                                state::record_view(&repository, view).map(drop)
                             } else if let Some(path) = source {
-                                state.record_source(std::path::Path::new(&path))
+                                state::record_source(&repository, std::path::Path::new(&path)).map(drop)
                             } else {
                                 Ok(())
                             }
@@ -144,5 +146,24 @@ mod tests {
         writer.opened(Some(b), Some("b.csv".into())).unwrap();
         writer.flush();
         assert!(repository.load_history().unwrap().last_view_id.is_none());
+    }
+
+    /// Found by the chaos tests: the writer read the settings too, so a
+    /// damaged settings file stopped every history update.
+    #[test]
+    fn damaged_settings_do_not_stop_the_history() {
+        let home = tempfile::tempdir().unwrap();
+        let repository = ViewRepository::new(StorePaths::for_home(home.path()));
+        let mut view = DocumentDefinition::draft_table("A".into(), "a.csv".into());
+        repository.save_view(&mut view).unwrap();
+        std::fs::write(home.path().join("settings.json"), "{\"favorites\": 3").unwrap();
+        let writer = HistoryWriter::for_repository(&repository);
+        writer.opened(Some(view.clone()), Some("a.csv".into())).unwrap();
+        writer.flush();
+        assert_eq!(repository.load_history().unwrap().last_view_id, Some(view.id));
+        writer.opened(None, Some("b.csv".into())).unwrap();
+        writer.flush();
+        let history = repository.load_history().unwrap();
+        assert!(history.last_raw_source.unwrap().ends_with("b.csv"));
     }
 }
