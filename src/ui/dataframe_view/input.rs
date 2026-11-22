@@ -21,10 +21,16 @@ impl View for DataFrameView {
             self.paint_panel_window(canvas, cx);
             return;
         }
+        if self.is_sql_window(cx) {
+            self.paint_sql_window(canvas, cx);
+            return;
+        }
         self.sync_profiles(cx);
+        self.sync_sql_window(cx);
         self.render(canvas, cx);
         self.refresh_format_window(cx);
         self.refresh_panel_window(cx);
+        self.refresh_sql_window(cx);
     }
 
     fn event(&mut self, event: &Event<Hit>, cx: &mut Cx<Self>) -> bool {
@@ -36,6 +42,9 @@ impl View for DataFrameView {
         }
         if self.is_panel_window(cx) {
             return self.panel_window_event(event, cx);
+        }
+        if self.is_sql_window(cx) {
+            return self.sql_window_event(event, cx);
         }
         self.sync_profiles(cx);
         let before = self.focus;
@@ -63,9 +72,6 @@ impl View for DataFrameView {
             Event::Wheel { delta, modifiers, hit, .. } => self.wheel(*delta, *modifiers, hit.as_ref(), cx),
             Event::MouseLeave => {
                 self.grid.mouse_leave();
-                if let Some(panel) = &mut self.sql_panel {
-                    panel.mouse_leave();
-                }
                 cx.notify();
                 false
             }
@@ -79,10 +85,8 @@ impl View for DataFrameView {
             }
             Event::Activated(active) => {
                 self.window_active = *active;
-                if let Some(panel) = &mut self.sql_panel {
-                    panel.window_active = *active;
-                    cx.notify();
-                }
+                self.grid_window_activated(*active);
+                cx.notify();
                 if *active {
                     self.check_source(cx);
                     self.check_database_tree(cx);
@@ -96,11 +100,12 @@ impl View for DataFrameView {
         };
         self.focus_changed(before, cx);
         self.after_input(cx);
+        self.follow_sql_focus(cx);
         handled
     }
 
     fn close_requested(&mut self, cx: &mut Cx<Self>) -> bool {
-        if !self.is_format_window(cx) && !self.is_help_window(cx) && !self.is_panel_window(cx) {
+        if !self.is_format_window(cx) && !self.is_help_window(cx) && !self.is_panel_window(cx) && !self.is_sql_window(cx) {
             self.prepare_close(cx);
         }
         true
@@ -119,6 +124,10 @@ impl View for DataFrameView {
             self.panel_window_closed(cx);
             return;
         }
+        if self.is_sql_window(cx) {
+            self.sql_window_closed(cx);
+            return;
+        }
         self.flush_auto_save();
         self.autosave_table_preferences(cx);
         self.save_geometry();
@@ -134,6 +143,9 @@ impl View for DataFrameView {
         if self.panel_window_id(window) {
             return self.panel_window_caret();
         }
+        if self.sql_window_id(window) {
+            return self.sql_window_caret();
+        }
         let focus = self.focus?;
         if focus == self.search_input.id {
             return self.search_input.caret_rect();
@@ -141,10 +153,7 @@ impl View for DataFrameView {
         if focus == self.limit_input.id {
             return self.limit_input.caret_rect();
         }
-        self.sql_panel
-            .as_ref()
-            .and_then(|panel| panel.caret(Some(focus)))
-            .or_else(|| self.slicer_sidebar.caret(Some(focus)))
+        self.slicer_sidebar.caret(Some(focus))
     }
 }
 
@@ -210,40 +219,7 @@ impl DataFrameView {
             self.handle_command_menu_key(event, cx);
             return true;
         }
-        if self.sql_helper_open {
-            self.handle_sql_helper_key(event, cx);
-            return true;
-        }
         let focus = self.focus;
-        let sql_editor = self.sql_panel_open && self.sql_panel.as_ref().is_some_and(|panel| focus == Some(panel.editor.id));
-        if sql_editor && self.sql_editor_key(event, cx) {
-            return true;
-        }
-        // The SQL panel takes its keys first, then Ctrl chords reach the app.
-        if let Some(panel) = &mut self.sql_panel
-            && self.sql_panel_open
-            && focus.is_some_and(|focus| panel.contains(focus))
-        {
-            let mut focus = self.focus;
-            let editor = focus == Some(panel.editor.id);
-            let handled = panel.key(event, &mut focus);
-            self.focus = focus;
-            self.handle_sql_panel_events(cx);
-            if handled {
-                return true;
-            }
-            if editor {
-                if event.modifiers.control
-                    && let Ok(stroke) = canonical_keystroke(&event.stroke())
-                    && let Some(action) = self.keymap.binding_for(&stroke, KeyContext::Application)
-                {
-                    self.dispatch_keymap_action(action, cx);
-                    return true;
-                }
-                return false;
-            }
-            return self.window_key(event, cx);
-        }
         if focus == Some(self.limit_input.id) {
             return self.limit_key(event, cx);
         }
@@ -427,7 +403,7 @@ impl DataFrameView {
         if self.modal_dialog() {
             return self.dialog_text(typed, cx);
         }
-        if self.space_menu_open || self.command_menu_open || self.action_menu_open || self.cache_drop_open || self.sql_helper_open {
+        if self.space_menu_open || self.command_menu_open || self.action_menu_open || self.cache_drop_open {
             return false;
         }
         if focus == Some(self.search_input.id) {
@@ -437,12 +413,6 @@ impl DataFrameView {
         }
         if focus == Some(self.limit_input.id) {
             self.limit_input.type_text(typed);
-            return true;
-        }
-        if let Some(panel) = &mut self.sql_panel
-            && panel.type_text(typed, focus)
-        {
-            self.handle_sql_panel_events(cx);
             return true;
         }
         if self.database_tree.type_text(typed, &mut focus) {
@@ -466,16 +436,6 @@ impl DataFrameView {
                 self.drain_grid_events(cx);
             }
             self.capture = None;
-            let mut focus = self.focus;
-            if !self.modal_dialog()
-                && self.keymap_editor.is_none()
-                && let Some(panel) = &mut self.sql_panel
-                && self.sql_panel_open
-                && panel.context_menu(hit, pos, &mut focus)
-            {
-                self.focus = focus;
-                self.handle_sql_panel_events(cx);
-            }
             return;
         }
         if button != MouseButton::Left {
@@ -497,11 +457,7 @@ impl DataFrameView {
             self.dialog_mouse_down(hit, pos, clicks, modifiers, cx);
             return;
         }
-        // A click outside the SQL helper menu closes it.
-        if self.sql_helper_open && !matches!(hit, Hit::Surface | Hit::Button(Button::SqlHelperCommand(_))) {
-            self.sql_helper_open = false;
-        }
-        // So does one outside the grid's Command menu.
+        // A click outside the grid's Command menu closes it.
         if self.command_menu_open && !matches!(hit, Hit::Surface | Hit::Button(Button::CommandMenuItem(_))) {
             self.command_menu_open = false;
         }
@@ -518,7 +474,6 @@ impl DataFrameView {
             }
             Hit::Splitter(splitter) => {
                 let (start, size) = match splitter {
-                    Splitter::Sql => (pos.y, self.sql_editor_height),
                     Splitter::DatabaseTree => (pos.x, self.database_tree_width),
                 };
                 self.split_drag = Some(SplitDrag {
@@ -559,14 +514,6 @@ impl DataFrameView {
             }
             _ => {
                 let mut focus = self.focus;
-                if let Some(panel) = &mut self.sql_panel
-                    && self.sql_panel_open
-                    && panel.mouse_down(hit, pos, clicks, modifiers, &mut focus)
-                {
-                    self.focus = focus;
-                    self.handle_sql_panel_events(cx);
-                    return;
-                }
                 if self.database_tree_open && self.database_tree.mouse_down(hit, pos, clicks, modifiers, &mut focus) {
                     self.focus = focus;
                     self.handle_tree_events(cx);
@@ -594,7 +541,6 @@ impl DataFrameView {
             Button::RemoveResultFilter(index) => self.remove_result_filter(index, cx),
             Button::RemoveHaving(index) => self.remove_having(index, cx),
             Button::CommandMenuItem(command) => self.select_command_menu_item(command, cx),
-            Button::SqlHelperCommand(command) => self.select_sql_helper_command(command, cx),
             Button::GridKey(action) => self.select_grid_key(action, cx),
             Button::RunViewAction(index) => self.run_view_action(index, cx),
             Button::EditViewActions => self.open_actions_editor(cx),
@@ -616,13 +562,6 @@ impl DataFrameView {
             other => {
                 let hit = Hit::Button(other);
                 let mut focus = self.focus;
-                if let Some(panel) = &mut self.sql_panel
-                    && panel.mouse_down(&hit, Point::default(), 1, Modifiers::NONE, &mut focus)
-                {
-                    self.focus = focus;
-                    self.handle_sql_panel_events(cx);
-                    return;
-                }
                 if self.database_tree.mouse_down(&hit, Point::default(), 1, Modifiers::NONE, &mut focus) {
                     self.focus = focus;
                     self.handle_tree_events(cx);
@@ -652,23 +591,14 @@ impl DataFrameView {
                 _ => None,
             };
             self.grid.mouse_move(grid_hit, cx);
-            if let Some(panel) = &mut self.sql_panel
-                && self.sql_panel_open
-            {
-                panel.mouse_move(pos, hit);
-            }
         }
     }
 
     fn mouse_drag(&mut self, pos: Point, capture: &Hit, hit: Option<&Hit>, cx: &mut Cx<Self>) {
         cx.notify();
         if let Some(drag) = self.split_drag {
-            let (width, height) = cx.viewport();
+            let (width, _) = cx.viewport();
             match drag.splitter {
-                Splitter::Sql => {
-                    let size = (drag.size - (pos.y - drag.start)).clamp(140.0, (height - 160.0).max(140.0));
-                    self.sql_editor_height = size;
-                }
                 Splitter::DatabaseTree => {
                     let size = (drag.size + (pos.x - drag.start)).clamp(160.0, (width - 240.0).clamp(160.0, 900.0));
                     self.database_tree_width = size;
@@ -693,9 +623,6 @@ impl DataFrameView {
             Hit::Editor(id, _) if *id == self.limit_input.id => self.limit_input.mouse_drag(pos),
             Hit::Slicer(_) => self.slicer_sidebar.mouse_drag(pos, hit),
             _ => {
-                if let Some(panel) = &mut self.sql_panel {
-                    panel.mouse_drag(pos);
-                }
                 self.database_tree.mouse_drag(pos);
                 self.slicer_sidebar.mouse_drag(pos, hit);
                 if let Some(pane) = &mut self.cell_detail
@@ -713,10 +640,6 @@ impl DataFrameView {
         if let Some(drag) = self.split_drag.take() {
             // The drag already resized the pane; save where it ended.
             match drag.splitter {
-                Splitter::Sql if (self.sql_editor_height - drag.size).abs() >= 0.5 => {
-                    let height = self.sql_editor_height;
-                    self.save_sql_editor_height(height);
-                }
                 Splitter::DatabaseTree if (self.database_tree_width - drag.size).abs() >= 0.5 => {
                     let width = self.database_tree_width;
                     self.save_database_tree_width(width);
@@ -735,9 +658,6 @@ impl DataFrameView {
         self.grid.mouse_up();
         self.search_input.mouse_up();
         self.limit_input.mouse_up();
-        if let Some(panel) = &mut self.sql_panel {
-            panel.mouse_up();
-        }
         self.database_tree.mouse_up();
         self.slicer_sidebar.mouse_up();
         if let Some(pane) = &mut self.cell_detail {
@@ -765,10 +685,6 @@ impl DataFrameView {
                 }
                 Hit::Slicer(_) => self.slicer_sidebar.wheel(hit, delta, line),
                 Hit::Tree(..) => self.database_tree.wheel(delta),
-                Hit::CodeEditor(_) => self
-                    .sql_panel
-                    .as_mut()
-                    .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),
                 Hit::Editor(id, _) => {
                     if let Some(pane) = &mut self.cell_detail
                         && pane.editor.id == *id
@@ -778,10 +694,6 @@ impl DataFrameView {
                         false
                     }
                 }
-                Hit::DialogScroll | Hit::DialogBar | Hit::AskScroll | Hit::AskBar => self
-                    .sql_panel
-                    .as_mut()
-                    .is_some_and(|panel| panel.wheel(hit, delta, modifiers, line)),
                 Hit::Surface if self.notices.log_open => self.notices.wheel(delta, line),
                 _ => false,
             }

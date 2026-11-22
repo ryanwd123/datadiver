@@ -110,8 +110,6 @@ impl DataFrameView {
             }
         } else if target.starts_with("editor:sql-ask") {
             use crate::domain::ai::{ChatMessage, SqlCheck};
-            // Tall enough to show the proposal and the log beside the editor.
-            self.sql_editor_height = 520.0;
             if let Some(panel) = &mut self.sql_panel {
                 panel.ask_input.set_text("total quantity per color, largest first");
                 panel.open_ask(&mut focus);
@@ -208,6 +206,10 @@ WHERE place <= 2";
             self.sql_helper_open = true;
         }
         self.set_focus(focus, cx);
+        if target == "editor:sql-results" {
+            // The results show in the grid's window.
+            self.hide_sql_editor(cx);
+        }
         self.handle_sql_panel_events(cx);
         cx.notify();
     }
@@ -364,7 +366,7 @@ WHERE place <= 2";
         let Some(ViewKind::Sql(config)) = self.session.working.as_ref().map(|d| &d.view) else {
             return;
         };
-        let mut panel = SqlPanel::new(config.text.clone(), cx.hwnd());
+        let mut panel = SqlPanel::new(config.text.clone(), self.sql_editor_host(cx));
         panel.set_editor_settings(&self.editor_settings);
         let startup_script = matches!(self.session.identity, SessionIdentity::StartupSql);
         let auto_run = config.auto_run && !startup_script;
@@ -475,8 +477,8 @@ WHERE place <= 2";
                 self.stop_sql();
                 cx.notify();
             }
-            SqlPanelEvent::Close => {
-                self.sql_panel_open = false;
+            SqlPanelEvent::Close => self.hide_sql_editor(cx),
+            SqlPanelEvent::FocusGrid => {
                 self.focus_grid(cx);
                 cx.notify();
             }

@@ -48,7 +48,6 @@ pub enum GridHit {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Splitter {
-    Sql,
     DatabaseTree,
 }
 

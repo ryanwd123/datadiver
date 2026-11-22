@@ -77,6 +77,7 @@ mod render;
 mod search_completion;
 mod sql_editor;
 mod sql_helper;
+mod sql_window;
 #[cfg(test)]
 mod sql_tests;
 mod startup;
@@ -579,7 +580,6 @@ pub struct DataFrameView {
     pub(crate) sql_result_complete: bool,
     /// The SQL result stopped at the row limit and the query had more rows.
     pub(crate) sql_result_truncated: bool,
-    pub(crate) sql_editor_height: f32,
     /// The SQL helper menu (Ctrl+K) is open over the editor.
     pub(crate) sql_helper_open: bool,
     /// Names what the run under way runs, before its status.
@@ -692,6 +692,12 @@ pub struct DataFrameView {
     pub(crate) panel_owner: Option<crate::ui::platform::WindowId>,
     /// The help, in a window of its own.
     pub(crate) help_window: Option<help_window::HelpWindow>,
+    /// The SQL editor's window, while the editor shows.
+    pub(crate) sql_window: Option<sql_window::SqlWindow>,
+    /// SQL editor windows told to close that have not gone yet.
+    pub(crate) closing_sql_windows: Vec<crate::ui::platform::WindowId>,
+    /// The grid's window's focus when it was last left.
+    pub(crate) grid_focus: Option<WidgetId>,
     /// The focused control; `None` leaves keys to the window.
     pub(crate) focus: Option<WidgetId>,
     window_geometry: Option<WindowGeometry>,
@@ -901,7 +907,6 @@ impl DataFrameView {
             sql_describe_again: false,
             sql_result_complete: false,
             sql_result_truncated: false,
-            sql_editor_height: settings.sql_editor_height.unwrap_or(280.),
             sql_helper_open: false,
             sql_run_label: None,
             sql_run_start: None,
@@ -985,6 +990,9 @@ impl DataFrameView {
             closing_panels: Vec::new(),
             panel_owner: None,
             help_window: None,
+            sql_window: None,
+            closing_sql_windows: Vec::new(),
+            grid_focus: None,
             focus: Some(grid_id),
             window_geometry: None,
             geometry_save: None,

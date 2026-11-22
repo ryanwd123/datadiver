@@ -946,17 +946,6 @@ impl DataFrameView {
         self.save_font(font, cx);
     }
 
-    pub(crate) fn save_sql_editor_height(&mut self, height: f32) {
-        let height = height.round();
-        self.sql_editor_height = height;
-        let result = self.repository.load_settings().and_then(|mut settings| {
-            settings.sql_editor_height = Some(height);
-            self.repository.save_settings(&settings)
-        });
-        if let Err(error) = result {
-            self.error = Some(format!("Could not save SQL editor height: {error}"));
-        }
-    }
 
     pub(crate) fn save_font(&mut self, font: FontPreferences, cx: &mut Cx<Self>) {
         if font == self.font {

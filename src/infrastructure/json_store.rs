@@ -59,7 +59,6 @@ pub struct Settings {
     pub font_family: Option<String>,
     pub editor_font_family: Option<String>,
     pub startup_sql_auto_save: bool,
-    pub sql_editor_height: Option<f32>,
     pub database_tree_open: bool,
     pub database_tree_width: Option<f32>,
     pub column_formats: std::collections::BTreeMap<
@@ -175,7 +174,6 @@ impl Default for Settings {
             font_family: None,
             editor_font_family: None,
             startup_sql_auto_save: false,
-            sql_editor_height: None,
             database_tree_open: false,
             database_tree_width: None,
             column_formats: Default::default(),
@@ -247,6 +245,8 @@ pub struct ApplicationHistory {
     /// The window the Group By, Pivot By, Aggregations and Order By managers
     /// share: its offset from its grid's window, and its size.
     pub panel_window: Option<WindowGeometry>,
+    /// The SQL editor's window: its offset from its grid's window, and its size.
+    pub sql_window: Option<WindowGeometry>,
 }
 
 impl Default for ApplicationHistory {
@@ -260,6 +260,7 @@ impl Default for ApplicationHistory {
             format_window: None,
             format_colors_open: false,
             panel_window: None,
+            sql_window: None,
         }
     }
 }
@@ -548,6 +549,11 @@ impl ViewRepository {
 
     pub fn save_panel_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
         self.update_history(|history| history.panel_window = Some(geometry.clone()))?;
+        Ok(())
+    }
+
+    pub fn save_sql_window_geometry(&self, geometry: &WindowGeometry) -> io::Result<()> {
+        self.update_history(|history| history.sql_window = Some(geometry.clone()))?;
         Ok(())
     }
 

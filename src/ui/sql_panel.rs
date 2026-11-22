@@ -20,6 +20,8 @@ pub enum SqlPanelEvent {
     Run(bool),
     Stop,
     Close,
+    /// Ctrl+J: back to the grid, leaving the editor open.
+    FocusGrid,
     Ask(SqlAsk),
     /// The ask panel opened; the view says which provider it will use.
     AskOpened,
@@ -174,6 +176,23 @@ impl SqlPanel {
             self.events.insert(0, SqlPanelEvent::Changed(self.editor.text()));
         }
         std::mem::take(&mut self.events)
+    }
+
+    /// Feeds `state` what the panel shows around the editor, which repaints
+    /// itself: its status, error and ask panel.
+    pub fn hash_shown(&self, state: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        (self.busy, &self.status, &self.error, self.startup_script).hash(state);
+        (self.ask_open, self.show_log, self.ask_log.len(), self.ask_input.text()).hash(state);
+        match &self.ask {
+            AskState::Idle => 0u8.hash(state),
+            AskState::Working(text) => (1u8, text).hash(state),
+            AskState::Proposal(proposal) => (2u8, &proposal.sql).hash(state),
+            AskState::Failed(error) => (3u8, error).hash(state),
+        }
+        if let Some(provider) = &self.ask_provider {
+            (&provider.name, &provider.model, provider.send_data).hash(state);
+        }
     }
 
     pub fn contains(&self, id: WidgetId) -> bool {
@@ -368,7 +387,7 @@ impl SqlPanel {
             return true;
         }
         if m.control && !m.shift && !m.alt && key == "j" {
-            self.events.push(SqlPanelEvent::Close);
+            self.events.push(SqlPanelEvent::FocusGrid);
             return true;
         }
         let ask_key = match key {

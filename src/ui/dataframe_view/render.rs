@@ -14,9 +14,6 @@ impl DataFrameView {
     pub(crate) fn render(&mut self, canvas: &mut Canvas<Hit>, cx: &mut Cx<Self>) {
         self.frames.set(self.frames.get() + 1);
         self.sync_completion_columns();
-        if self.sql_panel_open {
-            self.update_statement_mark();
-        }
         self.drain_grid_events(cx);
         self.sync_notices(cx);
         // A removed slicer card, or a closed filter, takes its focus with it.
@@ -171,11 +168,6 @@ impl DataFrameView {
             } else {
                 menu.paint_commands(canvas, &fonts, &self.keymap);
             }
-        }
-        if self.sql_helper_open
-            && let Some(panel) = &self.sql_panel
-        {
-            crate::ui::sql_helper_menu::paint(canvas, &fonts, &self.keymap, panel.editor_area);
         }
         if self.action_menu_open {
             let actions = self
@@ -402,16 +394,6 @@ impl DataFrameView {
             area = rest;
         }
         let mut grid_area = area;
-        if self.sql_panel_open && self.sql_panel.is_some() {
-            let height = self.sql_editor_height.clamp(140.0, (area.h - 120.0).max(140.0)).min(area.h);
-            let (panel_rect, rest) = area.split_bottom(height);
-            if let Some(panel) = &mut self.sql_panel {
-                panel.paint(canvas, panel_rect, &fonts, focus);
-            }
-            let splitter = rect(panel_rect.x, panel_rect.y - 3.0, panel_rect.w, 6.0);
-            canvas.hit_cursor(splitter, Hit::Splitter(Splitter::Sql), Cursor::ResizeRows);
-            grid_area = rest;
-        }
         let has_slicers = self
             .session
             .working
@@ -435,11 +417,6 @@ impl DataFrameView {
         self.grid.paint(canvas, grid_area, &fonts.ui, cx);
         if has_slicers {
             self.slicer_sidebar.paint_overlay(canvas, &fonts.small);
-        }
-        if let Some(panel) = &mut self.sql_panel
-            && self.sql_panel_open
-        {
-            panel.paint_overlay(canvas, &fonts, focus);
         }
         if !self.modal_dialog() {
             self.grid.paint_tooltip(canvas, &fonts);

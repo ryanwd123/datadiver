@@ -136,9 +136,19 @@ impl Viewer {
     }
 
     /// The window input goes to: a manager's window while one is open on
-    /// this window, since opening it makes it the active one.
+    /// this window, since opening it makes it the active one, or the SQL
+    /// editor's window while focus is in it.
     pub fn active(&self) -> WindowId {
-        self.read(|view| view.panel_window.as_ref().map(|window| window.id)).filter(|id| self.app.windows().contains(id)).unwrap_or(self.id)
+        let windows = self.app.windows();
+        let open = |id: Option<WindowId>| id.filter(|id| windows.contains(id));
+        open(self.read(|view| view.panel_window.as_ref().map(|window| window.id)))
+            .or_else(|| open(self.sql_window().filter(|_| self.read(|view| view.sql_focused()))))
+            .unwrap_or(self.id)
+    }
+
+    /// The SQL editor's window, while it is open.
+    pub fn sql_window(&self) -> Option<WindowId> {
+        self.read(|view| view.sql_window.as_ref().map(|window| window.id))
     }
 
     pub fn read<R>(&self, f: impl FnOnce(&DataFrameView) -> R) -> R {
@@ -160,6 +170,9 @@ impl Viewer {
         let active = self.active();
         if active != self.id {
             self.app.render(active);
+        }
+        if let Some(sql) = self.sql_window().filter(|id| *id != active && self.app.windows().contains(id)) {
+            self.app.render(sql);
         }
     }
 
@@ -267,6 +280,11 @@ impl Viewer {
             && let Some(region) = self.app.find(active, &matches)
         {
             return Some((active, region));
+        }
+        if let Some(sql) = self.sql_window().filter(|id| *id != active && self.app.windows().contains(id))
+            && let Some(region) = self.app.find(sql, &matches)
+        {
+            return Some((sql, region));
         }
         self.app.find(self.id, &matches).map(|region| (self.id, region))
     }

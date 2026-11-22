@@ -1,13 +1,13 @@
 # SQL editor
 
-Write SQL in a panel under the grid, with completion, checks and documentation as you type. The grid shows the result, which you can search, slice, group and pivot like any other source.
+Write SQL in a window of its own beside the grid, with completion, checks and documentation as you type. The grid shows the result, which you can search, slice, group and pivot like any other source.
 
 ## SQL sources and scripts
 
 - A **SQL source** is SQL whose rows you build views on. Save it with **Ctrl+S**; it is listed under **Sources › SQL sources** in the database tree and in **Ctrl+P**. Opening it shows the rows its last statement returns, and each view built on it runs the SQL again when it opens or reloads (**F5**). It should create only temporary tables, or use `CREATE OR REPLACE`.
 - A **SQL script** is a scratchpad for statements you run now and then, such as maintenance or one-off checks. Scripts are listed under **SQL scripts**; views are not built on them, and results are not saved.
 
-Start one with **New SQL source** or **New SQL script** in the command palette. **Ctrl+J** shows the editor again for the open source or script, or opens the source behind a view built on one. Drag the line above the panel to resize it.
+Start one with **New SQL source** or **New SQL script** in the command palette. **Ctrl+J** shows the editor again for the open source or script, or opens the source behind a view built on one. In the editor, **Ctrl+J** goes back to the grid and leaves the editor open, so you can switch between the two. **Close** or **Ctrl+Q** closes the editor's window; the SQL stays, and the window opens again where you left it, at the same size.
 
 ## Running SQL
 

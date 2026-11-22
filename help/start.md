@@ -20,7 +20,7 @@ DataDiver is a fast desktop tool for exploring data and looking things up. Open 
 - **The grid** shows the rows or the query result. Most single-key commands work when it has focus; **Ctrl+D** returns focus to it from anywhere.
 - **The slicer sidebar** holds slicer cards once you add them.
 - **The database tree** (**Ctrl+B**) lists views, tables, SQL sources, scripts and watched files.
-- **The SQL editor** (**Ctrl+J**) opens in a panel under the grid for SQL sources and scripts.
+- **The SQL editor** (**Ctrl+J**) opens in a window of its own for SQL sources and scripts, while the grid shows the results.
 - **The cell detail pane** (**D**) shows the whole value of the active cell.
 - **The status bar** shows row counts, the selection's statistics and anything that limits the rows.
 

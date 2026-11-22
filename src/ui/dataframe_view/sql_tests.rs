@@ -7,7 +7,7 @@ use crate::application::session::SessionIdentity;
 use crate::domain::documents::{DocumentDefinition, SqlConfig, ViewKind};
 use crate::domain::frame::FrameSnapshot;
 use crate::infrastructure::json_store::ViewRepository;
-use crate::ui::hit::{Button, Hit, Splitter};
+use crate::ui::hit::{Button, Hit};
 use crate::ui::sql_panel::{AskState, SqlPanel};
 use std::time::Duration;
 
@@ -49,6 +49,15 @@ fn place(viewer: &Viewer, text: &str, selection: std::ops::Range<usize>) {
         view.focus = focus;
     });
     viewer.render();
+}
+
+/// The SQL editor's window, opened by the grid's window as it paints.
+fn sql_window(viewer: &Viewer) -> crate::ui::platform::WindowId {
+    viewer.render();
+    viewer.run_until_parked();
+    let id = viewer.sql_window().expect("the SQL editor's window");
+    assert!(viewer.app.windows().contains(&id));
+    id
 }
 
 fn completion_labels(viewer: &Viewer) -> Option<Vec<String>> {
@@ -497,21 +506,21 @@ fn sql_panel_shortcuts_preserve_grid_and_run_current_statement() {
     });
     viewer.press("ctrl-j");
     assert!(viewer.read(|view| view.sql_panel_open));
+    // The editor's window opens where it was left, relative to the grid's.
+    viewer.app.move_to(viewer.id, 10.0, 10.0);
+    let window = sql_window(&viewer);
+    viewer.app.move_to(window, 60.0, 50.0);
+    viewer.app.resize(window, 700.0, 420.0);
+    click(&viewer, Button::SqlClose);
     viewer.render();
-    let splitter = viewer
-        .find(|hit| *hit == Hit::Splitter(Splitter::Sql))
-        .expect("the SQL splitter")
-        .center();
-    let height = viewer.read(|view| view.sql_editor_height);
-    viewer.drag(splitter, crate::ui::platform::point(splitter.x, splitter.y + height - 180.0));
-    let resized = viewer.read(|view| view.sql_editor_height);
-    assert!((resized - 180.0).abs() < 2.0, "{resized}");
-    let repository = repository(home.path());
-    let saved = repository.load_settings().unwrap().sql_editor_height.unwrap();
-    assert!((saved - 180.0).abs() < 2.0, "{saved}");
-    let reopened = self::viewer(repository, None);
-    new_source(&reopened);
-    assert!((reopened.read(|view| view.sql_editor_height) - saved).abs() < 2.0);
+    viewer.run_until_parked();
+    assert!(!viewer.app.windows().contains(&window));
+    let saved = repository(home.path()).load_history().unwrap().sql_window.unwrap();
+    assert_eq!((saved.x, saved.y, saved.width, saved.height), (50.0, 40.0, 700.0, 420.0));
+    viewer.press("ctrl-j");
+    let window = sql_window(&viewer);
+    let placement = viewer.app.update(window, |_, cx| cx.placement()).unwrap();
+    assert_eq!((placement.x, placement.y, placement.width, placement.height), (60.0, 50.0, 700.0, 420.0));
 }
 
 #[test]
@@ -2136,4 +2145,72 @@ fn a_streaming_sql_source_is_queried_in_place_and_switches_back_to_memory() {
     open_entry(&viewer, &DocumentDefinition::draft_sql_source(&statement));
     viewer.settle();
     assert!(viewer.read(|view| view.error.as_ref().is_some_and(|error| error.contains("ends with a query"))));
+}
+
+#[test]
+fn the_sql_editor_opens_in_a_window_of_its_own() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    let window = sql_window(&viewer);
+    let editor = panel(&viewer, |panel| panel.editor.id);
+    // The editor paints in its window; the grid's window shows only the grid.
+    assert!(viewer.app.find(window, |hit| *hit == Hit::CodeEditor(editor)).is_some());
+    assert!(viewer.app.find(viewer.id, |hit| *hit == Hit::CodeEditor(editor)).is_none());
+    assert!(viewer.app.find(window, |hit| *hit == Hit::Button(Button::SqlRun)).is_some());
+
+    // Typing in its window edits the SQL.
+    assert!(editor_focused(&viewer));
+    viewer.app.type_text(window, "SELECT 7 AS seven");
+    viewer.run_until_parked();
+    assert_eq!(sql_text(&viewer), "SELECT 7 AS seven");
+    viewer.app.press(window, "ctrl-enter");
+    viewer.settle();
+    assert_eq!(viewer.read(|view| view.session.result.columns[0].0.clone()), "seven");
+
+    // Ctrl+J goes back to the grid and leaves the editor open; from the
+    // grid it returns to the editor.
+    viewer.app.press(window, "ctrl-j");
+    viewer.run_until_parked();
+    assert!(viewer.grid_focused());
+    assert!(viewer.read(|view| view.sql_panel_open));
+    assert!(viewer.app.windows().contains(&window));
+    viewer.app.press(viewer.id, "ctrl-j");
+    viewer.run_until_parked();
+    assert!(editor_focused(&viewer));
+    assert_eq!(sql_window(&viewer), window);
+
+    // Ctrl+Q, closing a window, hides the editor, which keeps its SQL.
+    viewer.app.press(window, "ctrl-q");
+    viewer.render();
+    viewer.run_until_parked();
+    assert!(!viewer.app.windows().contains(&window));
+    assert!(viewer.grid_focused());
+    assert!(viewer.read(|view| !view.sql_panel_open && view.sql_window.is_none()));
+    viewer.press("ctrl-j");
+    let window = sql_window(&viewer);
+    assert_eq!(sql_text(&viewer), "SELECT 7 AS seven");
+
+    // So does the window's own close button.
+    viewer.app.close(window);
+    viewer.run_until_parked();
+    assert!(viewer.read(|view| !view.sql_panel_open && view.sql_window.is_none()));
+    assert!(viewer.grid_focused());
+    assert!(viewer.is_open());
+}
+
+#[test]
+fn the_sql_helper_menu_opens_in_the_editor_window() {
+    let home = tempfile::tempdir().unwrap();
+    let viewer = viewer(repository(home.path()), None);
+    new_source(&viewer);
+    let window = sql_window(&viewer);
+    viewer.app.press(window, "ctrl-k");
+    viewer.render();
+    assert!(viewer.read(|view| view.sql_helper_open));
+    let command = |hit: &Hit| matches!(hit, Hit::Button(Button::SqlHelperCommand(_)));
+    assert!(viewer.app.find(window, command).is_some());
+    assert!(viewer.app.find(viewer.id, command).is_none());
+    viewer.app.press(window, "escape");
+    assert!(!viewer.read(|view| view.sql_helper_open));
 }

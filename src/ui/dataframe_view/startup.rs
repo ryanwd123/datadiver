@@ -314,6 +314,7 @@ impl DataFrameView {
                     .map(|window| window.id)
                     .or(view.panel_window.as_ref().map(|window| window.id))
                     .or(view.help_window.as_ref().map(|window| window.id))
+                    .or(view.sql_window.as_ref().map(|window| window.id))
                     .unwrap_or(cx.window_id());
                 // Painting borrows the view, so it waits until this step returns.
                 cx.with_runtime(move |runtime| {
