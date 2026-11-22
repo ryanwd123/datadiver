@@ -150,6 +150,8 @@ impl DataFrameView {
             CommandId::DashboardQueries => self.open_dashboard_queries(cx),
             CommandId::RegisterDashboards => self.register_dashboards(true, cx),
             CommandId::UnregisterDashboards => self.register_dashboards(false, cx),
+            CommandId::AddToPath => self.add_to_path(true, cx),
+            CommandId::RemoveFromPath => self.add_to_path(false, cx),
             CommandId::Commands => self.open_command_palette(cx),
             CommandId::Keymap => self.open_keymap_editor(cx),
             CommandId::Theme => self.open_theme_editor(cx),

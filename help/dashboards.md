@@ -11,8 +11,8 @@ A dashboard is one `.ddash` file. Its data can be files beside it, any file path
 ## Opening one
 
 - Drag the `.ddash` file onto a window, or use **Open file** (**Ctrl+O**) or the file picker (**Ctrl+P**), which lists the dashboards you have opened.
-- **Open .ddash dashboards with DataDiver** in the command palette makes a double-click in File Explorer open them. If DataDiver is running, the dashboard opens as a new window of it.
-- From a shell: `datadiver board.ddash`.
+- **Associate .ddash files with DataDiver** in the command palette makes a double-click in File Explorer open them. If DataDiver is running, the dashboard opens as a new window of it. **Remove the .ddash file association** undoes it.
+- From a shell: `datadiver board.ddash`. **Add DataDiver to PATH** lets any terminal, and agents such as Claude, run `datadiver` by name; terminals already open need a restart to see it. It only adds a folder that holds DataDiver alone, since every program in a folder on PATH runs by name.
 
 Opening a data file or view from a dashboard's window shows it in the grid there instead.
 

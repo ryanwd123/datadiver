@@ -351,6 +351,8 @@ const ACTIVE_COMMANDS: &[CommandId] = &[
     CommandId::DashboardQueries,
     CommandId::RegisterDashboards,
     CommandId::UnregisterDashboards,
+    CommandId::AddToPath,
+    CommandId::RemoveFromPath,
     CommandId::AskSql,
 ];
 

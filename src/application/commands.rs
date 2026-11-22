@@ -97,6 +97,8 @@ pub enum CommandId {
     DashboardQueries,
     RegisterDashboards,
     UnregisterDashboards,
+    AddToPath,
+    RemoveFromPath,
     AskSql,
     RunSql,
     RunAllSql,
@@ -736,13 +738,25 @@ pub const COMMANDS: &[Command] = &[
     Command {
         id: CommandId::RegisterDashboards,
         key: "register_dashboards",
-        label: "Open .ddash dashboards with DataDiver",
+        label: "Associate .ddash files with DataDiver (open on double-click)",
         default_binding: None,
     },
     Command {
         id: CommandId::UnregisterDashboards,
         key: "unregister_dashboards",
-        label: "Stop opening .ddash dashboards with DataDiver",
+        label: "Remove the .ddash file association",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::AddToPath,
+        key: "add_to_path",
+        label: "Add DataDiver to PATH (run datadiver from any terminal)",
+        default_binding: None,
+    },
+    Command {
+        id: CommandId::RemoveFromPath,
+        key: "remove_from_path",
+        label: "Remove DataDiver from PATH",
         default_binding: None,
     },
     Command {

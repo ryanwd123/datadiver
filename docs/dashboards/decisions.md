@@ -353,13 +353,16 @@ window receives the message, so nothing new runs in the background.
 
 ## 23. The `.ddash` association is per user, and follows a moved exe
 
-**Open .ddash dashboards with DataDiver** (or `datadiver dashboard register`)
+**Associate .ddash files with DataDiver** (or `datadiver dashboard register`)
 writes `HKCU\Software\Classes`, so no admin rights. On each normal start, if
-`.ddash` is registered to DataDiver at another path, the registration moves
-to the running exe.
+`.ddash` is registered to a DataDiver exe that no longer exists, the
+registration moves to the running exe.
 
 **Why:** DataDiver is a portable exe; moving it would otherwise leave
-double-clicks pointing at nothing. Nothing is registered unless you ask.
+double-clicks pointing at nothing. Nothing is registered unless you ask. The
+"no longer exists" rule came after the first version: that version moved the
+registration to whichever DataDiver started last, so running a debug build
+would have taken double-clicks away from the release build.
 
 **Your notes:**
 
@@ -377,6 +380,29 @@ Watching the file would reload it under you while you use it.
 
 DataDiver remembers the last 20 dashboards opened (in `history.json`) and
 lists them with the other sources in Ctrl+P. Agent checks are not remembered.
+
+**Your notes:**
+
+## 26. Add DataDiver to PATH: the user's PATH, and only a folder of its own
+
+**Add DataDiver to PATH** appends the running exe's folder to the user's
+`Path` (`HKCU\Environment`) and tells Windows it changed; **Remove DataDiver
+from PATH** takes it off. It refuses a folder that holds other programs
+(`.exe`, `.bat`, `.cmd`, `.ps1`), such as Downloads, and says to move
+`datadiver.exe` to a folder of its own.
+
+**Why:** agents call `datadiver dashboard …` by name. The user PATH needs no
+admin rights and is what installers like rustup use. Every program in a
+folder on PATH runs by name, so a shared folder would quietly expose its
+other programs.
+
+**Turned down:** copying the exe or a `.cmd` shim into a `bin` folder. A
+copy goes stale when you replace the exe, and Git Bash, which Claude Code
+uses, doesn't run a `.cmd` by its bare name.
+
+**Limits:** terminals already open, Claude Code included, keep the old PATH
+until restarted. Moving the exe afterwards needs the command run again. A
+`datadiver` installed with pip comes first if its folder is earlier on PATH.
 
 **Your notes:**
 

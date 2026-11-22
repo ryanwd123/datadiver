@@ -300,6 +300,8 @@ pub(crate) fn dashboard_allows(command: CommandId) -> bool {
             | CommandId::DashboardQueries
             | CommandId::RegisterDashboards
             | CommandId::UnregisterDashboards
+            | CommandId::AddToPath
+            | CommandId::RemoveFromPath
     )
 }
 
@@ -940,6 +942,23 @@ impl DataFrameView {
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+
+    /// Puts this DataDiver's folder on the user's PATH, or takes it off.
+    pub(crate) fn add_to_path(&mut self, add: bool, cx: &mut Cx<Self>) {
+        use crate::infrastructure::user_path;
+        // Telling other windows about the change can wait on a slow one.
+        cx.spawn(
+            move || if add { user_path::add() } else { user_path::remove() },
+            move |view: &mut Self, cx, outcome: Result<bool, String>| {
+                match outcome {
+                    Ok(changed) => view.copy_status = Some(user_path::outcome_message(add, changed)),
+                    Err(error) => view.error = Some(error),
+                }
+                cx.notify();
+            },
+        )
+        .detach();
     }
 
     pub(crate) fn open_dashboard_dev_tools(&mut self) {

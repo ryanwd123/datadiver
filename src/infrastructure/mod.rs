@@ -16,3 +16,4 @@ pub mod source_database;
 pub mod sources;
 pub mod sql_execution;
 pub mod store;
+pub mod user_path;

@@ -113,12 +113,34 @@ pub fn registered_command() -> Option<String> {
     (read_default(&extension).as_deref() == Some(PROG_ID)).then(|| read_default(&format!(r"{PROG_ID}\shell\open\command")))?
 }
 
+/// The exe a registered open command runs: the quoted path before `"%1"`.
+fn command_exe(command: &str) -> Option<PathBuf> {
+    let rest = command.trim().strip_prefix('"')?;
+    Some(PathBuf::from(&rest[..rest.find('"')?]))
+}
+
 /// After the exe moved, points the association at where it is now, so a
-/// double-click still works. Does nothing if `.ddash` was never registered.
+/// double-click still works. Only when the registered exe is gone: another
+/// DataDiver that still exists, such as a release build next to a debug
+/// build, keeps the association. Does nothing if `.ddash` was never registered.
 pub fn follow_moved_exe(exe: &Path) -> Result<bool, String> {
     match registered_command() {
-        Some(command) if command != open_command(exe) => register(exe).map(|()| true),
+        Some(command) if command != open_command(exe) && command_exe(&command).is_none_or(|old| !old.exists()) => {
+            register(exe).map(|()| true)
+        }
         _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_exe_of_an_open_command() {
+        let exe = Path::new(r"C:\Program Files\DataDiver\datadiver.exe");
+        assert_eq!(command_exe(&open_command(exe)), Some(exe.to_path_buf()));
+        assert_eq!(command_exe("notepad.exe %1"), None);
     }
 }
 
