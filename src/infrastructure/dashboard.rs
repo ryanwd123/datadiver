@@ -352,7 +352,7 @@ impl DashboardEngine {
                     let select = source_reader(&resolved).map(|reader| reader.replacen('?', &sql_string(&location), 1));
                     ("file", location, select)
                 }
-                SourceKind::Profile(name) => ("profile", name.clone(), Ok(name.clone())),
+                SourceKind::Profile(name) => ("profile", name.clone(), profile_relation(name)),
             };
             let view = format!(
                 "CREATE OR REPLACE TEMP VIEW {} AS SELECT * FROM {};\n",
@@ -423,6 +423,33 @@ impl DashboardEngine {
         result.elapsed_ms = (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0;
         Ok(result)
     }
+}
+
+/// A profile source's name as SQL, every part quoted. The name comes from
+/// the dashboard file and goes into the batch that makes its view, outside
+/// the read-only transaction, so it may only be a name: one to three parts
+/// joined by dots, such as `files.orders` or `pg.public."Order Lines"`.
+fn profile_relation(name: &str) -> Result<String, String> {
+    use diver_sql::SyntaxKind as K;
+    let invalid = || format!("\"{name}\" is not a table or view name; use one like files.orders or pg.public.customers");
+    let mut parts = Vec::new();
+    let mut expect_name = true;
+    let mut at = 0usize;
+    for token in diver_sql::tokenize(name) {
+        let text = &name[at..at + usize::from(token.len)];
+        at += usize::from(token.len);
+        match (token.kind, expect_name) {
+            (K::IDENT, true) => parts.push(text.to_owned()),
+            (K::QUOTED_IDENT, true) => parts.push(text[1..text.len() - 1].replace("\"\"", "\"")),
+            (K::DOT, false) => {}
+            _ => return Err(invalid()),
+        }
+        expect_name = !expect_name;
+    }
+    if expect_name || !(1..=3).contains(&parts.len()) {
+        return Err(invalid());
+    }
+    Ok(parts.iter().map(|part| quote_identifier(part)).collect::<Vec<_>>().join("."))
 }
 
 /// Explains a source that cannot be read in the dashboard's terms.
@@ -852,6 +879,29 @@ mod tests {
         );
         assert_eq!(manifest.commands[0].key.as_deref(), Some("ctrl-shift-r"));
         assert_eq!(Manifest::from_html("<html></html>").unwrap().sources, Vec::new());
+    }
+
+    #[test]
+    fn profile_sources_are_names_and_never_sql() {
+        assert_eq!(profile_relation("files.orders").unwrap(), r#""files"."orders""#);
+        assert_eq!(profile_relation(r#"pg.public."Order ""Lines""""#).unwrap(), r#""pg"."public"."Order ""Lines""""#);
+        assert_eq!(profile_relation("orders").unwrap(), r#""orders""#);
+        for bad in ["", "a.", ".a", "a..b", "a.b.c.d", "a b", "range(1)", "a; select 1", "t; COPY (select 1) TO 'x.csv'", "a -- b", "a/*x*/.b"] {
+            assert!(profile_relation(bad).is_err(), "{bad:?} was let through");
+        }
+
+        // Opening a dashboard whose source name holds SQL must not run it.
+        let home = tempfile::tempdir().unwrap();
+        let written = home.path().join("written.csv");
+        let manifest = serde_json::json!({"sources": {
+            "t": {"profile": format!("range(1); COPY (select 1 as x) TO '{}'", written.display())},
+            "n": {"profile": "range"},
+        }})
+        .to_string();
+        let engine = engine(home.path(), &manifest);
+        assert!(!written.exists(), "the source name ran as SQL");
+        assert!(engine.sources[0].error.as_deref().is_some_and(|error| error.contains("is not a table or view name")), "{:?}", engine.sources[0]);
+        assert!(engine.sources[1].error.is_some(), "range is a function, not a relation");
     }
 
     #[test]

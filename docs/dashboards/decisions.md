@@ -503,6 +503,13 @@ with only the exe to go on.
   a duplicate. `--queries` adds the full list, whose parameters show how the
   controls drive the SQL. Duplicates warn but don't fail the check, since
   the page still shows the right numbers.
+- **A profile source's name ran as SQL.** The review before release found
+  that `{"profile": "…"}` went straight into the batch that makes the
+  source's view, outside the read-only transaction, so a dashboard file
+  whose source name ended in `; COPY … TO '…'` wrote a file when it opened.
+  A profile source is now only a name, one to three parts joined by dots,
+  and each part is quoted. Anything else is the source's error and never
+  runs.
 
 **Your notes:**
 
