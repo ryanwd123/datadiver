@@ -220,8 +220,9 @@ impl InformationPanel {
         let fixed = line * 2.0 + button_height(font) + 40.0 + if self.error.is_some() { line + 8.0 } else { 0.0 };
         let flexible = (r.h - fixed).max(128.0);
         let row_height = line + 12.0;
+        // A short window still gets the smallest table, even if it overflows.
         let table_height = (self.columns.len().max(1) as f32 * row_height + row_height + scroll::BAR_WIDTH)
-            .clamp(96.0, flexible * 0.65);
+            .clamp(96.0, (flexible * 0.65).max(96.0));
         let table = column.next(table_height);
         self.paint_table(canvas, table, fonts, row_height);
         if let Some(error) = &self.error {
