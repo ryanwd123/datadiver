@@ -376,6 +376,7 @@ impl SourceDatabase {
         let script = self.path.parent().unwrap().join(STARTUP_SCRIPT);
         let startup_error = run_startup_script(&connection, &script).err();
         let startup_error = startup_error.or_else(|| share_path_settings(&connection).err());
+        load_installed_extensions(&connection);
         *state = Some(DatabaseState {
             connection,
             persistent,
@@ -1010,6 +1011,30 @@ fn attach_alias<'a>(path: &Path, taken: impl Iterator<Item = &'a str>) -> String
 
 fn sql_string(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
+}
+
+/// Extensions DuckDB would load by itself the first time a query uses one
+/// of their functions: ICU for time zones, JSON for `json_*`.
+const AUTOLOADED_EXTENSIONS: &[&str] = &["icu", "json"];
+
+/// Loads the installed [`AUTOLOADED_EXTENSIONS`] now, before any query runs.
+///
+/// Loading one adds functions to DuckDB's shared catalog; ICU adds time zone
+/// versions of `+` and `-`. When that happens in the middle of a query,
+/// queries binding on other connections at the same moment can fail with
+/// "No function matches … (DOUBLE, INTEGER_LITERAL)" or an internal error,
+/// as a dashboard's parallel queries did. Extensions that aren't installed
+/// are left alone, so opening never waits on a download.
+fn load_installed_extensions(connection: &Connection) {
+    let installed = connection
+        .prepare("SELECT extension_name FROM duckdb_extensions() WHERE installed AND NOT loaded")
+        .and_then(|mut statement| statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default();
+    for extension in AUTOLOADED_EXTENSIONS.iter().filter(|name| installed.iter().any(|known| known == *name)) {
+        if let Err(error) = connection.execute_batch(&format!("LOAD {extension}")) {
+            eprintln!("cannot load the DuckDB extension {extension}: {error}");
+        }
+    }
 }
 
 fn run_startup_script(connection: &Connection, path: &Path) -> Result<(), String> {

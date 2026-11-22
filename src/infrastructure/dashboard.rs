@@ -919,6 +919,66 @@ mod tests {
     }
 
     #[test]
+    fn installed_autoloaded_extensions_load_before_any_query() {
+        let home = tempfile::tempdir().unwrap();
+        let engine = engine(home.path(), "{}");
+        let result = engine
+            .query(&QueryRequest::new(
+                "select extension_name from duckdb_extensions() where installed and not loaded and extension_name in ('icu', 'json')",
+            ))
+            .unwrap();
+        assert_eq!(result.rows, Vec::<Vec<Value>>::new(), "loading these mid-query races other queries");
+    }
+
+    /// Many fresh engines, each answering a page's worth of queries at
+    /// once, as `dashboard check` does: some need ICU, which DuckDB loads on
+    /// first use, while others bind plain arithmetic.
+    #[test]
+    #[ignore = "a stress test; run with --ignored"]
+    fn parallel_queries_on_a_fresh_profile_all_succeed() {
+        // DATADIVER_STRESS_STARTUP names a startup script, such as one that
+        // attaches a Postgres database, and DATADIVER_STRESS_TABLE a table in it.
+        let startup = std::env::var_os("DATADIVER_STRESS_STARTUP");
+        let table = std::env::var("DATADIVER_STRESS_TABLE").ok();
+        let remote = table.as_ref().map(|table| {
+            [
+                format!("select count(*) as n, avg(\"tempIndoor\" * 1.8 + 32) as f from {table}"),
+                format!("select max(timestamp_int) as t, sum(\"tempOutdoor\" * 1.8) as s from {table}"),
+                format!("select strftime(to_timestamp(max(timestamp_int)), '%Y-%m') as m from {table}"),
+            ]
+        });
+        let mut queries = [
+            "select to_timestamp(1795373279 + i)::date as d from range(100) t(i)",
+            "select strftime(to_timestamp(1795373279), '%Y-%m') as m",
+            "select sum(x * 1.8 + 32) as f from (select i::double as x from range(1000) t(i))",
+            "select avg(x::decimal(5,2) * 2.0) as a from (select i % 100 as x from range(1000) t(i))",
+            "select date_trunc('day', now()) as today",
+            "select count(*) as n from range(10000) t(i) where i * 2 > 5",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        queries.extend(remote.into_iter().flatten());
+        let rounds = if startup.is_some() { 12 } else { 30 };
+        let mut failures = Vec::new();
+        for _ in 0..rounds {
+            let home = tempfile::tempdir().unwrap();
+            if let Some(startup) = &startup {
+                std::fs::copy(startup, home.path().join(super::super::source_database::STARTUP_SCRIPT)).unwrap();
+            }
+            let engine = std::sync::Arc::new(engine(home.path(), "{}"));
+            let handles = (0..12)
+                .map(|index| {
+                    let engine = engine.clone();
+                    let sql = queries[index % queries.len()].clone();
+                    std::thread::spawn(move || engine.query(&QueryRequest::new(sql.clone())).err().map(|error| format!("{sql}: {error}")))
+                })
+                .collect::<Vec<_>>();
+            failures.extend(handles.into_iter().filter_map(|handle| handle.join().unwrap()));
+        }
+        assert!(failures.is_empty(), "{} failed:\n{}", failures.len(), failures.join("\n"));
+    }
+
+    #[test]
     fn profile_sources_read_the_profile_database() {
         let home = tempfile::tempdir().unwrap();
         let database = SourceDatabase::for_profile(home.path());
