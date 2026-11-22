@@ -10,23 +10,47 @@ JavaScript, and ask `window.datadiver.query` for every number.
 
 1. Look at the data first:
    - `datadiver dashboard sources` lists the profile database's tables and
-     views with their columns. Watched files are views in the `files` schema.
-   - `datadiver dashboard schema data/orders.parquet` (or `files.orders`)
-     shows columns, the row count and sample rows.
-   - `datadiver dashboard query --source orders=data/orders.parquet "select …"`
-     runs SQL the way the dashboard will.
+     views with their columns, the databases attached to it, and the path of
+     its startup script. `datadiver dashboard sources mypg` lists only names
+     containing `mypg`. Watched files are views in the `files` schema.
+   - `datadiver dashboard schema data/orders.parquet` (or `files.orders`, or
+     `mypg.public.orders`) shows columns, the row count and sample rows.
+   - `datadiver dashboard query --source orders=data/orders.parquet "select …" --format table`
+     runs SQL the way the dashboard will and prints an aligned table; use
+     `--format tsv` to pipe rows on, or leave it out for JSON. Every `--source`
+     is `alias=path` or `alias=profile:name`, and a `.ddash` before the SQL
+     brings its manifest's sources.
 2. Write the `.ddash` file: a manifest naming the sources, and the page.
-3. Check it: `datadiver dashboard check board.ddash --capture board.png`
+3. Check it: `datadiver dashboard check board.ddash --capture board.png --full-page`
    opens the page out of sight, waits until its queries finish, and prints
-   JSON with every query (SQL, time, rows, error), every `console.error` or
-   uncaught error of the page, and source problems. `"ok": true` means
-   nothing failed. Look at the PNG to judge the layout. Fix and check again.
+   JSON with every query (time, rows, error; the SQL in full when it failed),
+   every `console.error` or uncaught error of the page, and source problems.
+   `"ok": true` means nothing failed. `--full-page` captures the whole page,
+   not just one screen. Look at the PNG to judge the layout. Fix and check again.
+   - To check another state, such as a filter or a date range, add
+     `--run "<javascript>"`: it runs in the page once the page settles, and
+     the check waits for the queries it starts before the next `--run` or the
+     capture. For example `--run "document.querySelector('#range-90d').click()"`.
+     The report shows each script's value or the error it threw. Use this
+     instead of editing a copy of the dashboard.
 4. Tell the user to open it: double-click the file (after
    `datadiver dashboard register`), drag it onto DataDiver, or
    `datadiver board.ddash`. Editing the file while it is open reloads it when
    the window is next activated; Ctrl+R reloads at once.
 
 Commands print JSON on stdout and problems on stderr, and exit with 1 on failure.
+
+### Databases other than files
+
+The profile database is DuckDB with every database its startup script
+attaches: Postgres, MySQL, SQLite or other DuckDB files. `dashboard sources`
+prints the script's path as `startupScript` (it is `duckdb_startup.sql` in the
+profile folder) and what it attaches as `attachedDatabases`. To use a database
+that isn't attached yet, add its `INSTALL`/`LOAD` and `ATTACH … (READ_ONLY)`
+lines to that file, after asking the user, since it changes their profile and
+may hold a password. Then name its tables as profile sources, such as
+`{"profile": "mypg.public.orders"}`. The page's queries may run in parallel
+against any of them.
 
 ## The manifest
 

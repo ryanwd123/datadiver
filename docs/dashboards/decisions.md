@@ -406,6 +406,55 @@ until restarted. Moving the exe afterwards needs the command run again. A
 
 **Your notes:**
 
+## 27. ICU and JSON load when the profile opens, so parallel queries don't race
+
+*From the first agent test.* DuckDB loads an installed extension the first
+time a query uses one of its functions. Loading ICU adds time zone versions
+of `+` and `-` to DuckDB's shared list of functions, and a query binding on
+another connection at that moment failed with "No function matches …
+(DOUBLE, INTEGER_LITERAL)" or an internal error. The agent's dashboard hit it
+on about one load in four and worked around it by running its queries one at
+a time. Now the profile database loads ICU and JSON, if installed, when it
+opens.
+
+**Why:** reproduced with the agent's own dashboard, its queries made
+parallel again: 4 failures in 10 loads before, none in 15 after. It fixes the cause for the grid and SQL editor too,
+and it makes `TIMESTAMPTZ → DATE` casts work, which DuckDB never auto-loads
+ICU for. It doesn't serialize queries, so pages stay fast.
+
+**Turned down:** running a dashboard's queries one at a time (hides the
+race, slows every page); building ICU into DuckDB (switches the DuckDB build
+to CMake and lengthens every build). Extensions that aren't installed are left
+alone, so opening the profile never waits on a download. An extension a
+startup script loads itself was never part of the race.
+
+**Your notes:**
+
+## 28. The command line is shaped by watching an agent use it
+
+*From the first agent test.* Each change answers something the agent spent
+steps on:
+
+- **It edited the wrong startup script** (there is an old `startup.sql` next to
+  `duckdb_startup.sql`). `dashboard sources` now prints `startupScript`,
+  `attachedDatabases` and any `startupError`, and the guide says how to add a
+  database and to ask first.
+- **It piped every query through Python** to read rows. `query --format table`
+  and `--format tsv` print rows directly; the summary goes to stderr so TSV
+  pipes cleanly.
+- **It edited copies of the dashboard** to check other states and lower cards.
+  `check --run "<js>"` runs script steps in the page, waiting for their
+  queries; `--full-page` grows the window to the page's height before the
+  capture.
+- **Output was large**: `sources` printed 16 KB, a `schema` sample 24 KB of one
+  JSON column, a check report 20 KB of SQL. Columns are now `name TYPE`,
+  samples cut long text at 160 characters, `sources` takes a filter, and
+  reports show a working query's SQL on one line (a failed one in full).
+- **`sources` never prints a server's connection string**, since it can hold a
+  password; only file databases show a path.
+
+**Your notes:**
+
 ---
 
 ## Not in this first version
