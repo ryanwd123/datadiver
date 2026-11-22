@@ -35,25 +35,6 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
   - *Suggest expressions:* in the aggregation or pivot editor, "share of total", "YoY growth" → SQL
     expression.
 
-## Tier 6: packaging
-
-- [ ] **18. Python package and DuckDB extension** (in addition to the standalone exe).
-  - **Step 1, recommended:** a `datadiver` Python package that ships the exe and offers
-    `datadiver.show(con_or_df_or_relation)`. It writes the data to a temp parquet or DuckDB file
-    (or passes the database path) and launches the exe on it.
-    - Cheap, and it needs only a "open this file read-only, no profile" CLI mode.
-  - **Step 2:** a DuckDB community extension (`CALL datadiver()` / `datadiver('table')`).
-    - Possible in pure Rust through the C extension API (the official Rust template, or
-      `quack-rs`).
-    - Its real advantage is seeing the host's in-memory tables directly.
-    - Costs:
-      - The app would have to run against a *borrowed* connection instead of its own profile
-        database.
-      - The GUI event loop must run on the main thread on macOS, which a Python or CLI host
-        controls.
-      - Builds for every platform in the community CI, and a rebuild per DuckDB release.
-    - Worth a spike after step 1.
-
 ## Loose ends from finished work
 
 - Aggregate function reference: the structured operations (`pivot_editor::OPERATIONS`) as a
