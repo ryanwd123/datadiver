@@ -18,10 +18,12 @@ const USAGE: &str = "\
 datadiver dashboard <command>
 
   guide                          How to build a dashboard: the file, the manifest and window.datadiver
-  sources                        Tables and views of the profile database, such as watched files
+  sources [filter]               Tables and views of the profile database (watched files, attached
+                                 databases), the startup script, and what it attaches
   schema <file | relation>       Columns, row count and sample rows of a data file or profile relation
   query [board.ddash] <sql>      Runs SQL as a dashboard page would
         [--source alias=path] [--source alias=profile:schema.name] [--params JSON] [--limit N]
+        [--format json | tsv | table]   table is easiest to read; tsv to pipe on
   check <board.ddash>            Opens the dashboard out of sight, waits for its queries, and reports
         [--capture shot.png] [--timeout SECONDS] [--size WxH]
   register | unregister          Opens .ddash files with this DataDiver when double-clicked, or stops
@@ -224,6 +226,12 @@ fn open_database(repository: &ViewRepository) -> Result<std::sync::Arc<SourceDat
 
 fn sources(arguments: &Arguments) -> Result<i32, String> {
     arguments.check_options(&[])?;
+    // `sources mypg` lists only the relations whose name holds "mypg".
+    let filter = match arguments.positional.as_slice() {
+        [] => None,
+        [filter] => Some(filter.to_lowercase()),
+        _ => return Err("sources takes at most one filter, such as a database or schema name".into()),
+    };
     let repository = arguments.repository();
     let database = open_database(&repository)?;
     let connection = database.connect()?;
@@ -235,34 +243,67 @@ fn sources(arguments: &Arguments) -> Result<i32, String> {
             .map(diver_sql::quote_if_needed)
             .collect::<Vec<_>>()
             .join(".");
+        if filter.as_ref().is_some_and(|filter| !name.to_lowercase().contains(filter)) {
+            continue;
+        }
+        // `name TYPE` keeps a profile with many watched files readable;
+        // `dashboard schema` shows a relation in full.
         let columns = connection
             .prepare(&format!("DESCRIBE {name}"))
             .and_then(|mut statement| {
                 statement
-                    .query_map([], |row| Ok(json!({"name": row.get::<_, String>(0)?, "type": row.get::<_, String>(1)?})))?
+                    .query_map([], |row| Ok(format!("{} {}", row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
                     .collect::<Result<Vec<_>, _>>()
             });
-        let mut entry = json!({
-            "name": name,
-            "kind": match relation.kind {
-                crate::domain::documents::RelationKind::View => "view",
-                _ => "table",
-            },
-            "manifest": {"profile": name},
-        });
+        let kind = match relation.kind {
+            crate::domain::documents::RelationKind::View => "view",
+            _ => "table",
+        };
+        let mut entry = json!({"name": name, "kind": kind});
         match columns {
             Ok(columns) => entry["columns"] = json!(columns),
-            Err(error) => entry["error"] = json!(error.to_string()),
+            Err(error) => entry["error"] = json!(error.to_string().lines().next().unwrap_or("")),
         }
         listed.push(entry);
     }
-    print_json(&json!({
+    let databases = connection
+        .prepare(
+            "SELECT database_name, type, path FROM duckdb_databases() \
+             WHERE NOT internal AND database_name <> current_database() AND database_name <> ? ORDER BY 1",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([crate::infrastructure::source_database::FILES_CATALOG], |row| {
+                    let kind = row.get::<_, String>(1)?;
+                    let mut database = json!({"name": row.get::<_, String>(0)?, "type": kind});
+                    // A file's path helps; a server's connection string can hold a password.
+                    if matches!(kind.as_str(), "duckdb" | "sqlite") {
+                        database["path"] = json!(row.get::<_, Option<String>>(2)?);
+                    }
+                    Ok(database)
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    let startup = repository.paths.config.join(crate::infrastructure::source_database::STARTUP_SCRIPT);
+    let mut report = json!({
         "profile": repository.paths.config,
-        "note": "Use a relation as a dashboard source with {\"profile\": \"<name>\"}. Watched files are views in the files schema.",
+        "startupScript": startup,
+        "attachedDatabases": databases,
+        "note": STARTUP_NOTE,
         "relations": listed,
-    }));
+    });
+    if let Some(error) = database.startup_error() {
+        report["startupError"] = json!(error);
+    }
+    print_json(&report);
     Ok(0)
 }
+
+/// How an agent gets another database into the profile, printed with the sources.
+const STARTUP_NOTE: &str = "Use a relation as a dashboard source with {\"profile\": \"<name>\"}. \
+Watched files are views in the files schema. To add a database (Postgres, MySQL, SQLite, another DuckDB file), \
+add its ATTACH to startupScript, which runs whenever the profile opens; ask the user first, since it changes their profile.";
 
 /// A source given on the command line: `alias=path` or `alias=profile:name`.
 fn source_option(text: &str) -> Result<SourceSpec, String> {
@@ -324,17 +365,99 @@ fn schema(arguments: &Arguments) -> Result<i32, String> {
     let mut sample = QueryRequest::new("select * from t");
     sample.limit = Some(rows.max(1));
     let sample = engine.query(&sample)?;
+    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
     print_json(&json!({
         "source": engine.sources[0],
-        "columns": columns.rows.iter().map(|row| json!({"name": row[0], "type": row[1], "null": row[2]})).collect::<Vec<_>>(),
+        "columns": columns
+            .rows
+            .iter()
+            .map(|row| format!("{} {}{}", text(&row[0]), text(&row[1]), if text(&row[2]) == "NO" { " NOT NULL" } else { "" }))
+            .collect::<Vec<_>>(),
         "rowCount": count.rows.first().and_then(|row| row.first()),
-        "sample": {"columns": sample.columns, "rows": sample.rows},
+        "sampleColumns": sample.columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>(),
+        "sample": sample.rows.iter().map(|row| row.iter().map(|value| shorten(value, SAMPLE_TEXT)).collect::<Vec<_>>()).collect::<Vec<_>>(),
     }));
     Ok(0)
 }
 
+/// The most characters of one text value a sample shows.
+const SAMPLE_TEXT: usize = 160;
+
+/// Text longer than `limit` characters, cut and marked with its full length;
+/// other values as they are. A sample shows what a column holds, not all of it.
+fn shorten(value: &Value, limit: usize) -> Value {
+    match value {
+        Value::String(text) if text.chars().count() > limit => {
+            let cut = text.chars().take(limit).collect::<String>();
+            Value::String(format!("{cut}… ({} characters)", text.chars().count()))
+        }
+        other => other.clone(),
+    }
+}
+
+/// A value as one cell of TSV or a table: NULL for null, text without its
+/// quotes, and tabs and line breaks escaped so each row stays one line.
+fn cell(value: &Value) -> String {
+    let text = match value {
+        Value::Null => "NULL".to_owned(),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    text.replace('\\', "\\\\").replace('\t', "\\t").replace('\r', "\\r").replace('\n', "\\n")
+}
+
+/// A result as tab-separated values: a header line, then one line per row.
+fn tsv(result: &crate::infrastructure::dashboard::QueryResult) -> String {
+    let mut out = result.columns.iter().map(|column| cell(&Value::String(column.name.clone()))).collect::<Vec<_>>().join("\t");
+    for row in &result.rows {
+        out.push('\n');
+        out.push_str(&row.iter().map(cell).collect::<Vec<_>>().join("\t"));
+    }
+    out
+}
+
+/// A result as an aligned text table, long values cut to keep it readable.
+fn table(result: &crate::infrastructure::dashboard::QueryResult) -> String {
+    const WIDTH: usize = 48;
+    let fit = |text: String| {
+        if text.chars().count() > WIDTH {
+            format!("{}…", text.chars().take(WIDTH - 1).collect::<String>())
+        } else {
+            text
+        }
+    };
+    let header = result.columns.iter().map(|column| fit(column.name.clone())).collect::<Vec<_>>();
+    let rows = result.rows.iter().map(|row| row.iter().map(|value| fit(cell(value))).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let widths = (0..header.len())
+        .map(|index| std::iter::once(&header[index]).chain(rows.iter().map(|row| &row[index])).map(|text| text.chars().count()).max().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let numeric = result.columns.iter().map(|column| {
+        matches!(
+            column.data_type.split('(').next().unwrap_or("").trim(),
+            "TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT" | "HUGEINT" | "UTINYINT" | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" | "FLOAT" | "DOUBLE" | "DECIMAL"
+        )
+    });
+    let numeric = numeric.collect::<Vec<_>>();
+    let line = |cells: &[String]| {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let pad = widths[index] - text.chars().count();
+                if numeric[index] { format!("{}{text}", " ".repeat(pad)) } else { format!("{text}{}", " ".repeat(pad)) }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+            .trim_end()
+            .to_owned()
+    };
+    let mut out = vec![line(&header), widths.iter().map(|width| "-".repeat(*width)).collect::<Vec<_>>().join("  ")];
+    out.extend(rows.iter().map(|row| line(row)));
+    out.join("\n")
+}
+
 fn query(arguments: &Arguments) -> Result<i32, String> {
-    arguments.check_options(&["source", "params", "limit"])?;
+    arguments.check_options(&["source", "params", "limit", "format"])?;
     let (dashboard, sql) = match arguments.positional.as_slice() {
         [sql] => (None, sql),
         [dashboard, sql] => (Some(PathBuf::from(dashboard)), sql),
@@ -350,8 +473,24 @@ fn query(arguments: &Arguments) -> Result<i32, String> {
     if let Some(limit) = arguments.option("limit") {
         request.limit = Some(limit.parse().map_err(|_| "--limit needs a number")?);
     }
+    let format = arguments.option("format").unwrap_or("json");
+    if !matches!(format, "json" | "tsv" | "table") {
+        return Err(format!("--format is json, tsv or table, not \"{format}\""));
+    }
     let result = engine.query(&request)?;
-    print_json(&serde_json::to_value(result).map_err(|error| error.to_string())?);
+    if format == "json" {
+        print_json(&serde_json::to_value(result).map_err(|error| error.to_string())?);
+        return Ok(0);
+    }
+    println!("{}", if format == "tsv" { tsv(&result) } else { table(&result) });
+    // The rows go to stdout alone, so they can be piped; the summary goes to stderr.
+    eprintln!(
+        "({} row{}, {} ms{})",
+        result.rows.len(),
+        if result.rows.len() == 1 { "" } else { "s" },
+        result.elapsed_ms,
+        if result.truncated { "; the row limit cut the result, pass --limit for more" } else { "" }
+    );
     Ok(0)
 }
 
@@ -393,6 +532,23 @@ fn check(arguments: &Arguments) -> Result<i32, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rows_print_as_tsv_and_tables_one_line_each() {
+        use crate::infrastructure::dashboard::{QueryResult, ResultColumn};
+        use serde_json::json;
+        let column = |name: &str, data_type: &str| ResultColumn { name: name.into(), data_type: data_type.into() };
+        let result = QueryResult {
+            columns: vec![column("name", "VARCHAR"), column("total", "DOUBLE")],
+            rows: vec![vec![json!("a\tb\nc"), json!(1.5)], vec![json!(null), json!(12)]],
+            truncated: false,
+            elapsed_ms: 1.0,
+        };
+        assert_eq!(super::tsv(&result), "name\ttotal\na\\tb\\nc\t1.5\nNULL\t12");
+        assert_eq!(super::table(&result), "name     total\n-------  -----\na\\tb\\nc    1.5\nNULL        12");
+        assert_eq!(super::shorten(&json!("x".repeat(200)), 5), json!("xxxxx… (200 characters)"));
+        assert_eq!(super::shorten(&json!(7), 5), json!(7));
+    }
+
     #[test]
     fn help_sends_agents_to_the_dashboard_guide() {
         let help = super::help_text();
