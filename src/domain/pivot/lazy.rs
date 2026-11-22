@@ -724,9 +724,18 @@ fn structured_expression(
     };
     Ok(match aggregation.operation {
         // SQL sums are null, not zero, over no values.
-        AggregationOp::Sum => when(value.clone().count().gt(lit(0)))
-            .then(value.sum())
-            .otherwise(lit(NULL)),
+        AggregationOp::Sum => {
+            // Integers sum as 128-bit, like DuckDB's HUGEINT sums, so large
+            // values do not overflow and wrap.
+            let value = if column.dtype().is_integer() {
+                value.cast(DataType::Int128)
+            } else {
+                value
+            };
+            when(value.clone().count().gt(lit(0)))
+                .then(value.sum())
+                .otherwise(lit(NULL))
+        }
         AggregationOp::Mean => value.mean(),
         AggregationOp::Median => value.median(),
         AggregationOp::Minimum => value.min(),

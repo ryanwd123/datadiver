@@ -774,4 +774,31 @@ mod parity_tests {
         let flat_north = flat.iter().find(|row| row[0].as_deref() == Some("North")).unwrap();
         assert_eq!(collapsed[2..flat_north.len() + 1], flat_north[1..]);
     }
+
+    /// Found by the engine stress test: integer sums past the 64-bit range
+    /// panicked in Polars (and wrapped in release builds), and comparisons
+    /// across types failed or matched where DuckDB keeps no rows.
+    #[test]
+    fn large_sums_and_mismatched_comparisons_match_across_engines() {
+        use crate::infrastructure::store::ViewQuery;
+        let home = tempfile::tempdir().unwrap();
+        let sources = Sources::for_profile(home.path());
+        let path = home.path().join("big.csv");
+        std::fs::write(&path, format!("id,amount,flag,day,price\n1,{max},false,2024-01-15,123456.789\n2,{max},true,2024-02-01,1.5\n", max = i64::MAX)).unwrap();
+        let clock = EvaluationClock::system();
+        let config = QueryConfig { aggregations: vec![aggregation("amount", AggregationOp::Sum)], ..Default::default() };
+        for engine in Engine::ALL {
+            let source = sources.load(&path, ReadOptions { engine, ..ReadOptions::default() }, LoadMode::Check).unwrap();
+            let sum = execute_filtered(&source, &config, &[], &[], &clock, 10, &mut SqlTrace::default()).unwrap();
+            let ids = sum.initial_row_ids().unwrap();
+            let row = sum.fetch_row_ids(&ids).unwrap().remove(0);
+            assert_eq!(row.values[0].as_deref(), Some("18446744073709551614"), "{engine:?}");
+            for search in ["flag>nor", "day<\"price\"", "price>\"day\""] {
+                let view = ViewQuery { tokens: crate::domain::query::parse(search).unwrap(), ..ViewQuery::default() };
+                assert_eq!(source.query_row_ids(&view), Ok(Vec::new()), "{engine:?} {search}");
+            }
+            let view = ViewQuery { tokens: crate::domain::query::parse("flag>=t").unwrap(), ..ViewQuery::default() };
+            assert_eq!(source.query_row_ids(&view).unwrap().len(), 1, "{engine:?}");
+        }
+    }
 }

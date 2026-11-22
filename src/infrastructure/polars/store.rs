@@ -1629,14 +1629,23 @@ fn column_predicate(column: &ColumnSchema, term: &ColumnTerm) -> Result<Expr, St
         ColumnOperator::Compare(Comparison::Equal) => {
             lowered.eq(lit(term.value.to_lowercase()))
         }
-        ColumnOperator::Compare(comparison) => compare(
-            value,
-            comparison,
-            lit(term.value.clone()).cast(column.dtype().clone()),
-        ),
+        ColumnOperator::Compare(comparison) => compare(value, comparison, try_cast_text(&term.value, column.dtype())),
     };
     // Null comparisons count as no match, so negated terms keep null rows.
     Ok(predicate.fill_null(lit(false)))
+}
+
+/// `text` as a `dtype` literal, or null when it is not one, like DuckDB's
+/// `TRY_CAST`. Polars cannot cast text to booleans, so those are parsed here.
+fn try_cast_text(text: &str, dtype: &DataType) -> Expr {
+    if *dtype == DataType::Boolean {
+        return match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "t" | "1" => lit(true),
+            "false" | "f" | "0" => lit(false),
+            _ => lit(NULL).cast(DataType::Boolean),
+        };
+    }
+    lit(text.to_owned()).cast(dtype.clone())
 }
 
 fn compare(left: Expr, comparison: Comparison, right: Expr) -> Expr {
@@ -1663,6 +1672,12 @@ fn column_comparison(left: &ColumnSchema, right: &ColumnSchema, comparison: Comp
             || (is_numeric_type(&left.sql_type) && is_numeric_type(&right.sql_type))
         {
             (col(left.name.as_str()), col(right.name.as_str()))
+        } else if left.dtype().is_temporal() != right.dtype().is_temporal()
+            && (left.dtype().is_numeric() || right.dtype().is_numeric())
+        {
+            // Polars would read the number as a count of days or ticks;
+            // DuckDB's TRY_CAST between numbers and dates gives NULL.
+            return lit(false);
         } else {
             (
                 col(left.name.as_str()),
