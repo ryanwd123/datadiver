@@ -110,8 +110,10 @@ out in a DNS lookup, and a loaded Postgres or MySQL extension can connect to
 any host. So a dashboard can send out what it reads, and is trusted like a
 script; the help says so. Every DuckDB setting that would stop this
 (`enable_external_access`, `allowed_paths`, `disabled_filesystems`) applies to
-the whole database, so the fix is dashboard queries in a DuckDB of their own
-(see the end of this file).
+the whole database. Dashboard queries in a DuckDB of their own with the
+network off were turned down: dashboards should be able to use networked
+sources. Instead, DataDiver will ask before trusting a dashboard, showing
+which of its sources reach the network (PLAN.md, item 19).
 
 **Your notes:**
 
@@ -532,12 +534,8 @@ with only the exe to go on.
 - **Sending command-line work to a running DataDiver** (decision 21).
 - **Drill-through** from a chart to the grid, and opening a query in the SQL
   editor (the query log copies it today).
-- **Dashboard queries that can't reach the network** (decision 6): a DuckDB
-  of their own with `enable_external_access` off and `allowed_paths` set to
-  the manifest's files, so DuckDB itself refuses URLs, UNC hosts and other
-  files. The profile's watched files would become views there; databases
-  the startup script attaches are the open question.
-- **A trust prompt for dashboards downloaded from the internet** (the
-  `Zone.Identifier` mark).
+- **Asking before trusting a dashboard** (decision 6, PLAN.md item 19): show
+  which sources reach the network, warn harder for a file from the internet
+  (the `Zone.Identifier` mark), and remember the answer.
 - **Arrow transport** for large results (decision 13).
 

@@ -35,6 +35,31 @@ The engines, per-file choice, and Settings list are done (see git history). Stil
   - *Suggest expressions:* in the aggregation or pivot editor, "share of total", "YoY growth" → SQL
     expression.
 
+## Dashboards
+
+- [ ] **19. Ask before trusting a dashboard.** Networked sources stay allowed, so instead of
+  turning DuckDB's network off (see `docs/dashboards/decisions.md`, decision 6), DataDiver shows
+  what a dashboard can reach before its first query runs, and remembers the user's answer.
+  - **When:** opening a dashboard that isn't trusted yet. The page may load, but its queries
+    wait until the user answers. `dashboard check` never asks, since it runs out of sight for
+    agents.
+  - **What it shows**, from the manifest:
+    - each source and where it reads: a local file, a file on a network share (the UNC host), a
+      URL, or a profile relation and the database it lives in (local file, or a server such as
+      Postgres or MySQL, with its host);
+    - which of those reach the network, marked;
+    - a plain note that the page's own queries can also read other files and URLs, so the list
+      shows what the dashboard declares, not everything it can reach;
+    - a stronger warning when the file came from the internet (its `Zone.Identifier` mark).
+  - **Buttons:** **Trust this dashboard** (remembered, so it never asks again), **Open once**
+    (asks again next time), and **Don't open**. Maybe also **Trust this folder**, for a project
+    folder where an agent writes dashboards.
+  - **Remembered** in the profile, beside the recent dashboards in `history.json`, with a
+    command to forget trusted dashboards.
+  - **To decide:** what keeps a dashboard trusted after its file changes. Keyed by path alone,
+    an edit stays trusted, which is what an agent building one needs. Keyed by contents, every
+    edit asks again. A middle way asks again only when the manifest's sources change.
+
 ## Loose ends from finished work
 
 - Aggregate function reference: the structured operations (`pivot_editor::OPERATIONS`) as a
