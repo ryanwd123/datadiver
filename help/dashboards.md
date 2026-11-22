@@ -26,4 +26,6 @@ Opening a data file or view from a dashboard's window shows it in the grid there
 
 ## What a page may do
 
-A dashboard can only read: its queries cannot change a table or a file. It may load scripts and fonts from a few well-known library sites (cdnjs, jsDelivr, unpkg, Google Fonts) and files in its own folder, and reach nothing else on the network.
+A dashboard's queries can only read: they cannot change a table or a file. The page itself may load scripts and fonts from a few well-known library sites (cdnjs, jsDelivr, unpkg, Google Fonts) and files in its own folder, and reach nothing else on the network.
+
+That doesn't make every dashboard safe to open. Its queries can read any file you can and every database the profile attaches, and DuckDB, which runs them, can reach the network itself, for example to read a URL. So a dashboard could send what it reads somewhere else. Open the ones you made or had an agent make, and ones from people you trust, the way you would run a script.

