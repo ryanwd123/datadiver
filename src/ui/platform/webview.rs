@@ -16,7 +16,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler, CoTaskMemPWSTR,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler,
 };
@@ -209,6 +210,22 @@ impl WebView {
         {
             let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
             let _ = unsafe { webview.SetMemoryUsageTargetLevel(level) };
+        }
+    }
+
+    /// Runs `script` in the page, then calls `done` with its value as JSON.
+    /// A script that throws gives `null`; wrap it to see the error.
+    pub fn execute_script(&self, script: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        let Some(webview) = self.inner.borrow().webview.clone() else {
+            done(Err("the page is not open yet".into()));
+            return;
+        };
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |result, json| {
+            done(result.map_err(error_text).map(|()| json));
+            Ok(())
+        }));
+        if let Err(error) = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) } {
+            eprintln!("cannot run a script in the page: {}", error_text(error));
         }
     }
 

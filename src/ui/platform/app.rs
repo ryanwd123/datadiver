@@ -695,6 +695,25 @@ impl<'a, V: View> Cx<'a, V> {
             .and_then(|slot| slot.outer_rect())
     }
 
+    /// Pixels per DIP on the window's monitor.
+    pub fn scale(&self) -> f32 {
+        self.runtime
+            .window(self.window)
+            .map(|slot| slot.state.borrow().scale)
+            .filter(|scale| *scale > 0.0)
+            .unwrap_or(1.0)
+    }
+
+    /// Sizes the window so its client area is `width` × `height` DIPs.
+    pub fn resize_client(&mut self, width: f32, height: f32) {
+        if let Some(slot) = self.runtime.window(self.window)
+            && let Some(hwnd) = slot.hwnd()
+        {
+            let scale = slot.state.borrow().scale;
+            super::window::resize_client(hwnd, (width * scale).round() as i32, (height * scale).round() as i32);
+        }
+    }
+
     /// The window's title, as the taskbar shows it.
     pub fn set_title(&mut self, title: &str) {
         if let Some(hwnd) = self.hwnd() {

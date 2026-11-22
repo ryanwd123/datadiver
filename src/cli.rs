@@ -25,7 +25,9 @@ datadiver dashboard <command>
         [--source alias=path] [--source alias=profile:schema.name] [--params JSON] [--limit N]
         [--format json | tsv | table]   table is easiest to read; tsv to pipe on
   check <board.ddash>            Opens the dashboard out of sight, waits for its queries, and reports
-        [--capture shot.png] [--timeout SECONDS] [--size WxH]
+        [--capture shot.png] [--full-page] [--size WxH] [--timeout SECONDS]
+        [--run \"js\"]...             run JavaScript in the page once it settles, such as clicking a
+                                 control, then wait for its queries; repeat for several steps
   register | unregister          Opens .ddash files with this DataDiver when double-clicked, or stops
 
 Every command takes --home DIR to use another profile folder.";
@@ -122,6 +124,9 @@ pub fn agent_json(value: &Value) -> String {
     write(value, 0)
 }
 
+/// Options that take no value.
+const FLAGS: &[&str] = &["full-page"];
+
 struct Arguments {
     positional: Vec<String>,
     options: Vec<(String, String)>,
@@ -134,6 +139,10 @@ impl Arguments {
         let mut iter = arguments.iter();
         while let Some(argument) = iter.next() {
             if let Some(name) = argument.strip_prefix("--") {
+                if FLAGS.contains(&name) {
+                    options.push((name.to_owned(), String::new()));
+                    continue;
+                }
                 let value = iter.next().ok_or_else(|| format!("--{name} needs a value"))?;
                 options.push((name.to_owned(), value.clone()));
             } else {
@@ -145,6 +154,11 @@ impl Arguments {
 
     fn option(&self, name: &str) -> Option<&str> {
         self.options.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+    }
+
+    /// Whether a [`FLAGS`] option was given.
+    fn flag(&self, name: &str) -> bool {
+        self.options.iter().any(|(key, _)| key == name)
     }
 
     fn all(&self, name: &str) -> impl Iterator<Item = &str> {
@@ -495,10 +509,14 @@ fn query(arguments: &Arguments) -> Result<i32, String> {
 }
 
 fn check(arguments: &Arguments) -> Result<i32, String> {
-    arguments.check_options(&["capture", "timeout", "size", "quiet"])?;
+    arguments.check_options(&["capture", "timeout", "size", "quiet", "run", "full-page"])?;
     let [dashboard] = arguments.positional.as_slice() else {
         return Err("check needs one .ddash file".into());
     };
+    let full_page = arguments.flag("full-page");
+    if full_page && arguments.option("capture").is_none() {
+        return Err("--full-page sizes the --capture; add --capture shot.png".into());
+    }
     let path = PathBuf::from(dashboard);
     if !path.exists() {
         return Err(format!("{} does not exist", path.display()));
@@ -515,6 +533,8 @@ fn check(arguments: &Arguments) -> Result<i32, String> {
             capture: arguments.option("capture").map(PathBuf::from),
             timeout: seconds("timeout", 20.0)?,
             quiet: seconds("quiet", 1.0)?,
+            scripts: arguments.all("run").map(str::to_owned).collect(),
+            full_page,
         }),
         ..Default::default()
     };

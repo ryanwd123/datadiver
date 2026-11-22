@@ -93,6 +93,8 @@ pub(crate) struct DashboardState {
     pub opened_at: Instant,
     /// When the page last had no query running, for `dashboard check`.
     pub quiet_since: Option<Instant>,
+    /// The page's height in the window, in DIPs, as last drawn.
+    page_height: f32,
 }
 
 impl DashboardState {
@@ -260,7 +262,50 @@ pub struct DashboardCheck {
     pub timeout: std::time::Duration,
     /// How long no query may run before the page counts as settled.
     pub quiet: std::time::Duration,
+    /// JavaScript to run in the page, in order, each once the page has
+    /// settled, such as clicking a range button; the capture shows the
+    /// state they leave.
+    pub scripts: Vec<String>,
+    /// Grows the window to the page's full height before the capture.
+    pub full_page: bool,
 }
+
+/// What a check has done so far, carried from one poll to the next.
+#[derive(Clone, Debug, Default)]
+struct CheckProgress {
+    /// How each `--run` script went: its value, or the error it threw.
+    scripts: Vec<Value>,
+    /// The window has been grown to the page's height.
+    resized: bool,
+}
+
+/// Runs `script` in the page and reports its value as JSON, or the error it
+/// threw: WebView2 itself would give `null` for both.
+fn reported_script(script: &str) -> String {
+    let source = serde_json::to_string(script).unwrap_or_default();
+    format!(
+        "(() => {{ try {{ const value = (0, eval)({source}); \
+         return {{ ok: true, value: value instanceof Promise ? '(a promise; the check waits for its queries)' : value }}; }} \
+         catch (error) {{ return {{ ok: false, error: String(error && error.stack || error) }}; }} }})()"
+    )
+}
+
+/// The most characters of a query's SQL a check report shows when the
+/// query worked; a failed query's SQL is shown whole.
+const REPORT_SQL: usize = 160;
+
+/// `sql` on one line, its whitespace collapsed, cut at `limit` characters.
+fn one_line(sql: &str, limit: usize) -> String {
+    let line = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= limit {
+        return line;
+    }
+    format!("{}… ({} characters)", line.chars().take(limit).collect::<String>(), line.chars().count())
+}
+
+/// Measures the page: its full width and height in CSS pixels.
+const MEASURE_PAGE: &str = "[document.documentElement.scrollWidth, \
+    Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)]";
 
 /// The exit code `dashboard check` ends with: 0 when nothing failed.
 pub static CHECK_EXIT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -344,6 +389,7 @@ impl DataFrameView {
             sources_generation: 0,
             opened_at: Instant::now(),
             quiet_since: None,
+            page_height: 0.0,
         }));
         self.focus = None;
         self.error = None;
@@ -801,10 +847,13 @@ impl DataFrameView {
             cx.quit();
             return;
         }
-        self.poll_dashboard_check(check, cx);
+        self.poll_dashboard_check(check, CheckProgress::default(), cx);
     }
 
-    fn poll_dashboard_check(&mut self, check: DashboardCheck, cx: &mut Cx<Self>) {
+    /// Waits for the page to settle, then takes the check's next step: a
+    /// `--run` script, growing the window for `--full-page`, and last the
+    /// capture and the report.
+    fn poll_dashboard_check(&mut self, check: DashboardCheck, progress: CheckProgress, cx: &mut Cx<Self>) {
         let Some(dashboard) = &self.dashboard else {
             cx.quit();
             return;
@@ -817,34 +866,92 @@ impl DataFrameView {
             && dashboard.waiting.is_empty()
             && dashboard.quiet_since.is_some_and(|since| since.elapsed() >= check.quiet);
         if !(settled || failed || elapsed >= check.timeout) {
-            cx.timer(std::time::Duration::from_millis(50), move |view, cx| view.poll_dashboard_check(check, cx)).detach();
+            cx.timer(std::time::Duration::from_millis(50), move |view, cx| view.poll_dashboard_check(check, progress, cx)).detach();
             return;
         }
         let timed_out = !settled && !failed;
-        match (&check.capture, dashboard.web.as_ref().filter(|web| web.is_ready())) {
+        let web = dashboard.web.as_ref().filter(|web| web.is_ready());
+        let window = cx.window_id();
+        if settled && let Some(web) = web {
+            if let Some(script) = check.scripts.get(progress.scripts.len()) {
+                let script = script.clone();
+                web.execute_script(
+                    &reported_script(&script),
+                    Box::new(move |result| {
+                        crate::ui::platform::window::post::<Self>(window, move |view, cx| {
+                            view.check_script_ran(check, progress, script, result, cx);
+                        });
+                    }),
+                );
+                return;
+            }
+            if check.full_page && check.capture.is_some() && !progress.resized {
+                web.execute_script(
+                    MEASURE_PAGE,
+                    Box::new(move |result| {
+                        crate::ui::platform::window::post::<Self>(window, move |view, cx| view.grow_for_check(check, progress, result, cx));
+                    }),
+                );
+                return;
+            }
+        }
+        let scripts = progress.scripts;
+        match (&check.capture, web) {
             (Some(path), Some(web)) => {
-                let window = cx.window_id();
                 let path_shown = path.clone();
                 let late = path.clone();
+                let late_scripts = scripts.clone();
                 web.capture_png(
                     path.clone(),
                     Box::new(move |result| {
                         crate::ui::platform::window::post::<Self>(window, move |view, cx| {
-                            view.finish_dashboard_check(timed_out, Some((path_shown, result)), cx);
+                            view.finish_dashboard_check(timed_out, Some((path_shown, result)), scripts, cx);
                         });
                     }),
                 );
                 // A capture that never answers must not keep the check running.
                 cx.timer(std::time::Duration::from_secs(10), move |view, cx| {
-                    view.finish_dashboard_check(timed_out, Some((late, Err("the capture did not finish in 10 seconds".into()))), cx);
+                    view.finish_dashboard_check(timed_out, Some((late, Err("the capture did not finish in 10 seconds".into()))), late_scripts, cx);
                 })
                 .detach();
             }
-            _ => self.finish_dashboard_check(timed_out, None, cx),
+            _ => self.finish_dashboard_check(timed_out, None, scripts, cx),
         }
     }
 
-    fn finish_dashboard_check(&mut self, timed_out: bool, capture: Option<(PathBuf, Result<(), String>)>, cx: &mut Cx<Self>) {
+    /// A `--run` script finished: note how, and wait for its queries.
+    fn check_script_ran(&mut self, check: DashboardCheck, mut progress: CheckProgress, script: String, result: Result<String, String>, cx: &mut Cx<Self>) {
+        let outcome = result.and_then(|json| serde_json::from_str::<Value>(&json).map_err(|error| error.to_string()));
+        progress.scripts.push(match outcome {
+            Ok(Value::Object(mut reported)) => {
+                reported.insert("script".into(), json!(script));
+                Value::Object(reported)
+            }
+            Ok(other) => json!({"script": script, "ok": false, "error": format!("unexpected answer {other}")}),
+            Err(error) => json!({"script": script, "ok": false, "error": error}),
+        });
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.quiet_since = Some(Instant::now());
+        }
+        self.poll_dashboard_check(check, progress, cx);
+    }
+
+    /// Grows the window so the page shows whole, then waits for it to settle
+    /// again, since a page may query anew when it resizes.
+    fn grow_for_check(&mut self, check: DashboardCheck, mut progress: CheckProgress, measured: Result<String, String>, cx: &mut Cx<Self>) {
+        progress.resized = true;
+        let size = measured.ok().and_then(|json| serde_json::from_str::<(f32, f32)>(&json).ok());
+        if let (Some((_, height)), Some(dashboard)) = (size, &mut self.dashboard) {
+            let (width, client_height) = cx.viewport();
+            let chrome = client_height - dashboard.page_height;
+            let most = crate::ui::platform::window::MAX_SURFACE as f32 / cx.scale();
+            cx.resize_client(width, (chrome + height).min(most));
+            dashboard.quiet_since = Some(Instant::now());
+        }
+        self.poll_dashboard_check(check, progress, cx);
+    }
+
+    fn finish_dashboard_check(&mut self, timed_out: bool, capture: Option<(PathBuf, Result<(), String>)>, scripts: Vec<Value>, cx: &mut Cx<Self>) {
         // The capture's answer and its time limit both end up here; the first reports.
         if !std::mem::take(&mut self.dashboard_checking) {
             return;
@@ -859,7 +966,7 @@ impl DataFrameView {
             .iter()
             .map(|query| {
                 json!({
-                    "sql": query.sql,
+                    "sql": if query.error.is_some() { query.sql.clone() } else { one_line(&query.sql, REPORT_SQL) },
                     "params": query.params,
                     "elapsedMs": query.elapsed_ms,
                     "rows": query.rows,
@@ -893,12 +1000,14 @@ impl DataFrameView {
         let failed_queries = dashboard.queries.iter().any(|query| query.error.is_some());
         let page_errors = dashboard.console.iter().any(|record| record.level == "error");
         let capture_error = capture.as_ref().and_then(|(_, result)| result.as_ref().err().cloned());
+        let failed_scripts = scripts.iter().any(|script| script.get("ok") != Some(&Value::Bool(true)));
         let ok = !timed_out
             && dashboard.error.is_none()
             && !failed_sources
             && !failed_queries
             && !page_errors
             && conflicts.is_empty()
+            && !failed_scripts
             && capture_error.is_none();
         let mut report = json!({
             "dashboard": dashboard.path,
@@ -909,6 +1018,7 @@ impl DataFrameView {
             "pageMessages": messages,
             "keyConflicts": conflicts,
             "timedOut": timed_out,
+            "scripts": scripts,
             "seconds": (dashboard.opened_at.elapsed().as_secs_f64() * 10.0).round() / 10.0,
         });
         if let Some(error) = &dashboard.error {
@@ -1057,6 +1167,9 @@ impl DataFrameView {
         }
         canvas.fill(rect(body.x, body.y, body.w, 1.0), colors::BORDER);
         let page = rect(body.x, body.y + 1.0, body.w, (body.h - 1.0).max(0.0));
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.page_height = page.h;
+        }
         let scale = canvas.scale();
         if let Some(dashboard) = &self.dashboard {
             if let Some(web) = &dashboard.web {
@@ -1219,6 +1332,19 @@ mod tests {
             assert_eq!(dashboard.queries[0].rows, 1);
             assert_eq!(dashboard.running, 0);
         });
+    }
+
+    #[test]
+    fn reports_show_working_queries_on_one_short_line() {
+        assert_eq!(one_line("select a,\n  b\nfrom   t", 160), "select a, b from t");
+        assert_eq!(one_line(&format!("select {}", "x".repeat(300)), 10), "select xxx… (307 characters)");
+    }
+
+    #[test]
+    fn check_scripts_report_their_value_or_error() {
+        let wrapped = reported_script("document.title = \"it's\"");
+        assert!(wrapped.contains(r#"eval)("document.title = \"it's\"")"#), "{wrapped}");
+        assert!(wrapped.contains("ok: false"));
     }
 
     #[test]

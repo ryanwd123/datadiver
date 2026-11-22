@@ -47,7 +47,7 @@ pub struct WindowState<H> {
     size: (f32, f32),
     /// Where a headless window would sit on screen.
     origin: (f32, f32),
-    scale: f32,
+    pub(crate) scale: f32,
     mouse: Point,
     left_down: bool,
     tracking_leave: bool,
@@ -55,6 +55,8 @@ pub struct WindowState<H> {
     surrogate: Option<u16>,
     hover_since: Option<(Instant, Point)>,
     tooltip: Option<Tooltip>,
+    /// Shown off screen, for a dashboard check: it may grow past the screen.
+    offscreen: bool,
 }
 
 pub struct WindowSlot<V: View> {
@@ -214,6 +216,7 @@ pub(crate) fn new_slot<V: View>(
             surrogate: None,
             hover_since: None,
             tooltip: None,
+            offscreen: false,
         }),
         dirty: Cell::new(true),
         last_frame: Cell::new(None),
@@ -394,6 +397,28 @@ pub fn with_view<V: View, R>(window: WindowId, run: impl FnOnce(&mut V, &mut Cx<
     let mut view = slot.view.try_borrow_mut().ok()?;
     let mut cx = Cx { runtime, window };
     Some(run(&mut view, &mut cx))
+}
+
+/// The largest window side, in pixels, an off-screen window may grow to.
+pub(crate) const MAX_SURFACE: i32 = 16_000;
+
+/// Sizes `hwnd` so its client area is `width` × `height` pixels.
+pub(crate) fn resize_client(hwnd: HWND, width: i32, height: i32) {
+    unsafe {
+        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+        let ex_style = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
+        let mut outer = RECT { left: 0, top: 0, right: width, bottom: height };
+        let _ = AdjustWindowRectExForDpi(&mut outer, style, false, ex_style, GetDpiForWindow(hwnd));
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            outer.right - outer.left,
+            outer.bottom - outer.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// Whether a child of `hwnd`, such as a WebView, has the keyboard.
@@ -622,6 +647,7 @@ pub(crate) fn open_window<V: View>(runtime: &Runtime<V>, request: OpenRequest<V>
         }
     }
     slot.state.borrow_mut().scale = unsafe { GetDpiForWindow(hwnd) } as f32 / 96.0;
+    slot.state.borrow_mut().offscreen = options.offscreen;
     slot.invalidate();
     if let Some(opened) = opened {
         runtime.queue(Action::Update(id, opened));
@@ -1112,6 +1138,11 @@ unsafe extern "system" fn wndproc<V: View>(hwnd: HWND, message: u32, wparam: WPA
                 x: (480.0 * scale) as i32,
                 y: (320.0 * scale) as i32,
             };
+            // An off-screen window may be as tall as a whole page; Direct2D
+            // and WebView2 surfaces stop at 16384 pixels.
+            if slot.state.borrow().offscreen {
+                info.ptMaxTrackSize = POINT { x: MAX_SURFACE, y: MAX_SURFACE };
+            }
             LRESULT(0)
         }
         WM_ACTIVATE => {
